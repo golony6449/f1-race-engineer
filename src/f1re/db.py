@@ -17,7 +17,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 # 지금 코드가 기대하는 스키마 버전.
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 DEFAULT_DB_RELPATH = Path("data") / "f1re.db"
 
@@ -50,9 +50,41 @@ def _migration_001_sessions(conn: sqlite3.Connection) -> None:
     )
 
 
+def _migration_002_radio_messages(conn: sqlite3.Connection) -> None:
+    """무전 한 줄을 한 행으로 남긴다(작업 11).
+
+    `session_uid`는 세션 표를 참조하지 않는다. 세션 행이 아직 없거나 세션 밖에서
+    만든 무전도 기록이 막히면 안 되기 때문이다.
+    """
+    conn.execute(
+        """
+        CREATE TABLE radio_messages (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_uid INTEGER,
+            recorded_at_ns INTEGER NOT NULL,
+            lap INTEGER,
+            corner INTEGER,
+            kind TEXT NOT NULL,
+            priority INTEGER NOT NULL,
+            text TEXT NOT NULL,
+            evidence TEXT NOT NULL DEFAULT '{}',
+            played INTEGER NOT NULL DEFAULT 0,
+            latency_ms INTEGER
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX idx_radio_messages_session_time
+        ON radio_messages (session_uid, recorded_at_ns)
+        """
+    )
+
+
 # (버전, 적용 함수). 버전은 1부터 연속이어야 한다.
 MIGRATIONS: tuple[tuple[int, Callable[[sqlite3.Connection], None]], ...] = (
     (1, _migration_001_sessions),
+    (2, _migration_002_radio_messages),
 )
 
 
