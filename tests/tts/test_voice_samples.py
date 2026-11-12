@@ -49,7 +49,8 @@ def test_sentences_follow_plan() -> None:
         "박스, 박스.",
         "3번 좋아짐. 다음 7번.",
     )
-    assert KOREAN_VOICES[0] == "Sohee"
+    assert KOREAN_VOICES[0] == "Katerina"
+    assert "Sohee" in KOREAN_VOICES
 
 
 async def test_generate_samples_writes_raw_radio_and_report(tmp_path: Path) -> None:

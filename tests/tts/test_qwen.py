@@ -88,7 +88,7 @@ async def test_qwen_synthesize_sends_text_and_voice(make_wav: Any) -> None:
         "model": "qwen3-tts-flash",
         "input": {
             "text": "3번, 브레이크 늦음. 5미터.",
-            "voice": "Sohee",
+            "voice": "Katerina",
             "language_type": "Korean",
         },
     }

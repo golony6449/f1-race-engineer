@@ -6,7 +6,13 @@ from pathlib import Path
 
 import pytest
 
-from f1re.config import ConfigError, TTSConfig, load_config
+from f1re.config import (
+    ConfigError,
+    TTSConfig,
+    load_config,
+    repo_root,
+    resolve_asset_path,
+)
 
 
 def test_default_config_matches_global_constraints() -> None:
@@ -24,11 +30,20 @@ def test_default_config_matches_global_constraints() -> None:
     # TTS 설정
     assert config.tts.model == "qwen3-tts-flash"
     assert config.tts.realtime_model == "qwen3-tts-flash-realtime"
-    assert config.tts.voice == "Sohee"
+    assert config.tts.voice == "Katerina"
+    assert config.tts.speed == pytest.approx(1.2)
     assert config.tts.timeout_s == pytest.approx(2.0)
     assert config.tts.secret_key == "qwen"
     assert config.tts.language_type == "Korean"
     assert config.tts.endpoint.startswith("https://dashscope-intl.aliyuncs.com/")
+
+    # 시작 효과음
+    assert config.tts.intro_sound_url == (
+        "https://www.myinstants.com/media/sounds/formula-1-radio-notification.mp3"
+    )
+    assert config.tts.intro_sound_path == "assets/radio-intro.wav"
+    assert config.tts.intro_gap_ms == pytest.approx(150.0)
+    assert config.tts.intro_gain == pytest.approx(0.8)
 
 
 def test_partial_toml_keeps_other_defaults(tmp_path: Path) -> None:
@@ -66,6 +81,32 @@ def test_invalid_timeout_is_rejected(tmp_path: Path) -> None:
 
     with pytest.raises(ConfigError, match="timeout_s"):
         load_config(path)
+
+
+@pytest.mark.parametrize(
+    ("toml", "message"),
+    [
+        ("[tts]\nspeed = 0\n", "speed"),
+        ("[tts]\nintro_gap_ms = -1\n", "intro_gap_ms"),
+        ("[tts]\nintro_gain = -0.1\n", "intro_gain"),
+    ],
+)
+def test_invalid_voice_settings_are_rejected(
+    tmp_path: Path, toml: str, message: str
+) -> None:
+    path = tmp_path / "config.toml"
+    path.write_text(toml, encoding="utf-8")
+
+    with pytest.raises(ConfigError, match=message):
+        load_config(path)
+
+
+def test_resolve_asset_path_uses_repo_root(tmp_path: Path) -> None:
+    assert resolve_asset_path("assets/radio-intro.wav") == (
+        repo_root() / "assets" / "radio-intro.wav"
+    )
+    absolute = tmp_path / "sound.wav"
+    assert resolve_asset_path(absolute) == absolute
 
 
 def test_missing_file_is_rejected(tmp_path: Path) -> None:
