@@ -227,6 +227,13 @@ _TEMPLATES: tuple[Template, ...] = (
         "앞차 {gap}. {corner}번 탈출 느림. {corner}번 붙고 직선에서.",
         needs_evidence=True,
     ),
+    # 코너 데이터가 없는 서킷: 공식 번호 대신 "N번째 코너"로 말한다.
+    Template(
+        "overtake.slow_exit_ordinal",
+        RadioKind.OVERTAKE,
+        "앞차 {gap}. {corner_label} 탈출 느림. {corner_label} 붙고 직선에서.",
+        needs_evidence=True,
+    ),
     Template(
         "overtake.tyre_wait",
         RadioKind.OVERTAKE,
@@ -287,6 +294,7 @@ ORDINAL_KEYS: dict[str, str] = {
     "coaching.line_wide": "coaching.line_wide_ordinal",
     "coaching.off_track": "coaching.off_track_ordinal",
     "coaching.min_speed_low": "coaching.min_speed_low_ordinal",
+    "overtake.slow_exit": "overtake.slow_exit_ordinal",
     "improvement.corner_improved": "improvement.corner_improved_ordinal",
     "improvement.corner_improved_short": "improvement.corner_improved_short_ordinal",
 }
