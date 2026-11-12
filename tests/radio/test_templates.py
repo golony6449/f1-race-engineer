@@ -22,18 +22,21 @@ from f1re.radio.templates import (
 
 SAMPLE_VALUES: dict[str, object] = {
     "corner": 3,
+    "corner_label": "3번째 코너",
     "corners": "3·5",
     "meters": 5,
     "count": 2,
     "laps": 2,
     "gap": 0.6,
     "wait_laps": 2,
+    "kmh": 7,
     "tyre": "왼쪽 앞",
     "percent": 82,
     "celsius": 110,
     "part": "앞날개",
     "seconds": 5,
     "next_corner": 7,
+    "next_label": "7번",
 }
 
 
