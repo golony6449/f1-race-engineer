@@ -132,6 +132,67 @@ _TEMPLATES: tuple[Template, ...] = (
         "{corner}번, 트랙 이탈. 라인 {meters}미터 밖.",
         needs_evidence=True,
     ),
+    Template(
+        "coaching.min_speed_low",
+        RadioKind.COACHING,
+        "{corner}번, 정점 속도 {kmh}킬로 낮음.",
+        needs_evidence=True,
+    ),
+    # --- 코너 데이터가 없는 서킷: 공식 번호가 아니라 "N번째 코너"로 말한다 ---
+    Template(
+        "coaching.brake_late_ordinal",
+        RadioKind.COACHING,
+        "{corner_label}, 브레이크 늦음. {meters}미터.",
+        needs_evidence=True,
+    ),
+    Template(
+        "coaching.brake_early_ordinal",
+        RadioKind.COACHING,
+        "{corner_label}, 브레이크 일찍. {meters}미터.",
+        needs_evidence=True,
+    ),
+    Template(
+        "coaching.turn_in_early_ordinal",
+        RadioKind.COACHING,
+        "{corner_label}, 턴인 일찍. {meters}미터.",
+        needs_evidence=True,
+    ),
+    Template(
+        "coaching.turn_in_late_ordinal",
+        RadioKind.COACHING,
+        "{corner_label}, 턴인 늦음. {meters}미터.",
+        needs_evidence=True,
+    ),
+    Template(
+        "coaching.steer_corrections_ordinal",
+        RadioKind.COACHING,
+        "{corner_label}, 조향 수정 {count}회.",
+        needs_evidence=True,
+    ),
+    Template(
+        "coaching.late_throttle_ordinal",
+        RadioKind.COACHING,
+        "{corner_label} 탈출, 스로틀 늦음. {meters}미터.",
+        needs_evidence=True,
+    ),
+    Template(
+        "coaching.line_wide_ordinal",
+        RadioKind.COACHING,
+        "{corner_label}, 라인 밖. {meters}미터.",
+        needs_evidence=True,
+    ),
+    Template(
+        "coaching.off_track_ordinal",
+        RadioKind.COACHING,
+        "{corner_label}, 트랙 이탈. 라인 {meters}미터 밖.",
+        needs_evidence=True,
+    ),
+    Template(
+        "coaching.min_speed_low_ordinal",
+        RadioKind.COACHING,
+        "{corner_label}, 정점 속도 {kmh}킬로 낮음.",
+        needs_evidence=True,
+    ),
     # 리프트 앤 코스트: 연료 부족 때 코너 몇 곳에서 액셀을 짧게 뗀다.
     Template(
         "coaching.fuel_lift",
@@ -176,7 +237,22 @@ _TEMPLATES: tuple[Template, ...] = (
     Template(
         "improvement.corner_improved",
         RadioKind.IMPROVEMENT,
-        "{corner}번 좋아짐. 다음 {next_corner}.",
+        "{corner}번 좋아짐. 다음 {next_corner}번.",
+    ),
+    Template(
+        "improvement.corner_improved_short",
+        RadioKind.IMPROVEMENT,
+        "{corner}번 좋아짐.",
+    ),
+    Template(
+        "improvement.corner_improved_ordinal",
+        RadioKind.IMPROVEMENT,
+        "{corner_label} 좋아짐. 다음 {next_label}.",
+    ),
+    Template(
+        "improvement.corner_improved_short_ordinal",
+        RadioKind.IMPROVEMENT,
+        "{corner_label} 좋아짐.",
     ),
     Template(
         "improvement.fuel_lift_good",
@@ -195,8 +271,25 @@ _TEMPLATES: tuple[Template, ...] = (
 TEMPLATES: dict[str, Template] = {template.key: template for template in _TEMPLATES}
 
 # `needs_evidence` 틀이 갖춰야 하는 슬롯 묶음(위치 / 수치).
-WHERE_SLOTS = frozenset({"corner", "corners", "gap"})
-AMOUNT_SLOTS = frozenset({"meters", "count", "laps", "gap", "wait_laps"})
+WHERE_SLOTS = frozenset({"corner", "corner_label", "corners", "gap"})
+AMOUNT_SLOTS = frozenset(
+    {"meters", "count", "laps", "gap", "wait_laps", "kmh"}
+)
+
+# 공식 코너 틀 → 같은 뜻의 "N번째 코너" 틀. 코너 데이터가 없는 서킷에 쓴다.
+ORDINAL_KEYS: dict[str, str] = {
+    "coaching.brake_late": "coaching.brake_late_ordinal",
+    "coaching.brake_early": "coaching.brake_early_ordinal",
+    "coaching.turn_in_early": "coaching.turn_in_early_ordinal",
+    "coaching.turn_in_late": "coaching.turn_in_late_ordinal",
+    "coaching.steer_corrections": "coaching.steer_corrections_ordinal",
+    "coaching.late_throttle": "coaching.late_throttle_ordinal",
+    "coaching.line_wide": "coaching.line_wide_ordinal",
+    "coaching.off_track": "coaching.off_track_ordinal",
+    "coaching.min_speed_low": "coaching.min_speed_low_ordinal",
+    "improvement.corner_improved": "improvement.corner_improved_ordinal",
+    "improvement.corner_improved_short": "improvement.corner_improved_short_ordinal",
+}
 
 # 세션 시작 때 미리 만들어 둘 고정 문장(코너 번호와 무관한 경고·개선).
 PRELOAD_KEYS: tuple[str, ...] = (
@@ -247,6 +340,31 @@ def render(key: str, **slots: object) -> str:
             f"{key} 틀에 필요한 값이 없습니다: {', '.join(missing)}"
         )
     return template.text.format(**slots)
+
+
+def corner_label(number: int, *, official: bool = True) -> str:
+    """무전에 넣는 코너 이름. 공식 번호면 "3번", 자동 탐지면 "3번째 코너"."""
+    return f"{int(number)}번" if official else f"{int(number)}번째 코너"
+
+
+def render_corner(
+    key: str, corner: int, *, official: bool = True, **slots: object
+) -> str:
+    """코너 번호가 들어가는 틀을 공식/비공식에 맞춰 만든다.
+
+    `official=False`(데이터 파일이 없는 서킷의 자동 탐지 코너)면 같은 뜻의
+    "N번째 코너" 틀을 골라 쓴다. `slots`에는 틀에 필요한 나머지 값
+    (meters·count·kmh 등)을 넘긴다.
+    """
+    if official:
+        return render(key, corner=int(corner), **slots)
+    try:
+        ordinal = ORDINAL_KEYS[key]
+    except KeyError as exc:
+        raise UnknownTemplate(f"{key} 틀에는 비공식 코너 문장이 없습니다") from exc
+    return render(
+        ordinal, corner_label=corner_label(corner, official=False), **slots
+    )
 
 
 def corner_phrases(
