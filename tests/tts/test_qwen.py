@@ -234,6 +234,9 @@ def test_default_timeout_is_two_seconds() -> None:
 
     tts = _tts(lambda request: httpx.Response(200), config=config.tts)
     assert tts.timeout_s == pytest.approx(2.0)
+    # 전체 마감(asyncio.timeout)과 HTTP 클라이언트 타임아웃 모두 설정값을 쓴다.
+    assert tts._client.timeout.connect == pytest.approx(2.0)
+    assert tts._client.timeout.read == pytest.approx(2.0)
 
 
 async def test_secret_error_becomes_tts_unavailable() -> None:
