@@ -17,6 +17,8 @@ API:
 - ``WS /ws/state``  같은 상태를 10Hz로 민다
 - ``GET /``  대시보드 HTML, ``/static/...``  빌드 없는 HTML/JS/CSS
 - ``GET /radio``·``WS /ws/radio``  무전 페이지와 음성 전달(`web/radio_api.py`)
+- ``GET /api/radio/log``·``POST /api/radio/mute``·``GET /api/report``
+  무전 기록·종류별 끄기·세션 리포트(`web/report_api.py`)
 """
 
 from __future__ import annotations
@@ -38,6 +40,7 @@ from f1re.state.store import StateStore
 from f1re.web.lift_coast_api import router as lift_coast_router
 from f1re.web.map_api import TrackMap, create_map_router
 from f1re.web.radio_api import RadioService, router as radio_router
+from f1re.web.report_api import create_report_router
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 
@@ -326,6 +329,7 @@ def create_app(
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
     app.include_router(radio_router)
     app.include_router(create_map_router(store, map_state))
+    app.include_router(create_report_router(store, service, conn))
     app.include_router(lift_coast_router)
 
     @app.get("/", include_in_schema=False)

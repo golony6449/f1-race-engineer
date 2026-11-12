@@ -20,7 +20,7 @@ from pathlib import Path
 from f1re.tracks.outline import TrackOutline
 
 # 지금 코드가 기대하는 스키마 버전.
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 DEFAULT_DB_RELPATH = Path("data") / "f1re.db"
 
@@ -102,11 +102,35 @@ def _migration_003_track_outlines(conn: sqlite3.Connection) -> None:
     )
 
 
+def _migration_004_reference_sets(conn: sqlite3.Connection) -> None:
+    """조건(서킷·모드·날씨·차)별 기준 랩과 코너 기록을 저장한다(작업 19).
+
+    `reference`에는 기준 랩(내 최고 랩·세션 최속차 최고 랩)을, `focus`에는
+    집중 코너와 코너별 손실을 JSON으로 넣는다. 키가 다르면 다른 행이므로
+    맑음·비, 타임 트라이얼·레이스 주말, 팀별 기준이 서로 섞이지 않는다.
+    """
+    conn.execute(
+        """
+        CREATE TABLE reference_sets (
+            track_id INTEGER NOT NULL,
+            mode TEXT NOT NULL,
+            weather TEXT NOT NULL,
+            car_key TEXT NOT NULL,
+            reference TEXT NOT NULL,
+            focus TEXT NOT NULL,
+            updated_at_ns INTEGER NOT NULL,
+            PRIMARY KEY (track_id, mode, weather, car_key)
+        )
+        """
+    )
+
+
 # (버전, 적용 함수). 버전은 1부터 연속이어야 한다.
 MIGRATIONS: tuple[tuple[int, Callable[[sqlite3.Connection], None]], ...] = (
     (1, _migration_001_sessions),
     (2, _migration_002_radio_messages),
     (3, _migration_003_track_outlines),
+    (4, _migration_004_reference_sets),
 )
 
 
