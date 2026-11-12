@@ -7,6 +7,8 @@ dist/
 build/
 .ds-tmp/
 samples/
+# 받아 오는 효과음(저작권 때문에 레포에 넣지 않는다)
+assets/
 recordings/
 *.f1rec
 data/*.db

@@ -7,6 +7,7 @@ requires-python = ">=3.14"
 dependencies = [
     "fastapi>=0.162.5",
     "httpx>=0.28.1",
+    "miniaudio>=1.73",
     "numpy>=2.5.4",
     "pyyaml>=6.0.3",
     "uvicorn>=0.54.0",
