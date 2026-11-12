@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>F1 레이스 엔지니어</title>
+    <link rel="stylesheet" href="/static/style.css" />
+  </head>
+  <body>
+    <!--
+      상단 상태줄(설계 6.9-5). 음성·무전 페이지 상태는 작업 11·12가 채운다.
+      지금은 서버가 "알 수 없음" 자리 값을 내려 준다.
+    -->
+    <header class="statusbar">
+      <section class="status" id="status-connection">
+        <span class="status-label">데이터 수신</span>
+        <span class="status-value" data-field="connection">연결 중…</span>
+        <span class="status-detail" id="connection-detail"></span>
+        <span class="status-detail" id="connection-detail-2"></span>
+      </section>
+      <section class="status" id="status-voice">
+        <span class="status-label">음성</span>
+        <span class="status-value" data-field="voice">알 수 없음</span>
+        <span class="status-detail">작업 11에서 연결</span>
+      </section>
+      <section class="status" id="status-radio-page">
+        <span class="status-label">무전 페이지</span>
+        <span class="status-value" data-field="radio_page">알 수 없음</span>
+        <span class="status-detail">작업 12에서 연결</span>
+      </section>
+    </header>
+
+    <!--
+      차량 상태(설계 6.9-1). 값이 끊기면 마지막 값을 흐리게 유지한다.
+      서킷 지도·무전 기록·세션 리포트는 작업 10·20에서 이 화면에 붙는다.
+    -->
+    <main id="dashboard" class="stale">
+      <section class="panel tyres">
+        <h2>타이어</h2>
+        <div class="tyre-grid" id="tyres">
+          <p class="waiting">데이터를 기다리는 중…</p>
+        </div>
+      </section>
+
+      <section class="panel brakes">
+        <h2>브레이크 온도</h2>
+        <div class="brake-grid" id="brakes">
+          <p class="waiting">데이터를 기다리는 중…</p>
+        </div>
+      </section>
+
+      <section class="panel fuel">
+        <h2>연료</h2>
+        <div class="cell-grid" id="fuel">
+          <p class="waiting">데이터를 기다리는 중…</p>
+        </div>
+      </section>
+
+      <section class="panel ers">
+        <h2>ERS</h2>
+        <div class="cell-grid" id="ers">
+          <p class="waiting">데이터를 기다리는 중…</p>
+        </div>
+      </section>
+
+      <section class="panel damage">
+        <h2>손상</h2>
+        <div class="damage-grid" id="damage">
+          <p class="waiting">데이터를 기다리는 중…</p>
+        </div>
+      </section>
+    </main>
+
+    <script type="module" src="/static/dashboard.js"></script>
+  </body>
+</html>
