@@ -1,0 +1,38 @@
+# f1re systemd 사용자 서비스 (SCRUM-63)
+#
+# 홈서버에서 게임 텔레메트리(UDP) 수신과 웹 대시보드를 한 프로세스로 띄운다.
+# 설치·시작은 deploy/README.md를 보고 사용자가 직접 한다.
+#
+#   mkdir -p ~/.config/systemd/user
+#   cp deploy/f1re.service ~/.config/systemd/user/f1re.service
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now f1re
+#   loginctl enable-linger "$USER"   # 로그인 없이 부팅 뒤에도 실행
+#
+# 체크아웃 위치나 uv 경로가 다르면 아래 WorkingDirectory·ExecStart를 고친다
+# (uv 경로는 `command -v uv`로 확인). 포트를 바꾸려면 ExecStart 끝에
+# `--port <UDP 포트>`(기본 20777), `--web-port <웹 포트>`(기본 8080)를 붙인다.
+
+[Unit]
+Description=F1 25 한국어 AI 레이스 엔지니어 (f1re serve)
+Documentation=file:///home/golony/dev/repo/f1-race-engineer/f1-race-engineer/deploy/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/golony/dev/repo/f1-race-engineer/f1-race-engineer
+# `uv run`은 이 체크아웃의 .venv(uv sync로 만든 환경)에서 f1re를 실행한다.
+ExecStart=/home/golony/.local/bin/uv run f1re serve
+# journalctl에서 파이썬 출력이 바로 보이게 한다.
+Environment=PYTHONUNBUFFERED=1
+# 앱은 SIGINT를 받으면 UDP 수신과 웹 서버를 정리하고 끝난다(main.py).
+KillSignal=SIGINT
+TimeoutStopSec=10
+# 비정상 종료(게임 패킷 오류 등으로 프로세스가 죽음)면 다시 띄운다.
+# systemctl --user stop으로 멈춘 경우는 정상 종료라 재시작하지 않는다.
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
