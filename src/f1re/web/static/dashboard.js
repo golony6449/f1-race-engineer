@@ -7,9 +7,47 @@
  */
 
 import { CarStateView, renderStatusBar, setStale } from "./carstate.js";
+import { TrackMapView } from "./map.js";
 
 const dashboard = document.getElementById("dashboard");
 const view = new CarStateView(dashboard);
+const mapView = new TrackMapView(document.getElementById("track-map"));
+
+// `/api/track`은 세션의 트랙 ID가 처음 알려질 때 한 번 받는다. 윤곽이 아직
+// 없으면(처음 오는 서킷) 서버가 첫 유효 랩에서 배우므로 주기적으로 다시 묻는다.
+const TRACK_RETRY_MS = 5000;
+let loadedTrackId = null;
+let trackRetryTimer = null;
+
+async function loadTrack(trackId) {
+  try {
+    const response = await fetch("/api/track", { cache: "no-store" });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const track = await response.json();
+    mapView.setTrack(track);
+    if (track.outline_source === "none") scheduleTrackRetry(trackId);
+  } catch (error) {
+    scheduleTrackRetry(trackId);
+  }
+}
+
+function scheduleTrackRetry(trackId) {
+  if (trackRetryTimer !== null) return;
+  trackRetryTimer = window.setTimeout(() => {
+    trackRetryTimer = null;
+    if (loadedTrackId === trackId) loadTrack(trackId);
+  }, TRACK_RETRY_MS);
+}
+
+function maybeLoadTrack(payload) {
+  const session =
+    (payload.snapshot && payload.snapshot.packets
+      && payload.snapshot.packets.session) || {};
+  const trackId = session.track_id ?? null;
+  if (trackId === loadedTrackId) return;
+  loadedTrackId = trackId;
+  if (trackId !== null) loadTrack(trackId);
+}
 
 async function loadThresholds() {
   try {
@@ -37,6 +75,8 @@ function applyPayload(payload) {
   setStale(dashboard, payload.connection && payload.connection.stale);
   view.render(payload.car);
   renderStatusBar(payload);
+  mapView.render(payload);
+  maybeLoadTrack(payload);
 }
 
 function connect() {
