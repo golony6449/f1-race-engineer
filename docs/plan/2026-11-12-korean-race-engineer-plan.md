@@ -380,6 +380,22 @@ class Priority(IntEnum): SAFETY=0; BOX=1; COACHING=2; OVERTAKE=3; IMPROVEMENT=4
 - [ ] **Step 1: 실패 테스트** `test_mute_kind_persists_and_safety_rejected`, `test_report_marks_improvement_after_message`, `test_log_includes_evidence_and_latency`.
 - [ ] **Step 2:** 구현 → 수동 확인 → PASS → 커밋·PR.
 
+### 작업 21: 리프트 앤 코스트 측정·구간 추천·필요할 때 무전
+
+**Files:** Create `src/f1re/coaching/lift_coast.py`, `web/lift_coast_api.py`; Modify `radio/templates.py`, `web/app.py`, `web/static/map.js`; Test `tests/coaching/test_lift_coast.py`
+
+**Interfaces:**
+- Produces: `LiftCoastCoach.on_sample(car_state, dist_m, now_ns) -> list[RadioMessage]`, `LiftCoastCoach.on_lap_completed(trace, now_ns) -> list[RadioMessage]`; `rank_lift_zones(track, trace, ...) -> list[LiftZone]`; `measure_coasting(trace, track, ...) -> list[CoastingMeasurement]`; `LiftCoastState.snapshot()`; `GET /api/lift-coast`(추천 구간·최근 코스팅 거리·연료 기록)
+- Consumes: `Sample.fuel_kg`(Car Status 내 차 연료), `alerts.thresholds.severity`/`metric_threshold`(위험 기준 단일 출처), `coaching.coach.defer_until_straight`(미룸 규칙), `radio.templates`(리프트 앤 코스트 문장), `radio.queue`
+
+- [ ] **Step 1: 실패 테스트**
+  - `test_demo_scenario_instruction_lift_feedback_order`: `lift_and_coast.yaml`(연료 부족·브레이크 온도 위험)로 2랩 추천 → 3랩 지시 → 4랩 리프트 → 탈출 직후 피드백 순서, 5랩 여유 회복 시 "연료 회복. 리프트 그만." 1회.
+  - `test_no_message_when_margins_are_healthy`(여유가 있으면 무전 0건), `test_no_lift_messages_outside_race_session`(타임 트라이얼에서는 지시·피드백 없음).
+  - `test_recommendations_choose_long_straight_heavy_braking_zones`: 스즈카 추천 상위에 1번·16번·11번 중 2개 이상, 모나코 상위에 1번·10번 중 1개 이상. 감속량이 작은 130R 같은 구간은 뺀다.
+  - `test_measures_coasting_distance_and_time`, `test_lap_fuel_consumption_is_recorded_from_sample_fuel`, `test_feedback_not_repeated_in_same_lap`, `test_ordinal_wording_for_unofficial_corners`, API 응답 모양.
+- [ ] **Step 2:** 구현. 브레이크 구간마다 코스팅 거리(스로틀 < 5% 지점 → 브레이크 ≥ 문턱 지점, m)·시간을 재고, 진입 속도·앞 직선 길이·감속량으로 리프트 효율을 매겨 상위 2~3곳을 추천한다. 레이스 세션에서만 `fuel_laps_margin`·`brake_temp`·앞 `tyre_temp`가 WARN 이상일 때 지시하며, 유효 시간은 그 구간 리프트 지점 전까지다. 다음 랩 그 구간 코스팅 거리로 "짧음/좋음" 피드백을 한 번 말하고, 여유가 돌아오면 "연료 회복. 리프트 그만."을 1회 말한다.
+- [ ] **Step 3:** `GET /api/lift-coast`와 `map.js` 추천 구간 점선 강조. 데모 리플레이에서 나간 무전 목록을 PR에 첨부(설계 8장 "도움 안 되는 말" 점검). PASS → 커밋·PR.
+
 ---
 
 ## 선후관계 요약 (Jira 차단 링크용)
@@ -406,3 +422,4 @@ class Priority(IntEnum): SAFETY=0; BOX=1; COACHING=2; OVERTAKE=3; IMPROVEMENT=4
 | 18 추월 선택지 | 17 |
 | 19 조건별 저장 | 16 |
 | 20 무전 기록·리포트 | 16, 12 |
+| 21 리프트 앤 코스트 | 16, 17 |

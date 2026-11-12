@@ -208,6 +208,22 @@ _TEMPLATES: tuple[Template, ...] = (
         needs_evidence=True,
         note="리프트 앤 코스트: 리프트가 짧았다",
     ),
+    # 브레이크·타이어 온도 때문에 리프트 앤 코스트를 지시할 때. 연료 부족이
+    # 아니므로 연료 문장을 쓰지 않는다(SCRUM-71).
+    Template(
+        "coaching.brake_temp_lift",
+        RadioKind.COACHING,
+        "{corners} 리프트. {meters}미터. 브레이크 {celsius}도.",
+        needs_evidence=True,
+        note="리프트 앤 코스트: 브레이크 냉각",
+    ),
+    Template(
+        "coaching.tyre_temp_lift",
+        RadioKind.COACHING,
+        "{corners} 리프트. {meters}미터. 타이어 {celsius}도.",
+        needs_evidence=True,
+        note="리프트 앤 코스트: 앞 타이어 냉각",
+    ),
     # --- 추월 선택지 ------------------------------------------------------
     Template(
         "overtake.drs",
@@ -267,6 +283,20 @@ _TEMPLATES: tuple[Template, ...] = (
         "{corner}번 리프트 좋음.",
         note="리프트 앤 코스트: 리프트가 좋았다",
     ),
+    # 자동 탐지 코너(official=False)는 "3번째 코너"로 말한다(리뷰 포커스 5).
+    Template(
+        "coaching.fuel_lift_short_ordinal",
+        RadioKind.COACHING,
+        "{corner_label} 리프트 짧음. {meters}미터 더.",
+        needs_evidence=True,
+        note="리프트 앤 코스트: 리프트가 짧았다(비공식 코너)",
+    ),
+    Template(
+        "improvement.fuel_lift_good_ordinal",
+        RadioKind.IMPROVEMENT,
+        "{corner_label} 리프트 좋음.",
+        note="리프트 앤 코스트: 리프트가 좋았다(비공식 코너)",
+    ),
     Template(
         "improvement.fuel_lift_stop",
         RadioKind.IMPROVEMENT,
@@ -297,6 +327,8 @@ ORDINAL_KEYS: dict[str, str] = {
     "overtake.slow_exit": "overtake.slow_exit_ordinal",
     "improvement.corner_improved": "improvement.corner_improved_ordinal",
     "improvement.corner_improved_short": "improvement.corner_improved_short_ordinal",
+    "coaching.fuel_lift_short": "coaching.fuel_lift_short_ordinal",
+    "improvement.fuel_lift_good": "improvement.fuel_lift_good_ordinal",
 }
 
 # 세션 시작 때 미리 만들어 둘 고정 문장(코너 번호와 무관한 경고·개선).
