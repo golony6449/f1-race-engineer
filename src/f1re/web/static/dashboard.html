@@ -32,7 +32,7 @@
 
     <!--
       차량 상태(설계 6.9-1). 값이 끊기면 마지막 값을 흐리게 유지한다.
-      서킷 지도·무전 기록·세션 리포트는 작업 10·20에서 이 화면에 붙는다.
+      무전 기록·세션 리포트는 작업 20에서 이 화면에 붙는다.
     -->
     <main id="dashboard" class="stale">
       <section class="panel tyres">
@@ -40,6 +40,20 @@
         <div class="tyre-grid" id="tyres">
           <p class="waiting">데이터를 기다리는 중…</p>
         </div>
+      </section>
+
+      <!--
+        서킷 지도(설계 6.9-2). 윤곽·코너·차 위치는 서버 API가 계산해 준다.
+        UI는 map.js가 그리고, 코너를 누르면 최근 지표(나 / 기준)를 보여 준다.
+      -->
+      <section class="panel map">
+        <h2>서킷 지도</h2>
+        <div class="map-wrap" id="track-map">
+          <canvas id="track-canvas" aria-label="서킷 지도"></canvas>
+          <p class="map-waiting">지도 없음 · 첫 유효 랩의 위치를 기다리는 중</p>
+          <span class="map-flag" hidden></span>
+        </div>
+        <div class="map-info" id="map-info"></div>
       </section>
 
       <section class="panel brakes">

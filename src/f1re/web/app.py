@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import asyncio
 import math
+import sqlite3
 import time
 from pathlib import Path
 from typing import Any
@@ -32,6 +33,7 @@ from fastapi.staticfiles import StaticFiles
 
 from f1re.alerts.thresholds import color_table, severity
 from f1re.state.store import StateStore
+from f1re.web.map_api import TrackMap, create_map_router
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 
@@ -114,14 +116,22 @@ _DAMAGE_ITEMS: tuple[tuple[str, str, str, str], ...] = (
 # ---------------------------------------------------------------------------
 
 
-def state_payload(store: StateStore) -> dict[str, Any]:
-    """화면·API가 함께 쓰는 상태 묶음."""
+def state_payload(
+    store: StateStore, map_state: TrackMap | None = None
+) -> dict[str, Any]:
+    """화면·API가 함께 쓰는 상태 묶음.
+
+    `cars`·`flag`는 서킷 지도(작업 10)용이다. `map_state`가 없으면 빈 값으로
+    두어 기존 호출(`state_payload(store)`)을 그대로 쓸 수 있다.
+    """
     snapshot = store.snapshot()
     return {
         "snapshot": snapshot,
         "car": player_summary(snapshot),
         "connection": connection_info(snapshot),
         "status": status_placeholders(),
+        "cars": [] if map_state is None else map_state.car_positions(snapshot),
+        "flag": "none" if map_state is None else map_state.flag(snapshot),
     }
 
 
@@ -292,11 +302,19 @@ def status_placeholders() -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
-def create_app(store: StateStore) -> FastAPI:
-    """상태 저장소 하나를 읽는 FastAPI 앱을 만든다."""
+def create_app(
+    store: StateStore, *, conn: sqlite3.Connection | None = None
+) -> FastAPI:
+    """상태 저장소 하나를 읽는 FastAPI 앱을 만든다.
+
+    `conn`은 학습한 서킷 윤곽(작업 10)을 읽을 SQLite 연결이다. 없으면
+    패키지 데이터 파일의 중심선만 쓴다(테스트·단독 실행).
+    """
     app = FastAPI(title="F1 레이스 엔지니어 대시보드")
+    map_state = TrackMap(conn)
 
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+    app.include_router(create_map_router(store, map_state))
 
     @app.get("/", include_in_schema=False)
     def dashboard() -> FileResponse:
@@ -307,7 +325,7 @@ def create_app(store: StateStore) -> FastAPI:
 
     @app.get("/api/state")
     def api_state() -> dict[str, Any]:
-        return state_payload(store)
+        return state_payload(store, map_state)
 
     @app.get("/api/thresholds")
     def api_thresholds() -> dict[str, Any]:
@@ -318,7 +336,7 @@ def create_app(store: StateStore) -> FastAPI:
         await websocket.accept()
         try:
             while True:
-                await websocket.send_json(state_payload(store))
+                await websocket.send_json(state_payload(store, map_state))
                 await asyncio.sleep(PUSH_INTERVAL_S)
         except (WebSocketDisconnect, RuntimeError, OSError):
             # 브라우저가 닫혔다. 정리는 Starlette가 한다.
