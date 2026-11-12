@@ -25,6 +25,11 @@ const FALLBACK_TEAM_COLOR = "#8b97a8";
 const CORNER_HIT_PX = 16;
 const MAP_PADDING_PX = 28;
 
+// 리프트 앤 코스트 추천 구간(SCRUM-71)은 청록 점선 고리로 최소 강조한다.
+// 추천은 서버(`/api/lift-coast`)가 계산하고 화면은 그리기만 한다.
+const LIFT_COAST_COLOR = "#22d3ee";
+const LIFT_COAST_REFRESH_MS = 15000;
+
 const METRIC_LABELS = {
   brake_start_m: "브레이크 지점",
   brake_peak: "최대 브레이크",
@@ -62,6 +67,9 @@ export class TrackMapView {
     this.bounds = null;
     this.cornerHits = [];
     this.selectedCorner = null;
+    // 코너 번호 → 추천 구간(`/api/lift-coast`의 recommended 항목).
+    this.liftZones = new Map();
+    this.liftTimer = null;
 
     if (this.canvas) {
       this.canvas.addEventListener("click", (event) => this._onClick(event));
@@ -80,6 +88,31 @@ export class TrackMapView {
     this._renderInfo(null);
     this._updateBadge();
     this._draw();
+    this._loadLiftCoast();
+    if (this.liftTimer === null) {
+      this.liftTimer = window.setInterval(
+        () => this._loadLiftCoast(),
+        LIFT_COAST_REFRESH_MS,
+      );
+    }
+  }
+
+  /** 리프트 앤 코스트 추천 구간. 서버가 고른 구간만 지도에 강조한다. */
+  async _loadLiftCoast() {
+    try {
+      const response = await fetch("/api/lift-coast", { cache: "no-store" });
+      if (!response.ok) return;
+      const data = await response.json();
+      const zones = new Map();
+      for (const zone of data.recommended || []) {
+        zones.set(Number(zone.corner), zone);
+      }
+      this.liftZones = zones;
+      if (this.selectedCorner) this._renderInfo(this.selectedCorner);
+      this._draw();
+    } catch (error) {
+      // 서버가 아직 안 떴거나 잠깐 실패했다. 다음 주기에 다시 묻는다.
+    }
   }
 
   /** `/ws/state`·`/api/state` 응답. 차 위치와 현재 깃발을 갱신한다. */
@@ -184,6 +217,18 @@ export class TrackMapView {
         ctx.strokeStyle = "#ffffff";
         ctx.lineWidth = 1.5;
         ctx.stroke();
+      }
+
+      // 리프트 앤 코스트 추천 구간: 청록 점선 고리 하나만 더 그린다.
+      if (this.liftZones.has(corner.number)) {
+        ctx.save();
+        ctx.beginPath();
+        ctx.arc(x, y, 9.5, 0, Math.PI * 2);
+        ctx.setLineDash([2, 3]);
+        ctx.strokeStyle = LIFT_COAST_COLOR;
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+        ctx.restore();
       }
 
       // 공식 번호를 그대로 쓴다(설계 6.2). 자동 탐지 코너도 번호는 표시한다.
@@ -309,6 +354,16 @@ export class TrackMapView {
       corner.apex_m,
     )} · 탈출 ${formatMeters(corner.exit_m)}`;
     this.info.append(range);
+
+    const lift = this.liftZones.get(corner.number);
+    if (lift) {
+      const note = document.createElement("p");
+      note.className = "map-info-lift";
+      note.textContent = `리프트 앤 코스트 추천 · 목표 ${formatMeters(
+        lift.target_m,
+      )}`;
+      this.info.append(note);
+    }
 
     const metrics = (this.track && this.track.corner_metrics
       ? this.track.corner_metrics[String(corner.number)]

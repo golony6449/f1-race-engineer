@@ -35,6 +35,7 @@ from fastapi.staticfiles import StaticFiles
 
 from f1re.alerts.thresholds import color_table, severity
 from f1re.state.store import StateStore
+from f1re.web.lift_coast_api import router as lift_coast_router
 from f1re.web.map_api import TrackMap, create_map_router
 from f1re.web.radio_api import RadioService, router as radio_router
 
@@ -325,6 +326,7 @@ def create_app(
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
     app.include_router(radio_router)
     app.include_router(create_map_router(store, map_state))
+    app.include_router(lift_coast_router)
 
     @app.get("/", include_in_schema=False)
     def dashboard() -> FileResponse:
