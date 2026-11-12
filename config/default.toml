@@ -1,5 +1,5 @@
 # F1 25 한국어 레이스 엔지니어 기본 설정.
-# 뒤 작업에서 [coaching.thresholds], [thresholds] 같은 섹션이 추가된다.
+# 뒤 작업에서 [coaching.thresholds] 같은 섹션이 추가된다.
 
 [global]
 # 집중 코너: 최근 랩에서 시간을 가장 많이 잃는 코너 수 (4~5개)
@@ -44,3 +44,126 @@ intro_sound_path = "assets/radio-intro.wav"
 intro_gap_ms = 150
 # 효과음 크기 배율
 intro_gain = 0.8
+
+# ---------------------------------------------------------------------------
+# 위험 기준 단일 출처 (설계 6.6)
+#
+# 대시보드 색과 음성 경고가 이 값 하나를 함께 쓴다. 값이 danger에 닿는 순간
+# 화면이 빨간색이 되고, 그 순간이 음성 경고 조건이다. warn은 화면 노란색이며
+# 리프트 앤 코스트(SCRUM-71)가 미리 쓰는 여유 기준이기도 하다.
+#
+# 판정 방식(방향은 지표 의미라 코드에 고정):
+# - high(높을수록 위험): value >= danger → DANGER, value >= warn → WARN
+# - low(낮을수록 위험):  value <  danger → DANGER, value <  warn → WARN
+# 단위: 손상·마모 %, 온도 °C, 연료 여유 랩.
+# ---------------------------------------------------------------------------
+[thresholds]
+
+# 화면 색. 대시보드는 이 값을 그대로 쓰고 문턱값을 다시 계산하지 않는다.
+[thresholds.colors]
+ok = "#22c55e"
+warn = "#f59e0b"
+danger = "#ef4444"
+no_data = "#6b7280"
+
+# 앞날개 손상(%). 계획 작업 8이 정한 경고 25 / 위험 50을 그대로 쓴다.
+[thresholds.front_wing_damage]
+warn = 25.0
+danger = 50.0
+
+# 앞날개 좌·우를 따로 표시할 때 쓴다(설계 6.9).
+[thresholds.front_left_wing_damage]
+warn = 25.0
+danger = 50.0
+
+[thresholds.front_right_wing_damage]
+warn = 25.0
+danger = 50.0
+
+# 뒷날개·바닥·디퓨저·사이드포드: 앞날개와 같은 손상 % 척도를 쓴다.
+# 25%부터 공력 손실이 보이고 50%면 큰 손실로 본다.
+[thresholds.rear_wing_damage]
+warn = 25.0
+danger = 50.0
+
+[thresholds.floor_damage]
+warn = 25.0
+danger = 50.0
+
+[thresholds.diffuser_damage]
+warn = 25.0
+danger = 50.0
+
+[thresholds.sidepod_damage]
+warn = 25.0
+danger = 50.0
+
+# 기어박스·엔진 손상(%). 50% 이상이면 페널티·고장 위험이 커진다.
+[thresholds.gearbox_damage]
+warn = 25.0
+danger = 50.0
+
+[thresholds.engine_damage]
+warn = 25.0
+danger = 50.0
+
+# 파워유닛 부품 마모(%). 시즌 누적 값이라 90% 이상이면 교체가 필요하다.
+[thresholds.engine_mguh_wear]
+warn = 75.0
+danger = 90.0
+
+[thresholds.engine_es_wear]
+warn = 75.0
+danger = 90.0
+
+[thresholds.engine_ce_wear]
+warn = 75.0
+danger = 90.0
+
+[thresholds.engine_ice_wear]
+warn = 75.0
+danger = 90.0
+
+[thresholds.engine_mguk_wear]
+warn = 75.0
+danger = 90.0
+
+[thresholds.engine_tc_wear]
+warn = 75.0
+danger = 90.0
+
+# 타이어 마모(%). 50%부터 그립 저하가 뚜렷해지고 75%면 교체가 임박하다.
+# 리프트 앤 코스트가 마모를 줄이도록 미리 알리는 기준이 warn이다.
+[thresholds.tyre_wear]
+warn = 50.0
+danger = 75.0
+
+# 타이어 표면 온도(°C). 슬릭 작동대는 약 90~110도이고 120도 이상은
+# 블리스터·그레인 위험이 커진다.
+[thresholds.tyre_temp]
+warn = 110.0
+danger = 120.0
+
+# 타이어 내부(카커스) 온도(°C). 표면보다 늦게 오르고 130도 이상이 지속되면
+# 구조 손상 위험이 있다.
+[thresholds.tyre_inner_temp]
+warn = 115.0
+danger = 130.0
+
+# 브레이크 온도(°C). 카본 브레이크 작동대는 약 400~1000도이고 1000도를
+# 넘으면 마모·페이드 위험이 커진다.
+[thresholds.brake_temp]
+warn = 850.0
+danger = 1000.0
+
+# 엔진 온도(°C). 파워유닛 냉각수·오일 한계가 약 130도다.
+[thresholds.engine_temp]
+warn = 120.0
+danger = 130.0
+
+# 연료 여유 랩(랩). 값은 "남은 연료 랩 - 남은 레이스 랩"이다.
+# 설계 6.6대로 0 미만이면 DANGER다(정확히 0이면 아직 부족은 아니므로 WARN).
+# 0.5랩 이내로 줄면 리프트 앤 코스트로 연료를 아끼기 시작한다.
+[thresholds.fuel_laps_margin]
+warn = 0.5
+danger = 0.0
