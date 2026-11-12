@@ -339,6 +339,153 @@ body {
 }
 
 /* ------------------------------------------------------------------ */
+/* 무전 기록·세션 리포트 */
+
+.radio-log,
+.session-report {
+  grid-column: span 12;
+}
+
+@media (min-width: 1000px) {
+  .radio-log,
+  .session-report {
+    grid-column: span 6;
+  }
+}
+
+.mute-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+
+.mute-button {
+  padding: 5px 10px;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+  cursor: pointer;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+}
+
+.mute-button:hover:not(:disabled) {
+  border-color: var(--muted);
+}
+
+/* 끈 종류는 눌린 상태로, 안전 경고는 아예 누를 수 없게 보인다. */
+.mute-button[aria-pressed="true"] {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+.mute-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.radio-list {
+  max-height: 300px;
+  padding: 0;
+  margin: 0;
+  overflow-y: auto;
+  list-style: none;
+}
+
+.radio-entry {
+  padding: 8px 0;
+  border-top: 1px solid var(--line);
+}
+
+.radio-entry:first-child {
+  border-top: 0;
+}
+
+.radio-head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.radio-kind {
+  font-weight: 700;
+  color: var(--text);
+}
+
+.radio-text {
+  margin: 3px 0 0;
+  font-size: 14px;
+  line-height: 1.35;
+}
+
+.radio-evidence {
+  margin: 3px 0 0;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.report-summary {
+  margin: 0 0 10px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.report-source {
+  margin: -6px 0 10px;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.report-title {
+  margin: 12px 0 6px;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--muted);
+}
+
+.report-table {
+  width: 100%;
+  font-size: 12px;
+  border-collapse: collapse;
+}
+
+.report-table th,
+.report-table td {
+  padding: 4px 8px;
+  text-align: left;
+  border-top: 1px solid var(--line);
+}
+
+.report-table th {
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.report-list {
+  padding-left: 18px;
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.report-improved {
+  color: #52e252;
+}
+
+.report-worsened {
+  color: var(--accent);
+}
+
+.report-unknown {
+  color: var(--muted);
+}
+
+/* ------------------------------------------------------------------ */
 /* 좁은 화면: 태블릿 세로·휴대폰 */
 
 @media (max-width: 900px) {

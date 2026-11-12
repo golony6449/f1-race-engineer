@@ -32,7 +32,7 @@
 
     <!--
       차량 상태(설계 6.9-1). 값이 끊기면 마지막 값을 흐리게 유지한다.
-      무전 기록·세션 리포트는 작업 20에서 이 화면에 붙는다.
+      무전 기록·종류별 끄기·세션 리포트는 작업 20(report.js)이 그린다.
     -->
     <main id="dashboard" class="stale">
       <section class="panel tyres">
@@ -83,8 +83,32 @@
           <p class="waiting">데이터를 기다리는 중…</p>
         </div>
       </section>
+
+      <!--
+        무전 기록(설계 6.9-3). 최근 무전 문장·근거 수치와 종류별 끄기 버튼.
+        안전 경고는 끌 수 없고, 나머지 종류는 report.js가 POST로 끈다.
+      -->
+      <section class="panel radio-log">
+        <h2>무전 기록</h2>
+        <div class="mute-buttons" id="radio-mutes"></div>
+        <ol class="radio-list" id="radio-log">
+          <li class="waiting">무전을 기다리는 중…</li>
+        </ol>
+      </section>
+
+      <!--
+        세션 뒤 코너 리포트(설계 6.9-4). 코너별 손실 순위, 집중 코너 변화,
+        무전이 나간 코너와 그 뒤 개선 여부를 서버가 계산해 내려 준다.
+      -->
+      <section class="panel session-report">
+        <h2>세션 리포트</h2>
+        <div id="session-report">
+          <p class="waiting">세션 데이터를 기다리는 중…</p>
+        </div>
+      </section>
     </main>
 
     <script type="module" src="/static/dashboard.js"></script>
+    <script type="module" src="/static/report.js"></script>
   </body>
 </html>
