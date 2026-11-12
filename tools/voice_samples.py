@@ -55,7 +55,19 @@ class SampleResult:
     stream_total_ms: float | None = None
     raw_file: str | None = None
     radio_file: str | None = None
-    error: str | None = None
+    synth_error: str | None = None
+    stream_error: str | None = None
+
+    @property
+    def status(self) -> str:
+        """합성과 스트림 결과를 따로 적는다. 둘은 서로 독립으로 측정한다."""
+        if self.synth_error is None and self.stream_error is None:
+            return "정상"
+        synth = f"합성 오류: {self.synth_error}" if self.synth_error else "합성 정상"
+        stream = (
+            f"스트림 오류: {self.stream_error}" if self.stream_error else "스트림 정상"
+        )
+        return f"{synth} / {stream}"
 
 
 def _slug(name: str) -> str:
@@ -98,22 +110,31 @@ async def generate_samples(
                 index=index,
                 text=text,
                 chars=len(text),
-                raw_file=str(raw_path.relative_to(output)),
-                radio_file=str(radio_path.relative_to(output)),
             )
+            # 합성과 스트림은 서로 독립으로 시도하고 오류도 따로 기록한다.
             try:
                 started = time.perf_counter()
                 wav = await tts.synthesize(text, voice)
                 result.synth_ms = (time.perf_counter() - started) * 1000.0
                 raw_path.write_bytes(wav)
                 radio_path.write_bytes(apply_radio_fx_wav(wav))
+                result.raw_file = str(raw_path.relative_to(output))
+                result.radio_file = str(radio_path.relative_to(output))
+            except (TTSError, ValueError, OSError) as exc:
+                result.synth_error = _describe(exc)
+
+            try:
                 first_ms, total_ms = await _measure_stream(tts, text, voice)
                 result.stream_first_ms = first_ms
                 result.stream_total_ms = total_ms
             except (TTSError, ValueError, OSError) as exc:
-                result.error = str(exc).strip() or type(exc).__name__
+                result.stream_error = _describe(exc)
             results.append(result)
     return results
+
+
+def _describe(exc: BaseException) -> str:
+    return str(exc).strip() or type(exc).__name__
 
 
 def _format_ms(value: float | None) -> str:
@@ -127,7 +148,7 @@ def render_table(results: Sequence[SampleResult]) -> str:
         "| --- | ---: | ---: | ---: | ---: | ---: | --- |",
     ]
     for result in results:
-        status = "오류: " + result.error if result.error else "ok"
+        status = result.status
         lines.append(
             "| "
             + " | ".join(
@@ -218,9 +239,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     print(render_table(results))
     report = write_latency_report(results, args.out, model=app_config.tts.model)
     print(f"\n저장: {Path(args.out)} (지연 표: {report})")
-    errors = sum(1 for result in results if result.error)
-    if errors:
-        print(f"오류 {errors}건. 위 표의 상태를 확인하세요.")
+    synth_errors = sum(1 for result in results if result.synth_error)
+    stream_errors = sum(1 for result in results if result.stream_error)
+    if synth_errors or stream_errors:
+        print(
+            f"합성 오류 {synth_errors}건, 스트림 오류 {stream_errors}건. "
+            "위 표의 상태를 확인하세요."
+        )
         return 1
     return 0
 

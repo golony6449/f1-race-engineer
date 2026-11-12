@@ -27,6 +27,9 @@
 - `input.text` 최대 600자. `input.language_type`은 선택이며 기본 `Auto`, `Korean`을 지원한다.
 - 응답: `output.audio.url`(WAV, 24시간 유효), `output.audio.expires_at`, `usage.characters`.
   비실시간 응답의 `output.audio.data`는 비어 있다.
+  - **PL 실측(2026-11-12): 실제 `output.audio.url`은 `http://...` Alibaba OSS 서명
+    주소로 온다.** 클라이언트는 같은 주소의 `https://`를 먼저 시도하고, 실패하면
+    원래 `http://`로 받는다. 두 경우 모두 `Authorization` 헤더는 보내지 않는다.
 - 오류 응답: `status_code`, `request_id`, `code`, `message` (HTTP 400/401/404/500 등).
 
 ### SSE 스트리밍
@@ -103,6 +106,9 @@
 - API 오류 메시지 원문은 예외에 넣지 않고 `code`·`request_id`만 남긴다.
 - 오디오 다운로드 URL은 서명된 다른 호스트이므로 `Authorization` 헤더를 붙이지
   않는다.
+- PL 실측(2026-11-12): 5개 보이스 × 5문장 25건이 모두 `http://` URL 때문에
+  실패했다(기존 클라이언트가 https만 허용). http/https를 모두 받고 https를 먼저
+  시도한 뒤 http로 폴백하도록 고쳤다. 재실행은 PL이 한다.
 
 ## 출처
 

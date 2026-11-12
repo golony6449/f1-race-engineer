@@ -22,6 +22,12 @@ from f1re.tts.qwen import (
 
 FAKE_KEY = "test-key-not-real"
 AUDIO_URL = "https://files.example/audio.wav"
+# PL 실측(2026-11-12): 실제 응답의 audio.url은 http:// OSS 서명 주소로 온다.
+HTTP_AUDIO_URL = (
+    "http://dashscope-result-bj.oss-cn-beijing.aliyuncs.com"
+    "/tts/sample.wav?Expires=1766113409&Signature=fake-signature"
+)
+HTTPS_AUDIO_URL = HTTP_AUDIO_URL.replace("http://", "https://", 1)
 ENDPOINT = (
     "https://dashscope-intl.aliyuncs.com"
     "/api/v1/services/aigc/multimodal-generation/generation"
@@ -195,6 +201,91 @@ async def test_empty_download_is_tts_unavailable() -> None:
 
     tts = _tts(handler)
     with pytest.raises(TTSUnavailable, match="비어"):
+        await tts.synthesize("테스트")
+
+
+async def test_http_audio_url_is_downloaded_over_https_first(make_wav: Any) -> None:
+    audio = make_wav()
+    downloads: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST":
+            return httpx.Response(
+                200,
+                json={"output": {"audio": {"data": "", "url": HTTP_AUDIO_URL}}},
+            )
+        downloads.append(request)
+        return httpx.Response(200, content=audio)
+
+    tts = _tts(handler)
+    result = await tts.synthesize("박스, 박스.")
+
+    assert result == audio
+    assert [str(request.url) for request in downloads] == [HTTPS_AUDIO_URL]
+    assert "authorization" not in downloads[0].headers
+
+
+async def test_http_audio_url_falls_back_to_http(make_wav: Any) -> None:
+    audio = make_wav()
+    downloads: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST":
+            return httpx.Response(
+                200,
+                json={"output": {"audio": {"data": "", "url": HTTP_AUDIO_URL}}},
+            )
+        downloads.append(request)
+        if str(request.url) == HTTPS_AUDIO_URL:
+            return httpx.Response(403, json={"code": "AccessDenied"})
+        return httpx.Response(200, content=audio)
+
+    tts = _tts(handler)
+    result = await tts.synthesize("박스, 박스.")
+
+    assert result == audio
+    assert [str(request.url) for request in downloads] == [
+        HTTPS_AUDIO_URL,
+        HTTP_AUDIO_URL,
+    ]
+    assert all("authorization" not in request.headers for request in downloads)
+
+
+async def test_http_audio_url_falls_back_on_https_network_error(make_wav: Any) -> None:
+    audio = make_wav()
+    downloads: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST":
+            return httpx.Response(
+                200,
+                json={"output": {"audio": {"data": "", "url": HTTP_AUDIO_URL}}},
+            )
+        downloads.append(request)
+        if str(request.url) == HTTPS_AUDIO_URL:
+            raise httpx.ConnectError("SSL handshake failed", request=request)
+        return httpx.Response(200, content=audio)
+
+    tts = _tts(handler)
+    result = await tts.synthesize("박스, 박스.")
+
+    assert result == audio
+    assert [str(request.url) for request in downloads] == [
+        HTTPS_AUDIO_URL,
+        HTTP_AUDIO_URL,
+    ]
+    assert all("authorization" not in request.headers for request in downloads)
+
+
+async def test_audio_url_with_unsupported_scheme_is_rejected() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={"output": {"audio": {"data": "", "url": "file:///tmp/a.wav"}}},
+        )
+
+    tts = _tts(handler)
+    with pytest.raises(TTSUnavailable, match="http/https"):
         await tts.synthesize("테스트")
 
 

@@ -18,6 +18,7 @@ import binascii
 import json
 from collections.abc import AsyncIterator, Callable
 from typing import Any
+from urllib.parse import urlsplit, urlunsplit
 
 import httpx
 
@@ -122,10 +123,7 @@ class QwenTTS:
                 self._raise_http_error(response, "합성")
                 payload = self._response_json(response, "합성")
                 audio_url = self._audio_url(payload)
-                # 서명된 오디오 URL은 다른 호스트다. Authorization을 붙이지 않는다.
-                audio_response = await self._client.get(audio_url)
-                self._raise_http_error(audio_response, "오디오 다운로드")
-                audio = audio_response.content
+                audio = await self._download_audio(audio_url)
         except TimeoutError as exc:
             raise TTSUnavailable(self._timeout_message()) from exc
         except httpx.TimeoutException as exc:
@@ -257,9 +255,30 @@ class QwenTTS:
         url = audio.get("url") if isinstance(audio, dict) else None
         if not isinstance(url, str) or not url:
             raise TTSUnavailable("Qwen TTS 응답에 audio.url이 없습니다")
-        if not url.startswith("https://"):
-            raise TTSUnavailable("Qwen TTS 오디오 URL이 https가 아닙니다")
+        parts = urlsplit(url)
+        if parts.scheme not in ("http", "https") or not parts.netloc:
+            raise TTSUnavailable("Qwen TTS 오디오 URL이 http/https가 아닙니다")
         return url
+
+    async def _download_audio(self, url: str) -> bytes:
+        """서명된 오디오 URL에서 WAV를 받는다. Authorization은 보내지 않는다.
+
+        실제 응답의 URL은 `http://` OSS 서명 주소로 온다. 같은 주소의 https를
+        먼저 시도하고(OSS는 보통 https도 된다), 실패하면 원래 http URL로 받는다.
+        """
+        parts = urlsplit(url)
+        if parts.scheme == "http":
+            https_url = urlunsplit(parts._replace(scheme="https"))
+            try:
+                upgraded = await self._client.get(https_url)
+                if upgraded.is_success and upgraded.content.startswith(b"RIFF"):
+                    return upgraded.content
+            except httpx.HTTPError:
+                # https가 안 되면 원래 http로 넘어간다.
+                pass
+        response = await self._client.get(url)
+        self._raise_http_error(response, "오디오 다운로드")
+        return response.content
 
     def _api_error_message(self, code: Any, request_id: Any) -> str:
         # API의 message는 넣지 않는다. 코드와 요청 ID만 남긴다.
