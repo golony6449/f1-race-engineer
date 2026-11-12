@@ -210,7 +210,7 @@ async def _run_live(
     duration_s: float | None,
     web: tuple[str, int] | None,
 ) -> None:
-    web_server = _start_web_server(store, web)
+    web_server = _start_web_server(store, conn, web)
     transport: asyncio.DatagramTransport | None = None
     try:
         transport, _protocol = await start_receiver(
@@ -239,7 +239,7 @@ async def _run_live(
 
 
 def _start_web_server(
-    store: StateStore, web: tuple[str, int] | None
+    store: StateStore, conn: Any, web: tuple[str, int] | None
 ) -> tuple[Any, asyncio.Task[None]] | None:
     """같은 이벤트 루프에 uvicorn 대시보드를 띄운다. `web`이 없으면 아무것도 안 한다."""
     if web is None:
@@ -251,7 +251,7 @@ def _start_web_server(
 
     host, port = web
     config = uvicorn.Config(
-        create_app(store),
+        create_app(store, conn=conn),
         host=host,
         port=port,
         log_level="warning",

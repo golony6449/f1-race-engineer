@@ -43,12 +43,13 @@ def test_migration_adds_radio_messages_without_touching_sessions(
 ) -> None:
     conn = _open(tmp_path)
     try:
-        assert db.schema_version(conn) == db.SCHEMA_VERSION == 2
+        assert db.schema_version(conn) == db.SCHEMA_VERSION
+        assert db.SCHEMA_VERSION >= 2
         versions = [
             row["version"]
             for row in conn.execute("SELECT version FROM schema_version ORDER BY version")
         ]
-        assert versions == [1, 2]
+        assert versions == list(range(1, db.SCHEMA_VERSION + 1))
 
         tables = {
             row["name"]
