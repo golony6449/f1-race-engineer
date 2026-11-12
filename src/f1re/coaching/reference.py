@@ -13,22 +13,27 @@
   다른 차에서 `None`이므로 자연히 내 최고 랩과만 비교된다.
 
 조건(모드·날씨·차)별 SQLite 저장과 조건이 다를 때 시간 차이를 말하지 않는 규칙은
-계획 작업 19에서 이 모듈 위에 얹는다. 이 작업은 세션 안의 기준 선택만 한다.
+`coaching.store.ReferenceStore`가 이 모듈의 직렬화 함수(`reference_to_dict`·
+`reference_from_dict`)를 써서 담당한다(작업 19).
 """
 
 from __future__ import annotations
 
 import math
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
+from typing import Any
 
 from f1re.coaching.metrics import corner_duration_ms
-from f1re.laps.traces import LapTrace
+from f1re.laps.traces import LapTrace, Sample
 from f1re.tracks.model import Corner
 from f1re.tracks.outline import TrackOutline
 
 # `ReferenceSet.best_for`가 돌려주는 기준 출처.
 SOURCE_SELF = "self"
 SOURCE_FASTEST_CAR = "fastest_car"
+
+# 기준 랩 저장(SQLite) 직렬화 형식 버전(작업 19).
+REFERENCE_PAYLOAD_VERSION = 1
 
 
 class ReferenceSet:
@@ -149,10 +154,177 @@ def trace_outline(trace: LapTrace) -> TrackOutline | None:
     return TrackOutline(points)
 
 
+# ---------------------------------------------------------------------------
+# 저장용 직렬화(작업 19, SCRUM-69)
+#
+# SCRUM-67이 이 모듈의 `ReferenceSet`을 동시에 고치므로 클래스에는 손대지 않고
+# 모듈 수준 함수만 더한다. 함수는 같은 모듈의 클래스 내부 필드를 직접 읽는다.
+
+
+def reference_to_dict(reference: ReferenceSet) -> dict[str, Any]:
+    """`ReferenceSet`을 JSON 직렬화 가능한 dict로 만든다(작업 19).
+
+    저장하는 랩은 기준 후보 두 개뿐이다: 내 최고 유효 랩과 세션 최속차의 최고
+    랩. 세션의 모든 유효 랩을 쌓아 두면 저장 크기만 커지고, 다시 불러온 뒤의
+    `best_for` 결과는 두 랩으로도 같다.
+
+    코너 목록과 내 차 인덱스도 함께 넣는다. 데이터 파일이 없는 서킷(자동 탐지
+    코너)은 서킷 ID만으로 코너를 되살릴 수 없기 때문이다.
+    """
+    laps: list[dict[str, Any]] = []
+    for source in (SOURCE_SELF, SOURCE_FASTEST_CAR):
+        trace = reference.best_lap(source)
+        if trace is not None:
+            laps.append(_trace_to_dict(trace))
+    return {
+        "version": REFERENCE_PAYLOAD_VERSION,
+        "player_car_index": int(reference._player_car_index),
+        "corners": [_corner_to_dict(corner) for corner in reference._corners.values()],
+        "laps": laps,
+    }
+
+
+def reference_from_dict(data: Mapping[str, Any]) -> ReferenceSet:
+    """`reference_to_dict`의 결과로 `ReferenceSet`을 되살린다(작업 19).
+
+    형식이 다르거나 값이 잘못됐으면 `ValueError`를 올린다. DB에 손상된 행이
+    있어도 서버가 멈추지 않도록 저장소(`coaching.store`)가 이 예외를 잡는다.
+    """
+    version = data.get("version")
+    if version != REFERENCE_PAYLOAD_VERSION:
+        raise ValueError(f"지원하지 않는 기준 랩 저장 형식입니다: {version!r}")
+    try:
+        raw_corners = data["corners"]
+        raw_laps = data["laps"]
+        if not isinstance(raw_corners, list) or not isinstance(raw_laps, list):
+            raise ValueError("corners·laps는 목록이어야 합니다")
+        corners = [_corner_from_dict(item) for item in raw_corners]
+        reference = ReferenceSet(
+            corners,
+            player_car_index=_as_int(data.get("player_car_index", 0)),
+        )
+        for item in raw_laps:
+            if not isinstance(item, dict):
+                raise ValueError("lap 항목이 dict가 아닙니다")
+            reference.update(_trace_from_dict(item))
+        return reference
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError("기준 랩 저장 내용이 잘못됐습니다") from exc
+
+
+def _corner_to_dict(corner: Corner) -> dict[str, Any]:
+    return {
+        "number": int(corner.number),
+        "official": bool(corner.official),
+        "entry_m": float(corner.entry_m),
+        "apex_m": float(corner.apex_m),
+        "exit_m": float(corner.exit_m),
+    }
+
+
+def _corner_from_dict(data: Mapping[str, Any]) -> Corner:
+    return Corner(
+        number=_as_int(data["number"]),
+        official=bool(data["official"]),
+        entry_m=_as_float(data["entry_m"]),
+        apex_m=_as_float(data["apex_m"]),
+        exit_m=_as_float(data["exit_m"]),
+    )
+
+
+def _trace_to_dict(trace: LapTrace) -> dict[str, Any]:
+    return {
+        "car_index": int(trace.car_index),
+        "lap": int(trace.lap),
+        "valid": bool(trace.valid),
+        "invalid_reason": trace.invalid_reason,
+        "samples": [_sample_to_dict(sample) for sample in trace.samples],
+    }
+
+
+def _trace_from_dict(data: Mapping[str, Any]) -> LapTrace:
+    raw_samples = data["samples"]
+    if not isinstance(raw_samples, list):
+        raise ValueError("samples는 목록이어야 합니다")
+    return LapTrace(
+        car_index=_as_int(data["car_index"]),
+        lap=_as_int(data["lap"]),
+        valid=bool(data["valid"]),
+        invalid_reason=data.get("invalid_reason"),
+        samples=[_sample_from_dict(sample) for sample in raw_samples],
+    )
+
+
+def _sample_to_dict(sample: Sample) -> dict[str, Any]:
+    """샘플 하나를 dict로 만든다. 소수 자리는 비교에 영향 없는 만큼만 남긴다."""
+    data: dict[str, Any] = {
+        "dist_m": round(float(sample.dist_m), 2),
+        "t_ms": int(sample.t_ms),
+        "speed": round(float(sample.speed), 2),
+        "throttle": round(float(sample.throttle), 4),
+        "brake": round(float(sample.brake), 4),
+        "steer": round(float(sample.steer), 4),
+        "gear": int(sample.gear),
+        "x": round(float(sample.x), 3),
+        "z": round(float(sample.z), 3),
+    }
+    if sample.wheel_slip is not None:
+        data["wheel_slip"] = [round(float(value), 4) for value in sample.wheel_slip]
+    if sample.fuel_kg is not None:
+        data["fuel_kg"] = round(float(sample.fuel_kg), 3)
+    return data
+
+
+def _sample_from_dict(data: Mapping[str, Any]) -> Sample:
+    return Sample(
+        dist_m=_as_float(data["dist_m"]),
+        t_ms=_as_int(data["t_ms"]),
+        speed=_as_float(data["speed"]),
+        throttle=_as_float(data["throttle"]),
+        brake=_as_float(data["brake"]),
+        steer=_as_float(data["steer"]),
+        gear=_as_int(data["gear"]),
+        x=_as_float(data["x"]),
+        z=_as_float(data["z"]),
+        wheel_slip=_as_wheel_slip(data.get("wheel_slip")),
+        fuel_kg=_as_optional_float(data.get("fuel_kg")),
+    )
+
+
+def _as_int(value: Any) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError(f"정수가 아닙니다: {value!r}")
+    return int(value)
+
+
+def _as_float(value: Any) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"숫자가 아닙니다: {value!r}")
+    number = float(value)
+    if not math.isfinite(number):
+        raise ValueError(f"유한한 숫자가 아닙니다: {value!r}")
+    return number
+
+
+def _as_optional_float(value: Any) -> float | None:
+    return None if value is None else _as_float(value)
+
+
+def _as_wheel_slip(value: Any) -> tuple[float, ...] | None:
+    if value is None:
+        return None
+    if not isinstance(value, (list, tuple)):
+        raise ValueError(f"휠 슬립이 목록이 아닙니다: {value!r}")
+    return tuple(_as_float(item) for item in value)
+
+
 __all__ = [
+    "REFERENCE_PAYLOAD_VERSION",
     "SOURCE_FASTEST_CAR",
     "SOURCE_SELF",
     "ReferenceSet",
     "corner_time_loss_ms",
+    "reference_from_dict",
+    "reference_to_dict",
     "trace_outline",
 ]
