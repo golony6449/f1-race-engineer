@@ -1,0 +1,32 @@
+# 코너 코칭 시험용 시나리오. 스즈카(18코너)·모나코(19코너) 모두에 있는 코너만 쓴다.
+- lap: 1
+  corner: 3
+  kind: late_brake
+  params:
+    meters: 12
+- lap: 1
+  corner: 5
+  kind: early_brake
+  params:
+    meters: 10
+- lap: 2
+  corner: 7
+  kind: early_turn_in
+  params:
+    meters: 6
+- lap: 2
+  corner: 9
+  kind: late_throttle
+  params:
+    meters: 35
+- lap: 3
+  corner: 3
+  kind: steer_corrections
+  params:
+    count: 3
+    amplitude: 0.18
+- lap: 3
+  corner: 5
+  kind: off_track
+  params:
+    width_m: 7.5

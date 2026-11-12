@@ -200,12 +200,47 @@ def test_full_session_emits_lap_and_session_end_events() -> None:
     assert history[-1]["lap_history_data"][0]["lap_time_in_ms"] == sender.lap_results[0].time_ms
 
 
-def test_main_rejects_unimplemented_modes(capsys: pytest.CaptureFixture[str]) -> None:
-    assert main(["--mode", "gp"]) == 2
-    assert "작업 5" in capsys.readouterr().err
+def test_main_accepts_gp_and_scenario_options(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: object,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """그랑프리 모드와 시나리오 파일 인자가 송신기까지 전달되는지 본다."""
+    from pathlib import Path
 
-    assert main(["--scenario", "scenario.yaml"]) == 2
-    assert "작업 5" in capsys.readouterr().err
+    from f1re.demo_sender import sender as sender_module
+
+    scenario = Path(str(tmp_path)) / "scenario.yaml"
+    scenario.write_text("- lap: 1\n  kind: fuel_short\n", encoding="utf-8")
+    captured: dict[str, object] = {}
+
+    class _Stub:
+        lap_times_ms = [90_000]
+        lap_results: list[object] = []
+
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            captured.update(kwargs)
+
+        def summary_line(self) -> str:
+            return "stub"
+
+        def run(self) -> None:
+            captured["ran"] = True
+
+    monkeypatch.setattr(sender_module, "DemoSender", _Stub)
+    assert main(["--mode", "gp", "--laps", "3", "--scenario", str(scenario)]) == 0
+    assert captured["mode"] == "gp"
+    assert captured["laps"] == 3
+    events = captured["scenarios"]
+    assert isinstance(events, list)
+    assert [event.kind for event in events] == ["fuel_short"]
+    assert captured["ran"] is True
+    assert "시나리오" in capsys.readouterr().out
+
+
+def test_main_rejects_unreadable_scenario(capsys: pytest.CaptureFixture[str]) -> None:
+    assert main(["--scenario", "no-such-scenario.yaml"]) == 2
+    assert "시나리오" in capsys.readouterr().err
 
 
 def test_sender_validates_arguments() -> None:

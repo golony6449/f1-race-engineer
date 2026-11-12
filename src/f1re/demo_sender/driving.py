@@ -123,6 +123,37 @@ class DriverProfile:
 
 
 @dataclass(frozen=True)
+class CornerEffect:
+    """시나리오가 한 랩의 코너 하나에 주입하는 주행 변화.
+
+    `brake_shift_m`은 브레이크 지점(최저 속도 지점)을 미는 거리다(양수=늦게).
+    `throttle_delay_m`는 apex 뒤로 스로틀을 늦게 밟는 거리, `wide_m`은 라인
+    바깥으로 밀리는 폭, `steer_corrections`는 코너 안 조향 수정 횟수,
+    `turn_in_early_m`은 코너 진입 전에 미리 꺾는 거리다.
+    """
+
+    brake_shift_m: float = 0.0
+    throttle_delay_m: float = 0.0
+    wide_m: float = 0.0
+    steer_corrections: int = 0
+    steer_amplitude: float = 0.0
+    turn_in_early_m: float = 0.0
+    off_track: bool = False
+
+    def merged(self, other: "CornerEffect") -> "CornerEffect":
+        """같은 코너에 걸린 시나리오 두 개를 하나로 합친다."""
+        return CornerEffect(
+            brake_shift_m=self.brake_shift_m + other.brake_shift_m,
+            throttle_delay_m=max(self.throttle_delay_m, other.throttle_delay_m),
+            wide_m=max(self.wide_m, other.wide_m),
+            steer_corrections=self.steer_corrections + other.steer_corrections,
+            steer_amplitude=max(self.steer_amplitude, other.steer_amplitude),
+            turn_in_early_m=max(self.turn_in_early_m, other.turn_in_early_m),
+            off_track=self.off_track or other.off_track,
+        )
+
+
+@dataclass(frozen=True)
 class Sample:
     """한 순간의 차 상태. 거리 단위는 m, 속도는 km/h다."""
 
@@ -139,10 +170,11 @@ class Sample:
     yaw: float  # 라디안, atan2(dz, dx)
     lateral_g: float
     longitudinal_g: float
+    line_offset_m: float = 0.0  # 중심선에서 오른쪽이 양수인 이탈 폭
 
 
 @dataclass(frozen=True)
-class _SpeedProfile:
+class SpeedProfile:
     """중심선 점마다의 속도·시각. `dist_m`은 랩 거리, 시각은 랩 시작 기준."""
 
     dists: tuple[float, ...]
@@ -225,7 +257,8 @@ def _build_profile(
     outline: TrackOutline,
     driver: DriverProfile,
     rng: random.Random,
-) -> _SpeedProfile:
+    corner_effects: dict[int, CornerEffect] | None = None,
+) -> SpeedProfile:
     """코너 목표 속도와 가속·제동 한계로 한 랩의 속도 곡선을 만든다."""
     points = outline.points
     point_count = len(points)
@@ -235,15 +268,22 @@ def _build_profile(
 
     limits = [top_speed_mps] * point_count
     for corner in track.corners:
+        effects = corner_effects.get(corner.number) if corner_effects else None
         target_kmh = _corner_target_kmh(track.track_id, corner, curvatures, dists)
         jitter = 1.0 + (1.0 - driver.consistency) * rng.uniform(-0.03, 0.03)
         target_mps = (target_kmh / 3.6) * driver.pace * jitter
 
         # 늦은 브레이크는 최저 속도 지점을 코너 뒤쪽으로 민다(구간 안으로 자른다).
-        span = corner.exit_m - corner.entry_m
-        margin = max(1.0, min(span * 0.1, 10.0))
-        apex = min(max(corner.apex_m + driver.brake_bias_m, corner.entry_m + margin), corner.exit_m - margin)
+        shift = driver.brake_bias_m + (effects.brake_shift_m if effects else 0.0)
+        apex = _effective_apex(corner, shift)
         half_span = max(apex - corner.entry_m, corner.exit_m - apex, 1.0)
+
+        # 늦게 브레이크를 밟으면 코너 진입 속도가 높아져 제동 시작이 뒤로 밀린다.
+        # 진입 쪽 상한만 올리고 apex의 최저 속도는 그대로 둔다.
+        entry_boost = 1.0
+        if effects is not None and effects.brake_shift_m:
+            # 계수는 "10m 늦은 브레이크 → 제동 시작 약 10~12m 뒤"가 되게 맞춘 값이다.
+            entry_boost = 1.0 + max(-0.20, min(0.35, effects.brake_shift_m * 0.018))
 
         for index in range(point_count):
             distance = dists[index]
@@ -251,6 +291,8 @@ def _build_profile(
                 continue
             fraction = abs(distance - apex) / half_span
             ceiling = target_mps * (1.0 + (CORNER_EDGE_SPEED_FACTOR - 1.0) * fraction)
+            if distance < apex:
+                ceiling *= 1.0 + (entry_boost - 1.0) * fraction
             if ceiling < limits[index]:
                 limits[index] = ceiling
 
@@ -278,7 +320,7 @@ def _build_profile(
     closing_average = max((speeds[-1] + speeds[0]) / 2.0, 1.0)
     lap_time = times[-1] + segment_lengths[-1] / closing_average
 
-    return _SpeedProfile(
+    return SpeedProfile(
         dists=dists,
         curvatures=tuple(curvatures),
         speeds=tuple(speeds),
@@ -288,7 +330,7 @@ def _build_profile(
     )
 
 
-def _profile_state(profile: _SpeedProfile, time_s: float) -> tuple[float, float, float, float]:
+def _profile_state(profile: SpeedProfile, time_s: float) -> tuple[float, float, float, float]:
     """랩 시각 `time_s`의 (랩 거리, 속도 m/s, 곡률, 속도 변화율 m/s²)."""
     times = profile.times
     count = len(times)
@@ -328,7 +370,7 @@ def _profile_state(profile: _SpeedProfile, time_s: float) -> tuple[float, float,
     return distance, max(speed, 1.0), curvature, acceleration
 
 
-def _profile_state_speed(profile: _SpeedProfile, time_s: float) -> float:
+def _profile_state_speed(profile: SpeedProfile, time_s: float) -> float:
     if time_s >= profile.lap_time_s:
         return profile.speeds[0]
     times = profile.times
@@ -345,7 +387,7 @@ def _profile_state_speed(profile: _SpeedProfile, time_s: float) -> float:
     return profile.speeds[position] + fraction * (profile.speeds[position + 1] - profile.speeds[position])
 
 
-def _gear_and_rpm(speed_kmh: float) -> tuple[int, int]:
+def gear_and_rpm(speed_kmh: float) -> tuple[int, int]:
     """속도로 기어와 엔진 회전수를 만든다."""
     if speed_kmh <= 1.0:
         return 1, IDLE_RPM
@@ -361,7 +403,7 @@ def _gear_and_rpm(speed_kmh: float) -> tuple[int, int]:
     return gear, min(MAX_RPM, max(IDLE_RPM, rpm))
 
 
-def _pedals(acceleration_mps2: float) -> tuple[float, float]:
+def pedals_for_acceleration(acceleration_mps2: float) -> tuple[float, float]:
     """속도 변화율로 스로틀·브레이크 입력을 만든다."""
     if acceleration_mps2 < -0.8:
         brake = min(1.0, -acceleration_mps2 / 30.0)
@@ -372,6 +414,86 @@ def _pedals(acceleration_mps2: float) -> tuple[float, float]:
     return 0.35, 0.0
 
 
+def build_speed_profile(
+    track: Track,
+    outline: TrackOutline,
+    driver: DriverProfile,
+    rng: random.Random,
+    corner_effects: dict[int, CornerEffect] | None = None,
+) -> SpeedProfile:
+    """한 랩의 속도 곡선을 만든다. 레이스 필드의 AI 차 주행에도 쓴다."""
+    return _build_profile(track, outline, driver, rng, corner_effects)
+
+
+def profile_state(profile: SpeedProfile, time_s: float) -> tuple[float, float, float, float]:
+    """랩 시각 `time_s`의 (랩 거리, 속도 m/s, 곡률, 속도 변화율 m/s²)."""
+    return _profile_state(profile, time_s)
+
+
+def _effective_apex(corner: Corner, shift_m: float) -> float:
+    """브레이크 지점 이동을 반영한 코너 최저 속도 지점(코너 안으로 자른다)."""
+    span = corner.exit_m - corner.entry_m
+    margin = max(1.0, min(span * 0.1, 10.0))
+    return min(max(corner.apex_m + shift_m, corner.entry_m + margin), corner.exit_m - margin)
+
+
+def _turn_sign(outline: TrackOutline, corner: Corner) -> float:
+    """코너 진행 방향. +1=왼쪽(곡률 양수), -1=오른쪽. 라인 바깥 방향의 부호다."""
+    turn = outline.heading_at(corner.exit_m) - outline.heading_at(corner.entry_m)
+    while turn > math.pi:
+        turn -= 2.0 * math.pi
+    while turn < -math.pi:
+        turn += 2.0 * math.pi
+    if abs(turn) < 1e-6:
+        return 1.0
+    return 1.0 if turn > 0.0 else -1.0
+
+
+def _scenario_windows(
+    track: Track,
+    outline: TrackOutline,
+    driver: DriverProfile,
+    corner_effects: dict[int, CornerEffect],
+) -> tuple[
+    list[tuple[float, float, float]],
+    list[tuple[float, float, int, float]],
+    list[tuple[float, float]],
+    list[tuple[float, float, float, float]],
+]:
+    """시나리오 효과를 샘플 생성용 구간 목록으로 바꾼다.
+
+    (라인 이탈, 조향 수정, 스로틀 지연, 이른 턴인) 구간을 돌려준다. 이른
+    턴인 구간은 (시작 거리, entry, apex, 조향 크기)이고 시작 거리에서 entry까지
+    조향을 더하다가 apex까지 서서히 기본 조향으로 돌아간다.
+    """
+    wide: list[tuple[float, float, float]] = []
+    steer: list[tuple[float, float, int, float]] = []
+    throttle: list[tuple[float, float]] = []
+    turn_in: list[tuple[float, float, float, float]] = []
+    for corner in track.corners:
+        effect = corner_effects.get(corner.number)
+        if effect is None:
+            continue
+        turn_sign = _turn_sign(outline, corner)
+        if effect.wide_m:
+            # 바깥쪽은 코너가 도는 쪽(회전 중심)의 반대쪽이다. 라인 오프셋의
+            # 양수는 진행 방향의 오른쪽이므로 왼쪽 코너(양수 회전)면 양수다.
+            wide.append((corner.entry_m, corner.exit_m, turn_sign * effect.wide_m))
+        if effect.steer_corrections:
+            steer.append(
+                (corner.entry_m, corner.exit_m, effect.steer_corrections, effect.steer_amplitude)
+            )
+        if effect.throttle_delay_m:
+            apex = _effective_apex(corner, driver.brake_bias_m + effect.brake_shift_m)
+            end = min(track.length_m, apex + effect.throttle_delay_m)
+            throttle.append((apex, end))
+        if effect.turn_in_early_m:
+            start = max(0.0, corner.entry_m - effect.turn_in_early_m)
+            # 코너가 도는 방향으로 미리 꺾는다(기본 조향과 같은 부호).
+            turn_in.append((start, corner.entry_m, corner.apex_m, -turn_sign * 0.35))
+    return wide, steer, throttle, turn_in
+
+
 def generate_lap(
     track: Track,
     outline: TrackOutline,
@@ -380,14 +502,19 @@ def generate_lap(
     rng: random.Random,
     *,
     rate_hz: float = DEFAULT_RATE_HZ,
+    corner_effects: dict[int, CornerEffect] | None = None,
 ) -> list[Sample]:
     """한 랩의 주행 샘플을 만든다. `t_ms`는 랩 시작 기준이다.
 
+    `corner_effects`는 그 랩에만 적용하는 시나리오 주입이다(코너 번호 → 효과).
     같은 `rng` 상태(같은 시드)에서는 항상 같은 결과가 나온다.
     """
     if rate_hz <= 0:
         raise ValueError("rate_hz는 0보다 커야 합니다")
-    profile = _build_profile(track, outline, driver, rng)
+    profile = _build_profile(track, outline, driver, rng, corner_effects)
+    wide_windows, steer_windows, throttle_windows, turn_in_windows = _scenario_windows(
+        track, outline, driver, corner_effects or {}
+    )
     sample_count = max(1, int(math.ceil(profile.lap_time_s * rate_hz)))
     samples: list[Sample] = []
 
@@ -395,13 +522,40 @@ def generate_lap(
         time_s = index / rate_hz
         distance, speed_mps, curvature, acceleration = _profile_state(profile, time_s)
         speed_kmh = speed_mps * 3.6
-        throttle, brake = _pedals(acceleration)
+        throttle, brake = pedals_for_acceleration(acceleration)
+        for start, end in throttle_windows:
+            if start <= distance <= end:
+                throttle = 0.0  # 스로틀 늦음: apex 뒤로 한동안 밟지 않는다.
+                break
+
+        line_offset = 0.0
+        for entry, exit_m, amplitude in wide_windows:
+            if entry <= distance <= exit_m:
+                line_offset += amplitude * math.sin(math.pi * (distance - entry) / (exit_m - entry))
+
+        steer_wobble = 0.0
+        for entry, exit_m, count, amplitude in steer_windows:
+            if entry <= distance <= exit_m:
+                fraction = (distance - entry) / (exit_m - entry)
+                steer_wobble += amplitude * math.sin(2.0 * math.pi * count * fraction)
+        for start, entry_m, apex_m, amplitude in turn_in_windows:
+            if start <= distance <= entry_m:
+                span = max(entry_m - start, 1e-9)
+                steer_wobble += amplitude * (distance - start) / span
+            elif entry_m < distance <= apex_m:
+                span = max(apex_m - entry_m, 1e-9)
+                steer_wobble += amplitude * (1.0 - (distance - entry_m) / span)
+
         x, z = outline.position_at(distance)
         yaw = outline.heading_at(distance)
-        gear, rpm = _gear_and_rpm(speed_kmh)
-        steer = max(-1.0, min(1.0, -curvature * STEER_GAIN))
+        if line_offset:
+            x += line_offset * math.sin(yaw)
+            z -= line_offset * math.cos(yaw)
+        gear, rpm = gear_and_rpm(speed_kmh)
+        steer = max(-1.0, min(1.0, -curvature * STEER_GAIN + steer_wobble))
         if abs(steer) < 0.002:
             steer = 0.0
+
         samples.append(
             Sample(
                 t_ms=int(round(time_s * 1000.0)),
@@ -417,6 +571,7 @@ def generate_lap(
                 yaw=yaw,
                 lateral_g=speed_mps**2 * curvature / GRAVITY,
                 longitudinal_g=acceleration / GRAVITY,
+                line_offset_m=line_offset,
             )
         )
     return samples

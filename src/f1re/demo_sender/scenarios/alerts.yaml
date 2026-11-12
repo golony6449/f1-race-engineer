@@ -1,0 +1,36 @@
+# 위험 경고 시험용 시나리오. 값은 작업 8의 위험 문턱값보다 확실히 위험한 값이다.
+- lap: 1
+  kind: front_wing_damage
+  params:
+    percent: 60
+- lap: 2
+  kind: tyre_wear_critical
+  params:
+    wear: 88
+- lap: 2
+  kind: tyre_temp_critical
+  params:
+    surface_c: 118
+    inner_c: 128
+- lap: 3
+  kind: brake_temp_critical
+  params:
+    c: 1050
+- lap: 3
+  kind: penalty
+  params:
+    seconds: 5
+    type: 1
+    infringement: 1
+- lap: 3
+  kind: safety_car
+  params:
+    laps: 2
+- lap: 4
+  kind: fuel_short
+  params:
+    margin_laps: 2.0
+- lap: 5
+  kind: vsc
+  params:
+    laps: 1
