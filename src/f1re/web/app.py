@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import asyncio
 import math
+import sqlite3
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -34,6 +35,7 @@ from fastapi.staticfiles import StaticFiles
 
 from f1re.alerts.thresholds import color_table, severity
 from f1re.state.store import StateStore
+from f1re.web.map_api import TrackMap, create_map_router
 from f1re.web.radio_api import RadioService, router as radio_router
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
@@ -117,14 +119,24 @@ _DAMAGE_ITEMS: tuple[tuple[str, str, str, str], ...] = (
 # ---------------------------------------------------------------------------
 
 
-def state_payload(store: StateStore, radio: RadioService) -> dict[str, Any]:
-    """화면·API가 함께 쓰는 상태 묶음."""
+def state_payload(
+    store: StateStore,
+    radio: RadioService,
+    map_state: TrackMap | None = None,
+) -> dict[str, Any]:
+    """화면·API가 함께 쓰는 상태 묶음.
+
+    `cars`·`flag`는 서킷 지도(작업 10)용이다. `map_state`가 없으면 빈 값으로
+    두어 지도 없이도 같은 모양을 유지한다.
+    """
     snapshot = store.snapshot()
     return {
         "snapshot": snapshot,
         "car": player_summary(snapshot),
         "connection": connection_info(snapshot),
         "status": radio.status(),
+        "cars": [] if map_state is None else map_state.car_positions(snapshot),
+        "flag": "none" if map_state is None else map_state.flag(snapshot),
     }
 
 
@@ -280,15 +292,21 @@ def connection_info(
 
 
 def create_app(
-    store: StateStore, radio: RadioService | None = None
+    store: StateStore,
+    radio: RadioService | None = None,
+    *,
+    conn: sqlite3.Connection | None = None,
 ) -> FastAPI:
     """상태 저장소 하나를 읽는 FastAPI 앱을 만든다.
 
     `radio`를 넘기면 그 무전 서비스를 쓴다(실서버는 음성 캐시·DB 기록을 붙인
     서비스를 넘긴다). 생략하면 음성 캐시 없는 기본 서비스를 만들어, 상태가
     "음성 오프라인"/"무전 페이지 미연결"로 정직하게 보인다.
+    `conn`은 학습한 서킷 윤곽(작업 10)을 읽을 SQLite 연결이다. 없으면 패키지
+    데이터 파일의 중심선만 쓴다(테스트·단독 실행).
     """
     service = radio if radio is not None else RadioService(store)
+    map_state = TrackMap(conn)
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
@@ -306,6 +324,7 @@ def create_app(
 
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
     app.include_router(radio_router)
+    app.include_router(create_map_router(store, map_state))
 
     @app.get("/", include_in_schema=False)
     def dashboard() -> FileResponse:
@@ -316,7 +335,7 @@ def create_app(
 
     @app.get("/api/state")
     def api_state() -> dict[str, Any]:
-        return state_payload(store, service)
+        return state_payload(store, service, map_state)
 
     @app.get("/api/thresholds")
     def api_thresholds() -> dict[str, Any]:
@@ -327,7 +346,7 @@ def create_app(
         await websocket.accept()
         try:
             while True:
-                await websocket.send_json(state_payload(store, service))
+                await websocket.send_json(state_payload(store, service, map_state))
                 await asyncio.sleep(PUSH_INTERVAL_S)
         except (WebSocketDisconnect, RuntimeError, OSError):
             # 브라우저가 닫혔다. 정리는 Starlette가 한다.

@@ -11,13 +11,16 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
 import time
 from collections.abc import Callable
 from pathlib import Path
 
+from f1re.tracks.outline import TrackOutline
+
 # 지금 코드가 기대하는 스키마 버전.
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 DEFAULT_DB_RELPATH = Path("data") / "f1re.db"
 
@@ -81,10 +84,29 @@ def _migration_002_radio_messages(conn: sqlite3.Connection) -> None:
     )
 
 
+def _migration_003_track_outlines(conn: sqlite3.Connection) -> None:
+    """서킷 윤곽(랩 거리 순 점 배열)을 서킷 ID로 저장한다(작업 10).
+
+    데이터 파일이 없는 서킷의 윤곽은 첫 유효 랩에서 배워 여기에 남긴다.
+    점은 `[[dist_m, x, z], ...]` JSON이다.
+    """
+    conn.execute(
+        """
+        CREATE TABLE track_outlines (
+            track_id INTEGER PRIMARY KEY,
+            points TEXT NOT NULL,
+            length_m REAL NOT NULL,
+            learned_at_ns INTEGER NOT NULL
+        )
+        """
+    )
+
+
 # (버전, 적용 함수). 버전은 1부터 연속이어야 한다.
 MIGRATIONS: tuple[tuple[int, Callable[[sqlite3.Connection], None]], ...] = (
     (1, _migration_001_sessions),
     (2, _migration_002_radio_messages),
+    (3, _migration_003_track_outlines),
 )
 
 
@@ -132,11 +154,13 @@ def open_db(path: str | Path | None = None) -> sqlite3.Connection:
     """DB를 열고(없으면 만들고) 마이그레이션을 적용한다.
 
     `path`가 없으면 `data/f1re.db`를 쓴다. `":memory:"`도 받는다.
+    웹 API(작업 10)가 수신 스레드와 다른 스레드에서 윤곽을 읽으므로
+    `check_same_thread=False`로 연다. 쓰기는 수신 루프 한 곳에서만 한다.
     """
     db_path = default_db_path() if path is None else Path(path)
     if str(db_path) != ":memory:":
         db_path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(db_path)
+    conn = sqlite3.connect(db_path, check_same_thread=False)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     conn.execute("PRAGMA journal_mode = WAL")
@@ -198,3 +222,53 @@ def finish_session(
             "UPDATE sessions SET ended_at_ns = ? WHERE session_uid = ?",
             (ended_at_ns, session_uid),
         )
+
+
+def save_track_outline(
+    conn: sqlite3.Connection,
+    track_id: int,
+    outline: TrackOutline,
+    *,
+    learned_at_ns: int | None = None,
+) -> None:
+    """서킷 윤곽을 서킷 ID로 저장한다(이미 있으면 덮어쓴다).
+
+    점은 소수 3자리로 줄여 저장한다. 지도 픽셀 단위에서 1mm 차이는 보이지
+    않으면서 DB와 브라우저 전송 크기가 크게 줄어든다.
+    """
+    points = [
+        [round(dist, 3), round(x, 3), round(z, 3)]
+        for dist, x, z in outline.points
+    ]
+    when = time.time_ns() if learned_at_ns is None else learned_at_ns
+    with conn:
+        conn.execute(
+            """
+            INSERT INTO track_outlines (track_id, points, length_m, learned_at_ns)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(track_id) DO UPDATE SET
+                points = excluded.points,
+                length_m = excluded.length_m,
+                learned_at_ns = excluded.learned_at_ns
+            """,
+            (track_id, json.dumps(points, separators=(",", ":")),
+             outline.lap_length_m, when),
+        )
+
+
+def load_track_outline(
+    conn: sqlite3.Connection, track_id: int
+) -> TrackOutline | None:
+    """저장된 서킷 윤곽. 없거나 내용이 잘못됐으면 `None`."""
+    row = conn.execute(
+        "SELECT points FROM track_outlines WHERE track_id = ?", (track_id,)
+    ).fetchone()
+    if row is None:
+        return None
+    try:
+        raw = json.loads(row["points"])
+        points = [(float(dist), float(x), float(z)) for dist, x, z in raw]
+        return TrackOutline(points)
+    except (TypeError, ValueError):
+        # DB가 손상돼도 서버가 멈추지 않게 윤곽 없음으로 본다.
+        return None

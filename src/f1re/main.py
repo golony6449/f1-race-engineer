@@ -210,7 +210,7 @@ async def _run_live(
     duration_s: float | None,
     web: tuple[str, int] | None,
 ) -> None:
-    web_server = _start_web_server(store, web, conn)
+    web_server = _start_web_server(store, conn, web)
     transport: asyncio.DatagramTransport | None = None
     try:
         transport, _protocol = await start_receiver(
@@ -239,12 +239,13 @@ async def _run_live(
 
 
 def _start_web_server(
-    store: StateStore, web: tuple[str, int] | None, conn: Any = None
+    store: StateStore, conn: Any, web: tuple[str, int] | None
 ) -> tuple[Any, asyncio.Task[None], Any] | None:
     """같은 이벤트 루프에 uvicorn 대시보드를 띄운다. `web`이 없으면 아무것도 안 한다.
 
     무전 페이지(`/radio`)가 쓸 음성 캐시(Qwen TTS)와 무전 기록(같은 SQLite
-    연결)을 붙인 `RadioService`를 함께 만든다.
+    연결)을 붙인 `RadioService`를 함께 만든다. `conn`은 서킷 지도(작업 10)가
+    학습한 윤곽을 읽는 데도 쓴다.
     """
     if web is None:
         return None
@@ -257,7 +258,7 @@ def _start_web_server(
     radio = build_radio_service(store, log_conn=conn)
     host, port = web
     config = uvicorn.Config(
-        create_app(store, radio=radio),
+        create_app(store, radio=radio, conn=conn),
         host=host,
         port=port,
         log_level="warning",
