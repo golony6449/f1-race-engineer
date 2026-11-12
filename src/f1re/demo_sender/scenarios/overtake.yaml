@@ -1,0 +1,20 @@
+# 추월 선택지 시험용 시나리오(그랑프리 모드).
+# 2랩부터 앞차와 0.6초 간격을 유지하고 DRS 사용 가능 거리를 준다.
+- lap: 2
+  kind: close_to_car_ahead
+  params:
+    seconds: 0.6
+- lap: 2
+  kind: drs_available
+  params:
+    distance_m: 150
+    laps: 2
+- lap: 2
+  kind: tyre_age_gap
+  params:
+    laps: 8
+- lap: 3
+  corner: 9
+  kind: ahead_slow_exit
+  params:
+    speed_factor: 0.65

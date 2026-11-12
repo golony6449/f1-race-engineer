@@ -1,0 +1,10 @@
+# 리프트 앤 코스트(연료 절약·브레이크 냉각) 판단 시험용 시나리오(SCRUM-71).
+# 연료 랩 마진을 음수로 만들고, 이어서 브레이크 온도를 위험 수준으로 올린다.
+- lap: 2
+  kind: fuel_short
+  params:
+    margin_laps: 2.0
+- lap: 3
+  kind: brake_temp_critical
+  params:
+    c: 1050
