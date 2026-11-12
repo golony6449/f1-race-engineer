@@ -370,8 +370,8 @@ class CoachConfig:
 
     focus_corner_count: int = 5
     focus_recent_laps: int = 3
-    # 집중 코너 산정을 시작하는 유효 랩 수. 레이스에서 "2~3랩 뒤 시작"은
-    # 세션 종류를 아는 작업 17이 이 값을 3으로 올려 쓴다.
+    # 집중 코너 산정을 시작하는 유효 랩 수. 레이스 세션은 `FocusSet`이 이 값과
+    # `RACE_FOCUS_MIN_VALID_LAPS`(2) 중 큰 값을 쓴다(레이스 1랩은 따로 뺀다).
     focus_min_valid_laps: int = 1
     min_focus_loss_ms: int = 50
     big_loss_ms: int = 300
@@ -447,7 +447,9 @@ class Coach:
         self._by_number = {corner.number: corner for corner in track.corners}
         self._config = config or CoachConfig()
         self._references = references or ReferenceSet(
-            track.corners, player_car_index=player_car_index
+            track.corners,
+            player_car_index=player_car_index,
+            session_type=session_type,
         )
         self._focus = FocusSet(
             track.corners,
@@ -460,6 +462,7 @@ class Coach:
                 min_valid_laps=self._config.focus_min_valid_laps,
             ),
             player_car_index=player_car_index,
+            session_type=session_type,
         )
         self._thresholds = thresholds or default_coaching_thresholds()
         self._queue = queue

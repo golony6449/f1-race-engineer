@@ -415,6 +415,27 @@ def test_roundtrip_keeps_fastest_car_reference_and_player_values() -> None:
     assert fastest.samples[0].wheel_slip is None
 
 
+def test_roundtrip_keeps_session_rules_from_race_and_time_trial() -> None:
+    """SCRUM-67의 레이스 1랩 제외·타임 트라이얼 최속차 없음이 복원 후에도 산다."""
+    race = ReferenceSet(TRACK.corners, session_type=10)
+    race.update(_trace(2))
+    loaded_race = reference_from_dict(reference_to_dict(race))
+    assert loaded_race.session_type == 10
+    # 복원한 기준 집합에 더 빠른 1랩을 넣어도 레이스 1랩은 여전히 빠진다.
+    loaded_race.update(_trace(1, pace=1.02))
+    best = loaded_race.best_lap(SOURCE_SELF)
+    assert best is not None
+    assert best.lap == 2
+
+    tt = ReferenceSet(TRACK.corners, session_type=13)
+    tt.update(_trace(1))
+    loaded_tt = reference_from_dict(reference_to_dict(tt))
+    assert loaded_tt.session_type == 13
+    # 타임 트라이얼에서는 다른 차 랩이 들어와도 최속차 기준을 두지 않는다.
+    loaded_tt.update(_trace(2, pace=1.05, car_index=1))
+    assert loaded_tt.best_lap(SOURCE_FASTEST_CAR) is None
+
+
 def test_store_returns_none_for_corrupt_payload(tmp_path: Path) -> None:
     """DB 행이 손상돼도 예외 없이 기준 없음으로 본다."""
     conn = db.open_db(tmp_path / "f1re.db")
