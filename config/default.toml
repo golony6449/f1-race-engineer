@@ -22,9 +22,10 @@ udp_port = 20777
 model = "qwen3-tts-flash"
 # 실시간 WebSocket 모델. 이번 구현은 qwen3-tts-flash의 SSE 스트리밍을 쓴다.
 realtime_model = "qwen3-tts-flash-realtime"
-# 보이스. Sohee는 한국어 여성 보이스.
-# SCRUM-50에서 사용자 선택으로 바꿈.
-voice = "Sohee"
+# 보이스. Katerina는 사용자 선택(2026-11-13).
+voice = "Katerina"
+# 말 속도. 음 높이는 유지하고 서버에서 WSOLA로 시간만 늘인다(1.0이면 그대로).
+speed = 1.2
 # 요청 전체 타임아웃 (초). 넘으면 TTSUnavailable로 올린다.
 timeout_s = 2.0
 # 공용 시크릿 모듈(claude_secrets.get)에서 읽을 키 이름
@@ -34,3 +35,12 @@ secret_key = "qwen"
 endpoint = "https://dashscope-intl.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation"
 # 발음 언어. 한국어 무전 문장이므로 Korean으로 고정한다.
 language_type = "Korean"
+# 무전 앞에 붙이는 F1 중계풍 알림음. 저작권 때문에 효과음 파일은 레포에 넣지 않고
+# `uv run python tools/fetch_assets.py`로 받아 assets/에 둔다(.gitignore 대상).
+intro_sound_url = "https://www.myinstants.com/media/sounds/formula-1-radio-notification.mp3"
+# 받아 둔 효과음 위치. 레포 루트 기준 상대 경로.
+intro_sound_path = "assets/radio-intro.wav"
+# 효과음과 무전 음성 사이 무음 (ms)
+intro_gap_ms = 150
+# 효과음 크기 배율
+intro_gain = 0.8

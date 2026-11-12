@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import dataclasses
+import math
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
@@ -19,7 +20,8 @@ class TTSConfig:
 
     model: str = "qwen3-tts-flash"
     realtime_model: str = "qwen3-tts-flash-realtime"
-    voice: str = "Sohee"
+    voice: str = "Katerina"
+    speed: float = 1.2
     timeout_s: float = 2.0
     secret_key: str = "qwen"
     endpoint: str = (
@@ -27,6 +29,12 @@ class TTSConfig:
         "/api/v1/services/aigc/multimodal-generation/generation"
     )
     language_type: str = "Korean"
+    intro_sound_url: str = (
+        "https://www.myinstants.com/media/sounds/formula-1-radio-notification.mp3"
+    )
+    intro_sound_path: str = "assets/radio-intro.wav"
+    intro_gap_ms: float = 150.0
+    intro_gain: float = 0.8
 
 
 @dataclass(frozen=True)
@@ -43,9 +51,20 @@ class AppConfig:
     udp_port: int = 20777
 
 
+def repo_root() -> Path:
+    """레포 루트. 설정에 적은 상대 경로(assets/ 등)의 기준이다."""
+    return Path(__file__).resolve().parents[2]
+
+
+def resolve_asset_path(path: str | Path) -> Path:
+    """설정의 경로를 레포 루트 기준 절대 경로로 바꾼다."""
+    candidate = Path(path)
+    return candidate if candidate.is_absolute() else repo_root() / candidate
+
+
 def default_config_path() -> Path:
     """레포의 `config/default.toml` 경로. 소스에서 실행할 때를 기준으로 한다."""
-    return Path(__file__).resolve().parents[2] / "config" / "default.toml"
+    return repo_root() / "config" / "default.toml"
 
 
 def load_config(path: str | Path | None = None) -> AppConfig:
@@ -86,6 +105,12 @@ def _known_fields(
 def _validate(config: AppConfig) -> None:
     if config.tts.timeout_s <= 0:
         raise ConfigError("tts.timeout_s는 0보다 커야 합니다")
+    if not math.isfinite(config.tts.speed) or config.tts.speed <= 0:
+        raise ConfigError("tts.speed는 0보다 큰 유한한 수여야 합니다")
+    if not math.isfinite(config.tts.intro_gap_ms) or config.tts.intro_gap_ms < 0:
+        raise ConfigError("tts.intro_gap_ms는 0 이상이어야 합니다")
+    if not math.isfinite(config.tts.intro_gain) or config.tts.intro_gain < 0:
+        raise ConfigError("tts.intro_gain은 0 이상이어야 합니다")
     if not 1 <= config.udp_port <= 65535:
         raise ConfigError("global.udp_port는 1~65535여야 합니다")
     if config.focus_corner_count < 1:

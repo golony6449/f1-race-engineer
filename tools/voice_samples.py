@@ -33,9 +33,16 @@ SENTENCES: tuple[str, ...] = (
     "3번 좋아짐. 다음 7번.",
 )
 
-# 문서상 모든 보이스가 한국어를 지원한다. 한국어 전용 Sohee와 대표 보이스 몇 개를
-# 기본 후보로 둔다. SCRUM-50에서 사용자가 듣고 고른다.
-KOREAN_VOICES: tuple[str, ...] = ("Sohee", "Cherry", "Serena", "Ethan", "Chelsie")
+# 문서상 모든 보이스가 한국어를 지원한다. 사용자가 고른 Katerina(2026-11-13)를
+# 맨 앞에 두고, 비교용 대표 보이스를 뒤에 둔다.
+KOREAN_VOICES: tuple[str, ...] = (
+    "Katerina",
+    "Sohee",
+    "Cherry",
+    "Serena",
+    "Ethan",
+    "Chelsie",
+)
 
 
 class TTSClient(Protocol):
