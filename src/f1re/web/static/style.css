@@ -1,0 +1,273 @@
+/* F1 레이스 엔지니어 대시보드. 태블릿 가로를 먼저 맞추고 휴대폰 세로로 줄인다. */
+
+:root {
+  color-scheme: dark;
+  --bg: #0b0e13;
+  --panel: #141922;
+  --panel-2: #10151d;
+  --line: #232b38;
+  --text: #e8edf5;
+  --muted: #8b97a8;
+  --accent: #e10600;
+  --radius: 14px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  min-height: 100%;
+}
+
+body {
+  padding: 12px;
+  background: var(--bg);
+  color: var(--text);
+  font-family:
+    "Pretendard", "Noto Sans KR", system-ui, -apple-system, "Segoe UI",
+    sans-serif;
+  font-variant-numeric: tabular-nums;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ------------------------------------------------------------------ */
+/* 상단 상태줄 */
+
+.statusbar {
+  display: grid;
+  grid-template-columns: 1.4fr 1fr 1fr;
+  gap: 8px;
+}
+
+.status {
+  min-width: 0;
+  padding: 8px 12px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+
+.status-label {
+  display: block;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.09em;
+  color: var(--muted);
+}
+
+.status-value {
+  display: block;
+  margin-top: 2px;
+  overflow: hidden;
+  font-size: 15px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.status-detail {
+  display: block;
+  margin-top: 1px;
+  overflow: hidden;
+  font-size: 11px;
+  color: var(--muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ------------------------------------------------------------------ */
+/* 패널 배치 */
+
+#dashboard {
+  display: grid;
+  grid-template-columns: repeat(12, minmax(0, 1fr));
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.panel {
+  min-width: 0;
+  padding: 14px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+
+.panel h2 {
+  margin: 0 0 10px;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+}
+
+.tyres,
+.brakes,
+.fuel,
+.ers,
+.damage {
+  grid-column: span 12;
+}
+
+@media (min-width: 1000px) {
+  .brakes {
+    grid-column: span 5;
+  }
+
+  .fuel {
+    grid-column: span 4;
+  }
+
+  .ers {
+    grid-column: span 3;
+  }
+}
+
+.waiting {
+  margin: 0;
+  padding: 18px 4px;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+/* ------------------------------------------------------------------ */
+/* 타이어 */
+
+.tyre-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.tyre {
+  min-width: 0;
+  padding: 10px;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+}
+
+.tyre-head {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  justify-content: space-between;
+}
+
+.tyre-pos {
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.tyre-meta {
+  overflow: hidden;
+  font-size: 12px;
+  color: var(--muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ------------------------------------------------------------------ */
+/* 값 칸 */
+
+.cell-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.brake-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.damage-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(118px, 1fr));
+  gap: 8px;
+}
+
+.cell {
+  min-width: 0;
+  padding: 8px 10px;
+  background: var(--panel-2);
+  border: 1px solid transparent;
+  border-radius: 10px;
+}
+
+.cell-label {
+  display: block;
+  overflow: hidden;
+  font-size: 11px;
+  color: var(--muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cell-value {
+  display: block;
+  margin-top: 2px;
+  overflow: hidden;
+  font-size: clamp(1.05rem, 1.5vw, 1.4rem);
+  font-weight: 700;
+  line-height: 1.2;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  transition: opacity 160ms linear;
+}
+
+.cell-unit {
+  margin-left: 2px;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--muted);
+}
+
+/* 값이 끊겨도 칸을 지우지 않고 마지막 값을 흐리게 둔다(설계 6.9-1). */
+#dashboard.stale .cell-value {
+  opacity: 0.42;
+}
+
+#dashboard.stale .tyre-meta {
+  opacity: 0.5;
+}
+
+/* ------------------------------------------------------------------ */
+/* 좁은 화면: 태블릿 세로·휴대폰 */
+
+@media (max-width: 900px) {
+  .statusbar {
+    grid-template-columns: 1fr;
+  }
+
+  .tyre-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .brake-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 520px) {
+  body {
+    padding: 8px;
+  }
+
+  #dashboard {
+    gap: 8px;
+  }
+
+  .panel {
+    padding: 10px;
+  }
+
+  .cell-value {
+    font-size: 1.05rem;
+  }
+}

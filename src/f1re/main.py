@@ -2,10 +2,15 @@
 
     f1re serve [--host HOST] [--port PORT] [--record DIR] [--replay FILE]
                [--db PATH] [--speed 배율] [--duration 초]
+               [--web-host HOST] [--web-port PORT] [--no-web]
 
 `--replay`가 있으면 녹화 파일을 같은 파이프라인(녹화 → 파싱 → 상태 → 사건)에
 흘려보내고, 없으면 UDP 20777(설정값)에서 게임 패킷을 받는다. 세션 시작·종료는
 SQLite `sessions` 표에 남긴다.
+
+실시간 수신(`--replay` 없음)에서는 같은 프로세스가 uvicorn 웹 대시보드도 띄운다
+(기본 `[web]` 설정, `0.0.0.0:8080`). 화면은 서버 API를 읽기만 한다(설계 6.9).
+리플레이는 개발·테스트용이라 웹 서버를 띄우지 않는다.
 """
 
 from __future__ import annotations
@@ -71,6 +76,20 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         metavar="SECONDS",
         help="이 시간(초) 뒤 종료한다(테스트·시연용)",
     )
+    serve.add_argument(
+        "--web-host",
+        default=None,
+        help="웹 대시보드 주소(기본: 설정 [web] host, 0.0.0.0)",
+    )
+    serve.add_argument(
+        "--web-port",
+        type=int,
+        default=None,
+        help="웹 대시보드 포트(기본: 설정 [web] port, 8080). 0이면 빈 포트",
+    )
+    serve.add_argument(
+        "--no-web", action="store_true", help="웹 대시보드를 띄우지 않는다"
+    )
     return parser.parse_args(argv)
 
 
@@ -101,6 +120,15 @@ def _serve(args: argparse.Namespace) -> int:
         print("--duration은 0 이상이어야 합니다.", file=sys.stderr)
         return 2
 
+    web: tuple[str, int] | None = None
+    if not args.no_web:
+        web_host = config.web.host if args.web_host is None else args.web_host
+        web_port = config.web.port if args.web_port is None else args.web_port
+        if not 0 <= web_port <= 65535:
+            print("--web-port는 0~65535여야 합니다.", file=sys.stderr)
+            return 2
+        web = (web_host, web_port)
+
     conn = open_db(args.db)
     writer: RecordingWriter | None = None
     recorded_file: Path | None = None
@@ -130,6 +158,7 @@ def _serve(args: argparse.Namespace) -> int:
                     writer=writer,
                     recorded_file=recorded_file,
                     duration_s=args.duration,
+                    web=web,
                 )
             )
         except KeyboardInterrupt:
@@ -179,14 +208,17 @@ async def _run_live(
     writer: RecordingWriter | None,
     recorded_file: Path | None,
     duration_s: float | None,
+    web: tuple[str, int] | None,
 ) -> None:
-    transport, _protocol = await start_receiver(
-        store, host=host, port=port, recorder=writer
-    )
-    sockname = transport.get_extra_info("sockname") or (host, port)
-    print(f"UDP 수신 대기: {sockname[0]}:{sockname[1]} (Ctrl+C로 중단)")
-    started = time.monotonic()
+    web_server = _start_web_server(store, web)
+    transport: asyncio.DatagramTransport | None = None
     try:
+        transport, _protocol = await start_receiver(
+            store, host=host, port=port, recorder=writer
+        )
+        sockname = transport.get_extra_info("sockname") or (host, port)
+        print(f"UDP 수신 대기: {sockname[0]}:{sockname[1]} (Ctrl+C로 중단)")
+        started = time.monotonic()
         while True:
             interval = _PERSIST_INTERVAL_S
             if duration_s is not None:
@@ -197,11 +229,66 @@ async def _run_live(
             await asyncio.sleep(interval)
             _persist_events(conn, store, recorded_file)
     finally:
-        transport.close()
+        if transport is not None:
+            transport.close()
+        await _stop_web_server(web_server)
         _persist_events(conn, store, recorded_file)
         _finalize_session(conn, store, recorded_file)
         await asyncio.sleep(0)
     print("UDP 수신을 멈췄습니다.")
+
+
+def _start_web_server(
+    store: StateStore, web: tuple[str, int] | None
+) -> tuple[Any, asyncio.Task[None]] | None:
+    """같은 이벤트 루프에 uvicorn 대시보드를 띄운다. `web`이 없으면 아무것도 안 한다."""
+    if web is None:
+        return None
+    # 웹을 쓰지 않을 때(리플레이)는 fastapi·uvicorn을 불러오지 않는다.
+    import uvicorn
+
+    from f1re.web.app import create_app
+
+    host, port = web
+    config = uvicorn.Config(
+        create_app(store),
+        host=host,
+        port=port,
+        log_level="warning",
+        access_log=False,
+    )
+    server = uvicorn.Server(config)
+    task = asyncio.create_task(server.serve(), name="f1re-web")
+    if port:
+        print(f"웹 대시보드: http://{_browse_host(host)}:{port}")
+    else:
+        print(f"웹 대시보드: http://{_browse_host(host)}:<빈 포트>")
+    return server, task
+
+
+async def _stop_web_server(
+    web_server: tuple[Any, asyncio.Task[None]] | None,
+) -> None:
+    if web_server is None:
+        return
+    server, task = web_server
+    server.should_exit = True
+    try:
+        await task
+    except SystemExit:
+        # uvicorn은 포트를 잡지 못하면 sys.exit(1)을 낸다. 원인은 uvicorn 로그에 남는다.
+        print(
+            "웹 대시보드를 시작하지 못했습니다. 포트 사용 여부를 확인하세요.",
+            file=sys.stderr,
+        )
+    except KeyboardInterrupt:
+        # Ctrl+C가 이미 전파되는 중이다. 웹 서버 종료는 여기서 끝낸다.
+        pass
+
+
+def _browse_host(host: str) -> str:
+    """브라우저에 안내할 주소. 모든 인터페이스 바인딩은 localhost로 보여 준다."""
+    return "localhost" if host in {"", "0.0.0.0", "::"} else host
 
 
 def _persist_events(

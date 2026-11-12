@@ -38,10 +38,19 @@ class TTSConfig:
 
 
 @dataclass(frozen=True)
+class WebConfig:
+    """대시보드 웹 서버 설정. 화면(태블릿·옆 모니터)이 접속하는 주소다."""
+
+    host: str = "0.0.0.0"
+    port: int = 8080
+
+
+@dataclass(frozen=True)
 class AppConfig:
     """앱 전체 설정. `[global]` 섹션 값은 평평하게 둔다."""
 
     tts: TTSConfig = dataclasses.field(default_factory=TTSConfig)
+    web: WebConfig = dataclasses.field(default_factory=WebConfig)
     focus_corner_count: int = 5
     focus_recent_laps: int = 3
     big_loss_s: float = 0.3
@@ -79,12 +88,18 @@ def load_config(path: str | Path | None = None) -> AppConfig:
 
     global_values = raw.get("global", {})
     tts_values = raw.get("tts", {})
-    if not isinstance(global_values, dict) or not isinstance(tts_values, dict):
-        raise ConfigError("[global]과 [tts]는 표(table)여야 합니다")
+    web_values = raw.get("web", {})
+    if (
+        not isinstance(global_values, dict)
+        or not isinstance(tts_values, dict)
+        or not isinstance(web_values, dict)
+    ):
+        raise ConfigError("[global], [tts], [web]은 표(table)여야 합니다")
 
     config = AppConfig(
         tts=_build(TTSConfig, tts_values, "tts"),
-        **_known_fields(AppConfig, global_values, "global", skip={"tts"}),
+        web=_build(WebConfig, web_values, "web"),
+        **_known_fields(AppConfig, global_values, "global", skip={"tts", "web"}),
     )
     _validate(config)
     return config
@@ -113,6 +128,10 @@ def _validate(config: AppConfig) -> None:
         raise ConfigError("tts.intro_gain은 0 이상이어야 합니다")
     if not 1 <= config.udp_port <= 65535:
         raise ConfigError("global.udp_port는 1~65535여야 합니다")
+    if not config.web.host.strip():
+        raise ConfigError("web.host가 비어 있습니다")
+    if not 1 <= config.web.port <= 65535:
+        raise ConfigError("web.port는 1~65535여야 합니다")
     if config.focus_corner_count < 1:
         raise ConfigError("global.focus_corner_count는 1 이상이어야 합니다")
     if config.focus_recent_laps < 1:
