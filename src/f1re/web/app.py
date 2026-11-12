@@ -12,10 +12,11 @@
 
 API:
 
-- ``GET /api/state``  스냅샷 + 내 차 요약 + 연결 상태 + 상태 표시 자리
+- ``GET /api/state``  스냅샷 + 내 차 요약 + 연결 상태 + 음성·무전 페이지 상태
 - ``GET /api/thresholds``  색·문턱값 표(`color_table()`)
 - ``WS /ws/state``  같은 상태를 10Hz로 민다
 - ``GET /``  대시보드 HTML, ``/static/...``  빌드 없는 HTML/JS/CSS
+- ``GET /radio``·``WS /ws/radio``  무전 페이지와 음성 전달(`web/radio_api.py`)
 """
 
 from __future__ import annotations
@@ -23,6 +24,7 @@ from __future__ import annotations
 import asyncio
 import math
 import time
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
@@ -32,6 +34,7 @@ from fastapi.staticfiles import StaticFiles
 
 from f1re.alerts.thresholds import color_table, severity
 from f1re.state.store import StateStore
+from f1re.web.radio_api import RadioService, router as radio_router
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 
@@ -114,14 +117,14 @@ _DAMAGE_ITEMS: tuple[tuple[str, str, str, str], ...] = (
 # ---------------------------------------------------------------------------
 
 
-def state_payload(store: StateStore) -> dict[str, Any]:
+def state_payload(store: StateStore, radio: RadioService) -> dict[str, Any]:
     """화면·API가 함께 쓰는 상태 묶음."""
     snapshot = store.snapshot()
     return {
         "snapshot": snapshot,
         "car": player_summary(snapshot),
         "connection": connection_info(snapshot),
-        "status": status_placeholders(),
+        "status": radio.status(),
     }
 
 
@@ -271,32 +274,38 @@ def connection_info(
     }
 
 
-def status_placeholders() -> dict[str, Any]:
-    """음성·무전 페이지 상태 자리.
-
-    작업 11(음성 큐·캐시)·12(`/radio`)가 실제 값으로 채운다. 화면은 지금
-    "알 수 없음"으로 표시한다.
-    """
-    return {
-        "voice": {"state": "unknown", "label": "알 수 없음"},
-        "radio_page": {
-            "state": "unknown",
-            "label": "알 수 없음",
-            "connected": None,
-        },
-    }
-
-
 # ---------------------------------------------------------------------------
 # FastAPI 앱
 # ---------------------------------------------------------------------------
 
 
-def create_app(store: StateStore) -> FastAPI:
-    """상태 저장소 하나를 읽는 FastAPI 앱을 만든다."""
-    app = FastAPI(title="F1 레이스 엔지니어 대시보드")
+def create_app(
+    store: StateStore, radio: RadioService | None = None
+) -> FastAPI:
+    """상태 저장소 하나를 읽는 FastAPI 앱을 만든다.
+
+    `radio`를 넘기면 그 무전 서비스를 쓴다(실서버는 음성 캐시·DB 기록을 붙인
+    서비스를 넘긴다). 생략하면 음성 캐시 없는 기본 서비스를 만들어, 상태가
+    "음성 오프라인"/"무전 페이지 미연결"로 정직하게 보인다.
+    """
+    service = radio if radio is not None else RadioService(store)
+
+    @asynccontextmanager
+    async def lifespan(_app: FastAPI):
+        service.ensure_started()
+        try:
+            yield
+        finally:
+            await service.aclose()
+
+    app = FastAPI(
+        title="F1 레이스 엔지니어 대시보드",
+        lifespan=lifespan,
+    )
+    app.state.radio = service
 
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+    app.include_router(radio_router)
 
     @app.get("/", include_in_schema=False)
     def dashboard() -> FileResponse:
@@ -307,7 +316,7 @@ def create_app(store: StateStore) -> FastAPI:
 
     @app.get("/api/state")
     def api_state() -> dict[str, Any]:
-        return state_payload(store)
+        return state_payload(store, service)
 
     @app.get("/api/thresholds")
     def api_thresholds() -> dict[str, Any]:
@@ -318,7 +327,7 @@ def create_app(store: StateStore) -> FastAPI:
         await websocket.accept()
         try:
             while True:
-                await websocket.send_json(state_payload(store))
+                await websocket.send_json(state_payload(store, service))
                 await asyncio.sleep(PUSH_INTERVAL_S)
         except (WebSocketDisconnect, RuntimeError, OSError):
             # 브라우저가 닫혔다. 정리는 Starlette가 한다.

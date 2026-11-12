@@ -291,7 +291,7 @@ def test_state_endpoint_shape() -> None:
     assert severities <= set(color_table()["colors"])
 
 
-def test_empty_state_keeps_skeleton_and_placeholders() -> None:
+def test_empty_state_keeps_skeleton_and_radio_status() -> None:
     data = _client(StateStore()).get("/api/state").json()
     car = data["car"]
 
@@ -308,10 +308,12 @@ def test_empty_state_keeps_skeleton_and_placeholders() -> None:
     assert data["connection"]["data_age_ms"] is None
     assert data["connection"]["stale_after_ms"] == STALE_AFTER_MS
 
-    # 음성·무전 페이지 상태는 아직 자리만 있다(작업 11·12가 채운다).
-    assert data["status"]["voice"] == {"state": "unknown", "label": "알 수 없음"}
-    assert data["status"]["radio_page"]["state"] == "unknown"
-    assert data["status"]["radio_page"]["connected"] is None
+    # 음성·무전 페이지 상태는 서버가 실제 값으로 내려 준다(설계 6.9-5).
+    # 음성 캐시 없는 기본 앱이므로 오프라인, 무전 페이지는 아직 미연결이다.
+    assert data["status"]["voice"] == {"state": "offline", "label": "음성 오프라인"}
+    assert data["status"]["radio_page"]["state"] == "disconnected"
+    assert data["status"]["radio_page"]["label"] == "무전 페이지 미연결"
+    assert data["status"]["radio_page"]["connected"] is False
 
 
 def test_stale_state_keeps_last_values() -> None:

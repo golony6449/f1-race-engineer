@@ -1,0 +1,207 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>F1 레이스 엔지니어 무전</title>
+    <style>
+      /*
+       * 무전 페이지만의 화면. 소리만 내는 페이지라 글자를 크게 두고,
+       * 연결 상태와 마지막 자막만 멀리서도 보이게 한다(설계 6.10).
+       */
+      :root {
+        color-scheme: dark;
+        --bg: #0b0d10;
+        --panel: #151a21;
+        --line: #2a323d;
+        --text: #e8edf3;
+        --muted: #97a3b4;
+        --ok: #22c55e;
+        --warn: #f59e0b;
+        --danger: #ef4444;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        margin: 0;
+        min-height: 100%;
+        background: var(--bg);
+        color: var(--text);
+        font-family: "Segoe UI", "Malgun Gothic", system-ui, sans-serif;
+      }
+      main {
+        max-width: 960px;
+        margin: 0 auto;
+        padding: 24px 20px 48px;
+      }
+      h1 {
+        margin: 0 0 4px;
+        font-size: 22px;
+        letter-spacing: 0.02em;
+      }
+      .subtitle {
+        margin: 0 0 24px;
+        color: var(--muted);
+        font-size: 15px;
+      }
+      .banner {
+        border: 2px solid var(--line);
+        border-radius: 16px;
+        padding: 28px 24px;
+        text-align: center;
+        font-size: clamp(28px, 6vw, 56px);
+        font-weight: 700;
+        letter-spacing: 0.02em;
+        background: var(--panel);
+        transition: border-color 0.2s ease, color 0.2s ease;
+      }
+      .banner[data-state="connected"] {
+        border-color: var(--ok);
+        color: var(--ok);
+      }
+      .banner[data-state="connecting"] {
+        border-color: var(--warn);
+        color: var(--warn);
+      }
+      .banner[data-state="disconnected"] {
+        border-color: var(--danger);
+        color: var(--danger);
+      }
+      .connect-row {
+        display: flex;
+        align-items: center;
+        gap: 16px;
+        margin: 20px 0 8px;
+        flex-wrap: wrap;
+      }
+      button {
+        font: inherit;
+        font-size: 20px;
+        font-weight: 700;
+        padding: 14px 28px;
+        border-radius: 12px;
+        border: 0;
+        background: var(--danger);
+        color: #fff;
+        cursor: pointer;
+      }
+      button:disabled {
+        opacity: 0.45;
+        cursor: default;
+      }
+      .voice {
+        color: var(--muted);
+        font-size: 16px;
+      }
+      .voice strong {
+        color: var(--text);
+      }
+      .caption {
+        margin-top: 28px;
+        border: 1px solid var(--line);
+        border-radius: 16px;
+        background: var(--panel);
+        padding: 22px 24px;
+      }
+      .caption-label {
+        margin: 0 0 8px;
+        color: var(--muted);
+        font-size: 14px;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+      #caption-text {
+        margin: 0;
+        font-size: clamp(24px, 4.5vw, 40px);
+        font-weight: 600;
+        line-height: 1.35;
+        min-height: 1.35em;
+      }
+      #caption-meta {
+        margin: 10px 0 0;
+        color: var(--muted);
+        font-size: 14px;
+      }
+      .guide {
+        margin-top: 28px;
+        border-top: 1px solid var(--line);
+        padding-top: 18px;
+        color: var(--muted);
+        font-size: 15px;
+        line-height: 1.7;
+      }
+      .guide h2 {
+        margin: 0 0 8px;
+        color: var(--text);
+        font-size: 16px;
+      }
+      .guide ul {
+        margin: 0;
+        padding-left: 20px;
+      }
+      code {
+        color: var(--text);
+        background: #1f2630;
+        border-radius: 6px;
+        padding: 1px 6px;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>F1 레이스 엔지니어 무전</h1>
+      <p class="subtitle">
+        게임 PC에서 이 페이지를 띄워 두면 레이스 엔지니어 무전이 헤드셋으로
+        나옵니다. 화면(차량 상태·지도)은 태블릿으로 보세요.
+      </p>
+
+      <!-- 연결 상태를 크게 보여 준다(설계 6.10). -->
+      <div
+        id="connection"
+        class="banner"
+        data-state="disconnected"
+        role="status"
+        aria-live="polite"
+      >
+        무전 연결 대기
+      </div>
+
+      <div class="connect-row">
+        <!-- 브라우저 자동 재생 정책 때문에 처음 한 번 직접 눌러야 한다. -->
+        <button id="connect" type="button">무전 연결</button>
+        <span class="voice">
+          음성: <strong id="voice">음성 오프라인</strong>
+        </span>
+      </div>
+
+      <section class="caption" aria-live="polite">
+        <p class="caption-label">마지막 무전</p>
+        <p id="caption-text">아직 무전이 없습니다.</p>
+        <p id="caption-meta"></p>
+      </section>
+
+      <section class="guide">
+        <h2>백그라운드 탭이 잠들지 않게 하기</h2>
+        <ul>
+          <li>
+            Chrome·Edge에서 이 탭을 <strong>고정(pin)</strong>하고, 설정 →
+            성능의 <strong>"이 탭을 항상 활성 상태로 유지"</strong>에 이 사이트를
+            등록하세요.
+          </li>
+          <li>
+            사이트 설정의 소리 권한을 <strong>허용</strong>으로 두고, Windows
+            전원 설정에서 화면 끄기·절전으로 인한 네트워크 절전을 해제하세요.
+          </li>
+          <li>
+            연결이 끊기면 이 페이지가 1초마다 다시 연결합니다. 브라우저를
+            새로 열면 <strong>무전 연결</strong> 버튼을 한 번 다시 누르세요.
+          </li>
+        </ul>
+      </section>
+    </main>
+
+    <script type="module" src="/static/radio.js"></script>
+  </body>
+</html>

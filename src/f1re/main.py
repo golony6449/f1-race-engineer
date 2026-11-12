@@ -210,7 +210,7 @@ async def _run_live(
     duration_s: float | None,
     web: tuple[str, int] | None,
 ) -> None:
-    web_server = _start_web_server(store, web)
+    web_server = _start_web_server(store, web, conn)
     transport: asyncio.DatagramTransport | None = None
     try:
         transport, _protocol = await start_receiver(
@@ -239,19 +239,25 @@ async def _run_live(
 
 
 def _start_web_server(
-    store: StateStore, web: tuple[str, int] | None
-) -> tuple[Any, asyncio.Task[None]] | None:
-    """같은 이벤트 루프에 uvicorn 대시보드를 띄운다. `web`이 없으면 아무것도 안 한다."""
+    store: StateStore, web: tuple[str, int] | None, conn: Any = None
+) -> tuple[Any, asyncio.Task[None], Any] | None:
+    """같은 이벤트 루프에 uvicorn 대시보드를 띄운다. `web`이 없으면 아무것도 안 한다.
+
+    무전 페이지(`/radio`)가 쓸 음성 캐시(Qwen TTS)와 무전 기록(같은 SQLite
+    연결)을 붙인 `RadioService`를 함께 만든다.
+    """
     if web is None:
         return None
     # 웹을 쓰지 않을 때(리플레이)는 fastapi·uvicorn을 불러오지 않는다.
     import uvicorn
 
     from f1re.web.app import create_app
+    from f1re.web.radio_api import build_radio_service
 
+    radio = build_radio_service(store, log_conn=conn)
     host, port = web
     config = uvicorn.Config(
-        create_app(store),
+        create_app(store, radio=radio),
         host=host,
         port=port,
         log_level="warning",
@@ -263,15 +269,15 @@ def _start_web_server(
         print(f"웹 대시보드: http://{_browse_host(host)}:{port}")
     else:
         print(f"웹 대시보드: http://{_browse_host(host)}:<빈 포트>")
-    return server, task
+    return server, task, radio
 
 
 async def _stop_web_server(
-    web_server: tuple[Any, asyncio.Task[None]] | None,
+    web_server: tuple[Any, asyncio.Task[None], Any] | None,
 ) -> None:
     if web_server is None:
         return
-    server, task = web_server
+    server, task, radio = web_server
     server.should_exit = True
     try:
         await task
@@ -284,6 +290,8 @@ async def _stop_web_server(
     except KeyboardInterrupt:
         # Ctrl+C가 이미 전파되는 중이다. 웹 서버 종료는 여기서 끝낸다.
         pass
+    finally:
+        await radio.aclose()
 
 
 def _browse_host(host: str) -> str:
