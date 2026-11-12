@@ -18,7 +18,7 @@ import binascii
 import json
 from collections.abc import AsyncIterator, Callable
 from typing import Any
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import urlsplit
 
 import httpx
 
@@ -263,19 +263,10 @@ class QwenTTS:
     async def _download_audio(self, url: str) -> bytes:
         """서명된 오디오 URL에서 WAV를 받는다. Authorization은 보내지 않는다.
 
-        실제 응답의 URL은 `http://` OSS 서명 주소로 온다. 같은 주소의 https를
-        먼저 시도하고(OSS는 보통 https도 된다), 실패하면 원래 http URL로 받는다.
+        API가 준 URL의 스킴(`http://` 또는 `https://`)을 바꾸지 않고 그대로
+        받는다. 같은 주소의 https를 먼저 시도하면 TLS 핸드셰이크가 멈출 때
+        전체 합성 마감(기본 2초)을 다 써 버릴 수 있어, 선시도하지 않는다.
         """
-        parts = urlsplit(url)
-        if parts.scheme == "http":
-            https_url = urlunsplit(parts._replace(scheme="https"))
-            try:
-                upgraded = await self._client.get(https_url)
-                if upgraded.is_success and upgraded.content.startswith(b"RIFF"):
-                    return upgraded.content
-            except httpx.HTTPError:
-                # https가 안 되면 원래 http로 넘어간다.
-                pass
         response = await self._client.get(url)
         self._raise_http_error(response, "오디오 다운로드")
         return response.content

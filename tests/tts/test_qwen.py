@@ -27,7 +27,6 @@ HTTP_AUDIO_URL = (
     "http://dashscope-result-bj.oss-cn-beijing.aliyuncs.com"
     "/tts/sample.wav?Expires=1766113409&Signature=fake-signature"
 )
-HTTPS_AUDIO_URL = HTTP_AUDIO_URL.replace("http://", "https://", 1)
 ENDPOINT = (
     "https://dashscope-intl.aliyuncs.com"
     "/api/v1/services/aigc/multimodal-generation/generation"
@@ -204,7 +203,7 @@ async def test_empty_download_is_tts_unavailable() -> None:
         await tts.synthesize("테스트")
 
 
-async def test_http_audio_url_is_downloaded_over_https_first(make_wav: Any) -> None:
+async def test_http_audio_url_is_downloaded_as_is(make_wav: Any) -> None:
     audio = make_wav()
     downloads: list[httpx.Request] = []
 
@@ -221,60 +220,36 @@ async def test_http_audio_url_is_downloaded_over_https_first(make_wav: Any) -> N
     result = await tts.synthesize("박스, 박스.")
 
     assert result == audio
-    assert [str(request.url) for request in downloads] == [HTTPS_AUDIO_URL]
+    # https를 먼저 시도하지 않고 API가 준 http URL을 그대로 받는다.
+    assert [str(request.url) for request in downloads] == [HTTP_AUDIO_URL]
     assert "authorization" not in downloads[0].headers
 
 
-async def test_http_audio_url_falls_back_to_http(make_wav: Any) -> None:
+async def test_http_audio_url_succeeds_when_https_would_hang(make_wav: Any) -> None:
     audio = make_wav()
     downloads: list[httpx.Request] = []
 
-    def handler(request: httpx.Request) -> httpx.Response:
+    async def handler(request: httpx.Request) -> httpx.Response:
         if request.method == "POST":
             return httpx.Response(
                 200,
                 json={"output": {"audio": {"data": "", "url": HTTP_AUDIO_URL}}},
             )
         downloads.append(request)
-        if str(request.url) == HTTPS_AUDIO_URL:
-            return httpx.Response(403, json={"code": "AccessDenied"})
+        if request.url.scheme == "https":
+            # https 선시도가 있으면 TLS 핸드셰이크가 멈춘 상황을 흉내 낸다.
+            await asyncio.sleep(3600)
         return httpx.Response(200, content=audio)
 
-    tts = _tts(handler)
+    # 전체 2초 마감은 그대로 두고, http URL로 그 안에 끝나야 한다.
+    tts = _tts(handler, config=_config(timeout_s=2.0))
+    started = time.perf_counter()
     result = await tts.synthesize("박스, 박스.")
+    elapsed = time.perf_counter() - started
 
     assert result == audio
-    assert [str(request.url) for request in downloads] == [
-        HTTPS_AUDIO_URL,
-        HTTP_AUDIO_URL,
-    ]
-    assert all("authorization" not in request.headers for request in downloads)
-
-
-async def test_http_audio_url_falls_back_on_https_network_error(make_wav: Any) -> None:
-    audio = make_wav()
-    downloads: list[httpx.Request] = []
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        if request.method == "POST":
-            return httpx.Response(
-                200,
-                json={"output": {"audio": {"data": "", "url": HTTP_AUDIO_URL}}},
-            )
-        downloads.append(request)
-        if str(request.url) == HTTPS_AUDIO_URL:
-            raise httpx.ConnectError("SSL handshake failed", request=request)
-        return httpx.Response(200, content=audio)
-
-    tts = _tts(handler)
-    result = await tts.synthesize("박스, 박스.")
-
-    assert result == audio
-    assert [str(request.url) for request in downloads] == [
-        HTTPS_AUDIO_URL,
-        HTTP_AUDIO_URL,
-    ]
-    assert all("authorization" not in request.headers for request in downloads)
+    assert [str(request.url) for request in downloads] == [HTTP_AUDIO_URL]
+    assert elapsed < 1.0
 
 
 async def test_audio_url_with_unsupported_scheme_is_rejected() -> None:

@@ -28,8 +28,9 @@
 - 응답: `output.audio.url`(WAV, 24시간 유효), `output.audio.expires_at`, `usage.characters`.
   비실시간 응답의 `output.audio.data`는 비어 있다.
   - **PL 실측(2026-11-12): 실제 `output.audio.url`은 `http://...` Alibaba OSS 서명
-    주소로 온다.** 클라이언트는 같은 주소의 `https://`를 먼저 시도하고, 실패하면
-    원래 `http://`로 받는다. 두 경우 모두 `Authorization` 헤더는 보내지 않는다.
+    주소로 온다.** 클라이언트는 URL의 스킴(`http://` 또는 `https://`)을 바꾸지 않고
+    API가 준 주소 그대로 받는다. 같은 주소의 `https://`를 먼저 시도하지 않으며,
+    어느 경우에도 `Authorization` 헤더는 보내지 않는다.
 - 오류 응답: `status_code`, `request_id`, `code`, `message` (HTTP 400/401/404/500 등).
 
 ### SSE 스트리밍
@@ -109,8 +110,12 @@
 - 오디오 다운로드 URL은 서명된 다른 호스트이므로 `Authorization` 헤더를 붙이지
   않는다.
 - PL 실측(2026-11-12): 5개 보이스 × 5문장 25건이 모두 `http://` URL 때문에
-  실패했다(기존 클라이언트가 https만 허용). http/https를 모두 받고 https를 먼저
-  시도한 뒤 http로 폴백하도록 고쳤다. 고친 뒤 PL 재실행에서 25건 모두 정상.
+  실패했다(기존 클라이언트가 https만 허용). http/https를 모두 받도록 고친 뒤 PL
+  재실행에서 25건 모두 정상.
+- PL 실측(2026-11-13): 같은 주소의 `https://`를 먼저 받던 동작이 TLS 핸드셰이크
+  (`start_tls`)에서 멈춰, 일반 합성의 2초 마감을 모두 소진하는 간헐 실패가 있었다.
+  https 선시도는 이득이 없고 지연 위험만 있어 없앴다. API가 준 URL을 스킴 그대로
+  바로 받는다.
 
 ## 출처
 
