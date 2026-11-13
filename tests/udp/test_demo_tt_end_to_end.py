@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import sys
+import time
 from pathlib import Path
 
 from f1re.demo_sender.sender import DemoSender
@@ -96,7 +97,16 @@ async def test_demo_tt_end_to_end() -> None:
         _stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=30.0)
         assert process.returncode == 0, stderr.decode(errors="replace")
         # 송신이 끝난 뒤 소켓에 남은 데이터그램까지 처리할 시간을 준다.
-        await asyncio.sleep(0.5)
+        # 수신 처리 속도는 기계 부하에 따라 달라지므로 고정 시간 대신
+        # 수신 카운터가 멈출 때까지 기다린다(마지막 랩 완료 패킷을 놓치지 않게).
+        previous = -1
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline:
+            current = store.diagnostics.total_packets
+            if current == previous:
+                break
+            previous = current
+            await asyncio.sleep(0.2)
     finally:
         if process.returncode is None:
             process.kill()

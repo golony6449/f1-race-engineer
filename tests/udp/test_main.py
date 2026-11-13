@@ -43,6 +43,16 @@ def test_help_lists_serve(capsys: pytest.CaptureFixture[str]) -> None:
     assert "serve" in capsys.readouterr().out
 
 
+def test_serve_engine_option_selects_start_state() -> None:
+    from f1re.main import _parse_args
+
+    assert _parse_args(["serve"]).engine is None
+    assert _parse_args(["serve", "--engine", "on"]).engine == "on"
+    assert _parse_args(["serve", "--engine", "off"]).engine == "off"
+    with pytest.raises(SystemExit):
+        _parse_args(["serve", "--engine", "maybe"])
+
+
 def test_serve_replay_records_session(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

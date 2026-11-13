@@ -3,6 +3,7 @@
     f1re serve [--host HOST] [--port PORT] [--record DIR] [--replay FILE]
                [--db PATH] [--speed 배율] [--duration 초]
                [--web-host HOST] [--web-port PORT] [--no-web]
+               [--engine on|off]
 
 `--replay`가 있으면 녹화 파일을 같은 파이프라인(녹화 → 파싱 → 상태 → 사건)에
 흘려보내고, 없으면 UDP 20777(설정값)에서 게임 패킷을 받는다. 세션 시작·종료는
@@ -10,6 +11,10 @@ SQLite `sessions` 표에 남긴다.
 
 실시간 수신(`--replay` 없음)에서는 같은 프로세스가 uvicorn 웹 대시보드도 띄운다
 (기본 `[web]` 설정, `0.0.0.0:8093`). 화면은 서버 API를 읽기만 한다(설계 6.9).
+웹 서버는 항상 뜨고, 게임 중에만 필요한 런타임(엔진)은 화면의 설정 모달이나
+`POST /api/engine`으로 켜고 끈다(SCRUM-82). 마지막 상태는
+`data/engine-state.json`에 남으며, 파일이 없으면 OFF로 시작한다.
+`--engine on|off`는 그 시작 상태를 덮어쓴다.
 리플레이는 개발·테스트용이라 웹 서버를 띄우지 않는다.
 """
 
@@ -24,23 +29,28 @@ from pathlib import Path
 from typing import Any
 
 from f1re.config import ConfigError, load_config
-from f1re.db import (
-    finish_session,
-    open_db,
-    save_session,
-    update_session_progress,
+from f1re.db import open_db
+from f1re.engine import (
+    ENGINE_OFF,
+    ENGINE_ON,
+    Engine,
+    default_engine_state_path,
+    finalize_session,
+    persist_events,
+    read_engine_state,
+    write_engine_state,
 )
-from f1re.state.events import Event, EventKind
+from f1re.state.events import EventKind
 from f1re.state.store import StateStore
 from f1re.udp.recording import (
     RecordingWriter,
     new_recording_path,
     replay,
 )
-from f1re.udp.receiver import process_datagram, start_receiver
+from f1re.udp.receiver import process_datagram
 
-# 실행 중 세션 진행 상황을 DB에 반영하는 주기(초).
-_PERSIST_INTERVAL_S = 1.0
+# 세션 유지 시간(`--duration`)을 확인하는 주기(초).
+_WAIT_INTERVAL_S = 1.0
 
 
 def _parse_args(argv: list[str] | None) -> argparse.Namespace:
@@ -90,6 +100,15 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     serve.add_argument(
         "--no-web", action="store_true", help="웹 대시보드를 띄우지 않는다"
     )
+    serve.add_argument(
+        "--engine",
+        choices=(ENGINE_ON, ENGINE_OFF),
+        default=None,
+        help=(
+            "시작할 때의 엔진 상태. 생략하면 data/engine-state.json의 마지막 "
+            "상태를 쓰고, 파일이 없으면 off"
+        ),
+    )
     return parser.parse_args(argv)
 
 
@@ -129,7 +148,6 @@ def _serve(args: argparse.Namespace) -> int:
             return 2
         web = (web_host, web_port)
 
-    conn = open_db(args.db)
     writer: RecordingWriter | None = None
     recorded_file: Path | None = None
     if args.record is not None:
@@ -137,37 +155,52 @@ def _serve(args: argparse.Namespace) -> int:
         writer = RecordingWriter(recorded_file)
         print(f"원본 녹화: {recorded_file}")
 
-    store = StateStore()
+    conn: Any | None = None
     try:
         if args.replay is not None:
+            conn = open_db(args.db)
             return _run_replay(
-                store,
+                StateStore(),
                 conn,
                 path=args.replay,
                 speed=args.speed,
                 writer=writer,
                 recorded_file=recorded_file or args.replay,
             )
+
+        # 마지막 상태를 기억한다. 파일이 없으면(최초) OFF로 시작한다(SCRUM-82).
+        state_path = default_engine_state_path()
+        start_state = (
+            args.engine
+            if args.engine is not None
+            else read_engine_state(state_path)
+        )
+        if args.engine is not None:
+            # 명령줄 덮어쓰기는 재시작 뒤에도 유지한다.
+            write_engine_state(start_state, state_path)
         try:
             asyncio.run(
                 _run_live(
-                    store,
-                    conn,
+                    config,
                     host=args.host,
                     port=port,
                     writer=writer,
                     recorded_file=recorded_file,
                     duration_s=args.duration,
                     web=web,
+                    start_state=start_state,
+                    db_path=args.db,
+                    state_path=state_path,
                 )
             )
         except KeyboardInterrupt:
-            print("UDP 수신을 중단했습니다.")
+            print("레이스 엔지니어를 중단했습니다.")
         return 0
     finally:
         if writer is not None:
             writer.close()
-        conn.close()
+        if conn is not None:
+            conn.close()
 
 
 def _run_replay(
@@ -185,8 +218,8 @@ def _run_replay(
         lambda recv_ns, data: process_datagram(store, data, recv_ns, writer),
         speed=speed,
     )
-    events = _persist_events(conn, store, recorded_file)
-    _finalize_session(conn, store, recorded_file)
+    events = persist_events(conn, store, recorded_file)
+    finalize_session(conn, store, recorded_file)
 
     snapshot = store.snapshot()
     diagnostics = snapshot["diagnostics"]
@@ -200,8 +233,7 @@ def _run_replay(
 
 
 async def _run_live(
-    store: StateStore,
-    conn: Any,
+    config: Any,
     *,
     host: str,
     port: int,
@@ -209,43 +241,67 @@ async def _run_live(
     recorded_file: Path | None,
     duration_s: float | None,
     web: tuple[str, int] | None,
+    start_state: str,
+    db_path: Path | None,
+    state_path: Path,
 ) -> None:
-    web_server = _start_web_server(store, conn, web)
-    transport: asyncio.DatagramTransport | None = None
+    """웹 서버를 먼저 띄우고, 저장된 시작 상태에 따라 엔진을 켠다."""
+    engine = Engine(
+        config,
+        host=host,
+        port=port,
+        db_path=db_path,
+        recorder=writer,
+        recorded_file=recorded_file,
+        state_path=state_path,
+        initial_state=start_state,
+    )
+    web_server = _start_web_server(engine, web)
     try:
-        transport, _protocol = await start_receiver(
-            store, host=host, port=port, recorder=writer
-        )
-        sockname = transport.get_extra_info("sockname") or (host, port)
-        print(f"UDP 수신 대기: {sockname[0]}:{sockname[1]} (Ctrl+C로 중단)")
+        if start_state == ENGINE_ON:
+            try:
+                await engine.start()
+            except Exception as exc:
+                # 포트 사용 중 등. 웹은 계속 떠서 화면에서 다시 켤 수 있게 한다.
+                print(
+                    "레이스 엔지니어를 켜지 못했습니다: "
+                    f"{type(exc).__name__}: {exc}",
+                    file=sys.stderr,
+                )
+                write_engine_state(ENGINE_OFF, state_path)
+        if engine.state == ENGINE_ON:
+            address = engine.udp_address or (host, port)
+            print(f"UDP 수신 대기: {address[0]}:{address[1]} (Ctrl+C로 중단)")
+        else:
+            print(
+                "레이스 엔지니어: 꺼짐 "
+                "(대시보드 우측 아래 설정에서 켜면 UDP 수신을 시작합니다)"
+            )
+
         started = time.monotonic()
         while True:
-            interval = _PERSIST_INTERVAL_S
+            interval = _WAIT_INTERVAL_S
             if duration_s is not None:
                 remaining = duration_s - (time.monotonic() - started)
                 if remaining <= 0:
                     break
                 interval = min(interval, remaining)
             await asyncio.sleep(interval)
-            _persist_events(conn, store, recorded_file)
     finally:
-        if transport is not None:
-            transport.close()
+        # 종료는 사용자가 끈 것이 아니다. 마지막 저장 상태(ON/OFF)는 그대로 둔다.
+        await engine.aclose()
         await _stop_web_server(web_server)
-        _persist_events(conn, store, recorded_file)
-        _finalize_session(conn, store, recorded_file)
         await asyncio.sleep(0)
-    print("UDP 수신을 멈췄습니다.")
+    print("레이스 엔지니어를 멈췄습니다.")
 
 
 def _start_web_server(
-    store: StateStore, conn: Any, web: tuple[str, int] | None
-) -> tuple[Any, asyncio.Task[None], Any] | None:
+    engine: Engine, web: tuple[str, int] | None
+) -> tuple[Any, asyncio.Task[None]] | None:
     """같은 이벤트 루프에 uvicorn 대시보드를 띄운다. `web`이 없으면 아무것도 안 한다.
 
-    무전 페이지(`/radio`)가 쓸 음성 캐시(Qwen TTS)와 무전 기록(같은 SQLite
-    연결)을 붙인 `RadioService`를 함께 만든다. `conn`은 서킷 지도(작업 10)가
-    학습한 윤곽을 읽는 데도 쓴다.
+    웹 서버는 엔진과 무관하게 항상 뜬다. 엔진이 켜질 때 무전 서비스와 DB
+    연결을 `Engine`이 만들고, 화면 API는 요청마다 그 런타임을 읽는다.
     """
     if web is None:
         return None
@@ -253,12 +309,10 @@ def _start_web_server(
     import uvicorn
 
     from f1re.web.app import create_app
-    from f1re.web.radio_api import build_radio_service
 
-    radio = build_radio_service(store, log_conn=conn)
     host, port = web
     config = uvicorn.Config(
-        create_app(store, radio=radio, conn=conn),
+        create_app(engine=engine),
         host=host,
         port=port,
         log_level="warning",
@@ -270,15 +324,15 @@ def _start_web_server(
         print(f"웹 대시보드: http://{_browse_host(host)}:{port}")
     else:
         print(f"웹 대시보드: http://{_browse_host(host)}:<빈 포트>")
-    return server, task, radio
+    return server, task
 
 
 async def _stop_web_server(
-    web_server: tuple[Any, asyncio.Task[None], Any] | None,
+    web_server: tuple[Any, asyncio.Task[None]] | None,
 ) -> None:
     if web_server is None:
         return
-    server, task, radio = web_server
+    server, task = web_server
     server.should_exit = True
     try:
         await task
@@ -291,68 +345,11 @@ async def _stop_web_server(
     except KeyboardInterrupt:
         # Ctrl+C가 이미 전파되는 중이다. 웹 서버 종료는 여기서 끝낸다.
         pass
-    finally:
-        await radio.aclose()
 
 
 def _browse_host(host: str) -> str:
     """브라우저에 안내할 주소. 모든 인터페이스 바인딩은 localhost로 보여 준다."""
     return "localhost" if host in {"", "0.0.0.0", "::"} else host
-
-
-def _persist_events(
-    conn: Any, store: StateStore, recorded_file: Path | None
-) -> list[Event]:
-    """세션 시작·종료 사건을 DB에 반영하고, 꺼낸 사건 목록을 돌려준다."""
-    events = store.events.drain()
-    for event in events:
-        uid = event.data.get("session_uid")
-        if uid is None:
-            continue
-        recv_ns = int(event.data.get("recv_ns") or time.time_ns())
-        if event.kind in (EventKind.SESSION_START, EventKind.SESSION_RESTART):
-            previous = event.data.get("previous_session_uid")
-            if previous is not None:
-                finish_session(conn, int(previous), ended_at_ns=recv_ns)
-            save_session(
-                conn,
-                int(uid),
-                started_at_ns=recv_ns,
-                recorded_file=str(recorded_file) if recorded_file else None,
-            )
-        elif event.kind is EventKind.SESSION_END:
-            finish_session(conn, int(uid), ended_at_ns=recv_ns)
-    return events
-
-
-def _finalize_session(
-    conn: Any, store: StateStore, recorded_file: Path | None
-) -> None:
-    """마지막 세션 행에 서킷·세션 종류와 수신 카운터를 채운다."""
-    snapshot = store.snapshot()
-    diagnostics = snapshot["diagnostics"]
-    uid = snapshot["session_uid"]
-    if uid is None:
-        return
-    session_body = snapshot["packets"].get("session") or {}
-    save_session(
-        conn,
-        int(uid),
-        started_at_ns=int(diagnostics.get("session_started_ns") or time.time_ns()),
-        track_id=_as_int(session_body.get("track_id")),
-        session_type=_as_int(session_body.get("session_type")),
-        recorded_file=str(recorded_file) if recorded_file else None,
-    )
-    update_session_progress(
-        conn,
-        int(uid),
-        packets_received=int(diagnostics.get("total_packets") or 0),
-        unsupported_count=int(diagnostics.get("unsupported_count") or 0),
-    )
-
-
-def _as_int(value: Any) -> int | None:
-    return int(value) if isinstance(value, (int, float)) else None
 
 
 if __name__ == "__main__":

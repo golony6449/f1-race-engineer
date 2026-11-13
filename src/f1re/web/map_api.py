@@ -18,9 +18,10 @@ from __future__ import annotations
 import math
 import threading
 import time
+from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 
 from f1re.tracks.learn import resolve_outline
 from f1re.tracks.model import Track, TrackDataError, load_track
@@ -234,13 +235,23 @@ class TrackMap:
             self._checked_at_s = now
 
 
-def create_map_router(store: StateStore, map_state: TrackMap) -> APIRouter:
-    """지도 API 라우터. `web/app.py`가 앱에 한 줄로 붙인다."""
+def create_map_router(runtime: Callable[[], Any | None]) -> APIRouter:
+    """지도 API 라우터. `web/app.py`가 앱에 한 줄로 붙인다.
+
+    `runtime`은 엔진이 켜져 있을 때 `Runtime`(저장소·지도)을, 꺼져 있으면
+    `None`을 돌려주는 함수다. 라우터는 요청마다 읽으므로 엔진을 껐다 켜도
+    같은 앱이 새 런타임을 쓴다(SCRUM-82).
+    """
     router = APIRouter()
 
     @router.get("/api/track")
     def api_track() -> dict[str, Any]:
-        return map_state.track_payload(store.snapshot())
+        current = runtime()
+        if current is None:
+            raise HTTPException(
+                status_code=503, detail={"engine": "off"}
+            )
+        return current.map.track_payload(current.store.snapshot())
 
     return router
 
