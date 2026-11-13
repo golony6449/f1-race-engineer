@@ -163,3 +163,59 @@ def test_pages_and_static_assets_disable_cache() -> None:
     api = client.get("/api/state")
     assert api.status_code == 200
     assert "no-cache" not in api.headers.get("cache-control", "").lower()
+
+
+def test_dashboard_has_engine_settings_button_and_modal() -> None:
+    """SCRUM-82: 우측 하단 톱니바퀴 버튼 → 레이스 엔지니어 ON/OFF 모달."""
+    client = _client()
+    html = client.get("/").text
+
+    fab = re.search(
+        r'<button\b[^>]*id="engine-settings"[^>]*>.*?</button>', html, re.S
+    )
+    assert fab, "우측 하단 설정 플로팅 버튼이 없습니다"
+    assert 'aria-label="설정"' in fab.group(0)
+    # 아이콘은 외부 이미지가 아니라 인라인 SVG다.
+    assert "<svg" in fab.group(0)
+
+    # 모달: 제목, ON/OFF 토글, 상태 설명, 닫기.
+    assert 'id="engine-modal"' in html
+    assert 'id="engine-modal-title"' in html
+    assert "레이스 엔지니어" in html
+    assert 'id="engine-toggle"' in html
+    assert 'role="switch"' in html
+    assert "꺼짐: UDP 수신·무전·분석이 모두 멈춥니다" in html
+    assert 'id="engine-close"' in html
+    assert "닫기" in html
+
+    # OFF면 본문 대신 안내만 보여 준다.
+    assert "레이스 엔지니어가 꺼져 있습니다." in html
+    assert "우측 아래 설정에서 켜세요." in html
+
+    js = client.get("/static/dashboard.js").text
+    assert '"/api/engine"' in js
+    assert 'payload.type === "engine"' in js
+    # OFF에서는 WebSocket을 열지 않는다.
+    assert 'if (engineState !== "on") return;' in js
+
+    css = client.get("/static/style.css").text
+    assert ".engine-fab" in css
+    assert "position: fixed;" in css
+    assert ".engine-modal" in css
+    assert ".engine-toggle" in css
+    assert ".engine-off" in css
+
+
+def test_radio_page_shows_engine_off_notice() -> None:
+    """SCRUM-82: 무전 페이지도 엔진이 꺼져 있으면 '꺼짐'을 안내한다."""
+    client = _client()
+    html = client.get("/radio").text
+
+    assert 'id="engine-off"' in html
+    assert "레이스 엔지니어가 꺼져 있습니다." in html
+
+    js = client.get("/static/radio.js").text
+    assert '"/api/engine"' in js
+    assert 'case "engine":' in js
+    # OFF에서는 연결 버튼과 자동 재연결을 멈춘다.
+    assert 'if (engineState !== "on") return;' in js
