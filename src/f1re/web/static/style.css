@@ -398,6 +398,35 @@ body {
 /* 서킷 지도 */
 
 /*
+  지도 패널은 세로 flex(SCRUM-88). 제목 줄·지도·코너 지표를 위에서 아래로
+  쌓고 `.map-wrap`이 남는 높이를 모두 쓴다. 넓은 화면에서는 그리드 행
+  stretch로 같은 행의 타이어·브레이크 패널과 높이가 같아진다.
+*/
+.map {
+  display: flex;
+  flex-direction: column;
+}
+
+/*
+  제목 줄(SCRUM-88): 제목은 왼쪽, 깃발 칩은 오른쪽에 두고 세로 가운데로
+  맞춘다. 좁은 화면에서는 칩이 다음 줄로 접힌다. 아래 여백은 이 줄이 갖고
+  `.flag-row`는 스스로 여백을 두지 않는다.
+*/
+.map-head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+
+/* 패널 공통 h2 아래 여백은 머리 줄이 대신 갖는다. */
+.map-head h2 {
+  margin: 0;
+}
+
+/*
   깃발 상태 줄(SCRUM-80). 꺼짐은 회색 테두리, 켜짐은 해당 깃발 색 테두리와
   글자다. 다섯 칸은 항상 보이고, 값이 끊겨도 서버가 마지막 값을 계속 준다.
 */
@@ -406,7 +435,7 @@ body {
   flex: 0 0 auto;
   flex-wrap: wrap;
   gap: 6px;
-  margin: 0 0 10px;
+  margin: 0;
 }
 
 .flag-chip {
@@ -457,8 +486,15 @@ body {
   opacity: 0.5;
 }
 
+/*
+  지도는 패널의 남는 높이를 모두 쓴다(SCRUM-88). 패널 높이가 내용에 맞춰
+  정해지는 1열(좁은 화면)에서는 아래 `height`가 그대로 쓰이고, 넓은 화면
+  에서는 아래 미디어 쿼리가 `height: auto`로 풀어 남는 높이를 채운다.
+*/
 .map-wrap {
   position: relative;
+  flex: 1 1 auto;
+  min-height: 220px;
   height: clamp(220px, 36vh, 440px);
   background: var(--panel-2);
   border: 1px solid var(--line);
@@ -802,11 +838,18 @@ body {
   온도, 압력, 브레이크 온도, 컴파운드·사용 랩)가 모두 보이게 한다.
 */
 @media (min-width: 1100px) {
+  /*
+    두 섹션은 6칼럼씩 나란히 서고, 높이는 타이어·브레이크 패널이 정한다.
+    지도 패널은 높이를 정하지 않아 그리드 행 stretch로 같은 높이가 된다.
+  */
   .tyres-brakes,
   .map {
     display: flex;
     flex-direction: column;
     grid-column: span 6;
+  }
+
+  .tyres-brakes {
     height: clamp(400px, 46vh, 450px);
   }
 
@@ -865,15 +908,19 @@ body {
     margin-top: 4px;
   }
 
-  /* 지도는 남는 높이를 채우고, 코너 지표가 길어지면 그 안에서만 스크롤한다. */
+  /*
+    지도는 남는 높이를 모두 쓰고(최소 220px), 코너 지표가 길어지면 지도
+    높이를 지키기 위해 지표 칸이 그 안에서만 스크롤한다.
+  */
   .map .map-wrap {
     flex: 1 1 auto;
     height: auto;
-    min-height: 0;
+    min-height: 220px;
   }
 
   .map .map-info {
-    flex: 0 0 auto;
+    flex: 0 1 auto;
+    min-height: 0;
     max-height: 150px;
     overflow-y: auto;
   }

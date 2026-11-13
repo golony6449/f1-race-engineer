@@ -203,6 +203,86 @@ def test_map_section_has_flag_status_row() -> None:
     assert "_drawYellowZones" in script
 
 
+def test_map_title_and_flag_row_share_one_head_line() -> None:
+    """SCRUM-88: 서킷 지도 제목과 깃발 칩을 한 줄 머리 요소에 둔다."""
+    client = _client()
+    html = client.get("/").text
+
+    head = re.search(
+        r'<div class="map-head">(.*?)\s*</div>\s*<div class="map-wrap"',
+        html,
+        re.S,
+    )
+    assert head, "서킷 지도 제목과 깃발 줄을 묶은 머리 요소가 없습니다"
+    head_html = head.group(1)
+    # 제목이 왼쪽(먼저), 깃발 줄이 오른쪽(다음)에 온다.
+    assert "<h2>서킷 지도</h2>" in head_html
+    assert 'class="flag-row"' in head_html
+    assert head_html.index("<h2>서킷 지도</h2>") < head_html.index(
+        'class="flag-row"'
+    )
+    # 깃발 칩 다섯 개와 기존 id는 그대로다.
+    assert 'id="flag-row"' in head_html
+    chips = re.findall(r'data-flag="([a-z]+)"', head_html)
+    assert chips == ["red", "blue", "yellow", "sc", "vsc"]
+
+    # 머리 줄은 양 끝 정렬·세로 가운데, 좁으면 줄바꿈한다.
+    # 깃발 줄은 스스로 아래 여백을 두지 않는다.
+    css = client.get("/static/style.css").text
+    head_rule = re.search(r"\n\.map-head \{(.*?)\}", css, re.S)
+    assert head_rule, ".map-head 규칙이 없습니다"
+    rule = head_rule.group(1)
+    assert "display: flex;" in rule
+    assert "flex-wrap: wrap;" in rule
+    assert "align-items: center;" in rule
+    assert "justify-content: space-between;" in rule
+
+    flag_rule = re.search(r"\n\.flag-row \{(.*?)\}", css, re.S)
+    assert flag_rule
+    assert "margin: 0;" in flag_rule.group(1)
+
+
+def test_map_fills_remaining_panel_height() -> None:
+    """SCRUM-88: 지도 패널은 세로 flex, 지도 칸이 남는 높이를 모두 쓴다."""
+    client = _client()
+    css = client.get("/static/style.css").text
+
+    map_rule = re.search(r"\n\.map \{(.*?)\}", css, re.S)
+    assert map_rule, ".map 패널 규칙이 없습니다"
+    rule = map_rule.group(1)
+    assert "display: flex;" in rule
+    assert "flex-direction: column;" in rule
+
+    # 1열(좁은 화면)에서는 기존 고정 높이를 그대로 쓴다.
+    wrap_rule = re.search(r"\n\.map-wrap \{(.*?)\}", css, re.S)
+    assert wrap_rule
+    assert "flex: 1 1 auto;" in wrap_rule.group(1)
+    assert "min-height: 220px;" in wrap_rule.group(1)
+    assert "height: clamp(220px, 36vh, 440px);" in wrap_rule.group(1)
+
+    # 넓은 화면에서는 높이를 풀어 그리드 행 stretch로 타이어 패널과 같은
+    # 높이가 되고, 지도가 그 안의 남는 높이를 모두 쓴다.
+    wide = _wide_screen_css()
+    tyres_rule = re.search(r"\.tyres-brakes \{(.*?)\}", wide, re.S)
+    assert tyres_rule, "타이어 패널 높이 규칙이 없습니다"
+    assert "height: clamp(400px, 46vh, 450px);" in tyres_rule.group(1)
+
+    wide_wrap = re.search(r"\.map \.map-wrap \{(.*?)\}", wide, re.S)
+    assert wide_wrap
+    assert "height: auto;" in wide_wrap.group(1)
+
+    # 지도 최소 높이를 지키려면 코너 지표 칸이 그 안에서 스크롤한다.
+    wide_info = re.search(r"\.map \.map-info \{(.*?)\}", wide, re.S)
+    assert wide_info
+    assert "min-height: 0;" in wide_info.group(1)
+    assert "overflow-y: auto;" in wide_info.group(1)
+
+    # 캔버스 크기가 바뀌면 회전·맞춤을 다시 계산한다(ResizeObserver).
+    script = client.get("/static/map.js").text
+    assert "ResizeObserver" in script
+    assert ".observe(this.root)" in script
+
+
 def test_wide_screen_puts_tyres_and_map_side_by_side() -> None:
     """SCRUM-79: 넓은 화면에서 타이어·브레이크와 지도를 좌우 반반으로 둔다."""
     block = _wide_screen_css()
