@@ -9,7 +9,7 @@
 SQLite `sessions` 표에 남긴다.
 
 실시간 수신(`--replay` 없음)에서는 같은 프로세스가 uvicorn 웹 대시보드도 띄운다
-(기본 `[web]` 설정, `0.0.0.0:8080`). 화면은 서버 API를 읽기만 한다(설계 6.9).
+(기본 `[web]` 설정, `0.0.0.0:8093`). 화면은 서버 API를 읽기만 한다(설계 6.9).
 리플레이는 개발·테스트용이라 웹 서버를 띄우지 않는다.
 """
 
@@ -85,7 +85,7 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         "--web-port",
         type=int,
         default=None,
-        help="웹 대시보드 포트(기본: 설정 [web] port, 8080). 0이면 빈 포트",
+        help="웹 대시보드 포트(기본: 설정 [web] port, 8093). 0이면 빈 포트",
     )
     serve.add_argument(
         "--no-web", action="store_true", help="웹 대시보드를 띄우지 않는다"

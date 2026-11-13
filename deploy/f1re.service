@@ -11,7 +11,7 @@
 #
 # 체크아웃 위치나 uv 경로가 다르면 아래 WorkingDirectory·ExecStart를 고친다
 # (uv 경로는 `command -v uv`로 확인). 포트를 바꾸려면 ExecStart 끝에
-# `--port <UDP 포트>`(기본 20777), `--web-port <웹 포트>`(기본 8080)를 붙인다.
+# `--port <UDP 포트>`(기본 20777), `--web-port <웹 포트>`(기본 8093)를 붙인다.
 
 [Unit]
 Description=F1 25 한국어 AI 레이스 엔지니어 (f1re serve)
