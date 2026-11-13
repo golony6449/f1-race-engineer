@@ -45,6 +45,10 @@ def test_default_config_matches_global_constraints() -> None:
     assert config.tts.intro_gap_ms == pytest.approx(150.0)
     assert config.tts.intro_gain == pytest.approx(0.8)
 
+    # 무전 전달 계층: 안전 경고·박스 지시 유효 시간(SCRUM-81)
+    assert config.radio.safety_ttl_s == pytest.approx(30.0)
+    assert config.radio.box_ttl_s == pytest.approx(30.0)
+
 
 def test_partial_toml_keeps_other_defaults(tmp_path: Path) -> None:
     path = tmp_path / "config.toml"
@@ -89,6 +93,8 @@ def test_invalid_timeout_is_rejected(tmp_path: Path) -> None:
         ("[tts]\nspeed = 0\n", "speed"),
         ("[tts]\nintro_gap_ms = -1\n", "intro_gap_ms"),
         ("[tts]\nintro_gain = -0.1\n", "intro_gain"),
+        ("[radio]\nsafety_ttl_s = 0\n", "safety_ttl_s"),
+        ("[radio]\nbox_ttl_s = -1\n", "box_ttl_s"),
     ],
 )
 def test_invalid_voice_settings_are_rejected(
