@@ -39,21 +39,34 @@ body {
 /* 상단 상태줄 */
 
 .statusbar {
-  display: grid;
-  grid-template-columns: 1.4fr 1fr;
-  gap: 8px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
 }
 
+/*
+  상태줄은 한 줄 띠다(SCRUM-83). 칸마다 이름 · 상태 · 세부 값을 가로로 잇고,
+  넘치면 세부 값부터 말줄임한다. 빈 세부 값은 숨긴다.
+*/
 .status {
+  display: flex;
+  flex: 1 1 auto;
+  gap: 8px;
+  align-items: center;
   min-width: 0;
-  padding: 8px 12px;
+  padding: 4px 12px;
+  white-space: nowrap;
   background: var(--panel);
   border: 1px solid var(--line);
-  border-radius: 10px;
+  border-radius: 8px;
+}
+
+#status-connection {
+  flex-grow: 1.4;
 }
 
 .status-label {
-  display: block;
+  flex: none;
   font-size: 11px;
   font-weight: 700;
   letter-spacing: 0.09em;
@@ -61,18 +74,17 @@ body {
 }
 
 .status-value {
-  display: block;
-  margin-top: 2px;
+  flex: none;
   overflow: hidden;
-  font-size: 15px;
+  font-size: 14px;
   font-weight: 600;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .status-detail {
-  display: block;
-  margin-top: 1px;
+  flex: 0 1 auto;
+  min-width: 0;
   overflow: hidden;
   font-size: 11px;
   color: var(--muted);
@@ -80,26 +92,27 @@ body {
   white-space: nowrap;
 }
 
-/*
-  무전 칸: 상태 글자 오른쪽에 무전 페이지로 가는 버튼을 작게 둔다.
-  폭이 좁아지면 버튼이 상태 글자 아래로 접힌다.
-*/
-.status-line {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 2px 8px;
-  align-items: center;
+.status-detail:empty {
+  display: none;
 }
 
-.status-line .status-value {
-  flex: 1 1 auto;
-  min-width: 0;
+.status-detail::before {
+  margin-right: 8px;
+  color: var(--line);
+  content: "·";
+}
+
+/* 무전 칸: 상태 글자 바로 오른쪽에 무전 페이지로 가는 버튼을 작게 둔다. */
+.status-line {
+  display: flex;
+  flex: none;
+  gap: 8px;
+  align-items: center;
 }
 
 .status-button {
   flex: none;
-  margin-left: auto;
-  padding: 3px 10px;
+  padding: 1px 10px;
   font-size: 11px;
   font-weight: 600;
   color: var(--text);
@@ -618,8 +631,9 @@ body {
 /* 좁은 화면: 태블릿 세로·휴대폰 */
 
 @media (max-width: 900px) {
-  .statusbar {
-    grid-template-columns: 1fr;
+  /* 좁으면 두 칸이 각자 한 줄씩, 위아래로 놓인다. */
+  .status {
+    flex-basis: 100%;
   }
 }
 
