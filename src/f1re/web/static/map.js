@@ -9,6 +9,11 @@
  * - 팀 색: `/api/track`의 `team_colors`. 모르는 팀은 회색.
  * - 내 차는 흰 테두리, 앞차(추월 대상)는 노란 점선 테두리로 강조한다.
  * - SC·VSC·적기면 트랙 선 색을 바꾼다.
+ * - 깃발 줄(SCRUM-80)은 `/ws/state`의 `flags`만 보고 켜고 끈다. 옐로 구역
+ *   (`yellow_zones`, 랩 거리 비율)은 트랙 선 위에 노랗게 덧칠한다.
+ * - 서킷 모양이 캔버스에 가장 크게 들어가도록 윤곽을 0~179도에서 돌려 본
+ *   뒤 각도·배율·이동을 하나의 변환으로 만든다. 윤곽·차 점·코너·옐로 구역·
+ *   클릭 판정이 모두 이 변환을 쓴다(코너 번호 글자는 똑바로 그린다).
  * - 코너를 누르면 최근 지표(나 / 기준)를 보여 준다. 지표는 작업 15·16이
  *   채우며, 아직 없으면 자리 표시 문구를 보여 준다.
  */
@@ -24,6 +29,11 @@ const FLAG_STYLES = {
 const FALLBACK_TEAM_COLOR = "#8b97a8";
 const CORNER_HIT_PX = 16;
 const MAP_PADDING_PX = 28;
+// 옐로 구역을 트랙 선 위에 덧칠하는 색(SCRUM-80).
+const YELLOW_ZONE_COLOR = "#ffd166";
+// 서킷을 가장 크게 넣는 회전 각도 후보(0~179도, 1도 간격).
+const ROTATION_STEP_DEG = 1;
+const ROTATION_LIMIT_DEG = 180;
 
 // 리프트 앤 코스트 추천 구간(SCRUM-71)은 청록 점선 고리로 최소 강조한다.
 // 추천은 서버(`/api/lift-coast`)가 계산하고 화면은 그리기만 한다.
@@ -62,11 +72,18 @@ export class TrackMapView {
     this.track = null;
     this.cars = [];
     this.flag = "none";
+    this.flags = null;
+    this.yellowZones = [];
     this.stale = false;
     this.teamColors = {};
-    this.bounds = null;
+    // 같은 서킷·같은 캔버스 크기면 회전 각도 계산을 다시 하지 않는다.
+    this.rotationCache = null;
     this.cornerHits = [];
     this.selectedCorner = null;
+    // 깃발 상태 줄(SCRUM-80). `.map-wrap` 바깥, 지도 패널 제목 아래에 있다.
+    this.flagRow = root && root.parentElement
+      ? root.parentElement.querySelector(".flag-row")
+      : null;
     // 코너 번호 → 추천 구간(`/api/lift-coast`의 recommended 항목).
     this.liftZones = new Map();
     this.liftTimer = null;
@@ -83,7 +100,8 @@ export class TrackMapView {
     this.track = track || null;
     this.teamColors = (track && track.team_colors) || {};
     if (track && track.flag) this.flag = track.flag;
-    this.bounds = outlineBounds(track && track.outline);
+    // 윤곽이 새로 오면 같은 서킷 ID라도 각도를 다시 고른다.
+    this.rotationCache = null;
     this.selectedCorner = null;
     this._renderInfo(null);
     this._updateBadge();
@@ -120,9 +138,15 @@ export class TrackMapView {
     if (!payload) return;
     this.cars = payload.cars || [];
     if (payload.flag) this.flag = payload.flag;
+    this.flags = payload.flags || null;
+    this.yellowZones =
+      payload.flags && Array.isArray(payload.flags.yellow_zones)
+        ? payload.flags.yellow_zones
+        : [];
     this.stale = Boolean(payload.connection && payload.connection.stale);
     if (this.root) this.root.classList.toggle("stale", this.stale);
     this._updateBadge();
+    this._renderFlags();
     this._draw();
   }
 
@@ -180,6 +204,9 @@ export class TrackMapView {
     ctx.stroke();
     ctx.restore();
 
+    // 옐로 구역은 트랙 선 위에 노랗게 덧칠한다(SCRUM-80).
+    this._drawYellowZones(ctx, fit, outline);
+
     this._drawCorners(ctx, fit);
     this._drawCars(ctx, fit);
 
@@ -190,6 +217,37 @@ export class TrackMapView {
       ctx.fillText("데이터 안 옴 · 마지막 위치", 12, 20);
       ctx.restore();
     }
+  }
+
+  /**
+   * 옐로 구역을 트랙 선 위에 덧칠한다. 구역은 랩 거리 비율(0~1)이므로
+   * 서버가 준 랩 길이를 곱해 윤곽 위의 구간으로 자른다.
+   */
+  _drawYellowZones(ctx, fit, outline) {
+    if (!this.yellowZones.length) return;
+    const lapLength = this.track ? Number(this.track.length_m) : NaN;
+    if (!Number.isFinite(lapLength) || lapLength <= 0) return;
+
+    ctx.save();
+    ctx.lineWidth = 9;
+    ctx.lineJoin = "round";
+    ctx.lineCap = "round";
+    ctx.strokeStyle = YELLOW_ZONE_COLOR;
+    for (const zone of this.yellowZones) {
+      const start = Number(zone && zone.start);
+      const end = Number(zone && zone.end);
+      if (!Number.isFinite(start) || !Number.isFinite(end)) continue;
+      const points = outlineSlice(outline, start * lapLength, end * lapLength);
+      if (points.length < 2) continue;
+      ctx.beginPath();
+      points.forEach(([x, z], index) => {
+        const [px, py] = this._toCanvas(fit, x, z);
+        if (index === 0) ctx.moveTo(px, py);
+        else ctx.lineTo(px, py);
+      });
+      ctx.stroke();
+    }
+    ctx.restore();
   }
 
   _drawCorners(ctx, fit) {
@@ -280,29 +338,46 @@ export class TrackMapView {
     ctx.restore();
   }
 
+  /**
+   * 그리기 변환(회전·배율·이동)을 만든다. 윤곽을 돌려 캔버스에 가장 크게
+   * 들어가는 각도를 고르고, 같은 서킷·같은 캔버스 크기면 캐시를 쓴다.
+   */
   _fit(width, height) {
-    const bounds = this.bounds;
-    if (!bounds) return null;
-    const spanX = Math.max(bounds.maxX - bounds.minX, 1);
-    const spanZ = Math.max(bounds.maxZ - bounds.minZ, 1);
-    const usableWidth = Math.max(width - MAP_PADDING_PX * 2, 1);
-    const usableHeight = Math.max(height - MAP_PADDING_PX * 2, 1);
-    const scale = Math.min(usableWidth / spanX, usableHeight / spanZ);
+    const outline = (this.track && this.track.outline) || [];
+    const trackId = this.track ? this.track.track_id : null;
+    const key = `${trackId}:${outline.length}:${width}x${height}`;
+    if (!this.rotationCache || this.rotationCache.key !== key) {
+      this.rotationCache = {
+        key,
+        rotation: chooseRotation(outline, width, height),
+      };
+    }
+    const rotation = this.rotationCache.rotation;
+    if (!rotation) return null;
+
+    const spanX = Math.max(rotation.maxX - rotation.minX, 1);
+    const spanZ = Math.max(rotation.maxZ - rotation.minZ, 1);
+    const scale = rotation.scale;
     if (!Number.isFinite(scale) || scale <= 0) return null;
     return {
       scale,
+      cos: rotation.cos,
+      sin: rotation.sin,
       offsetX: (width - spanX * scale) / 2,
       offsetY: (height - spanZ * scale) / 2,
-      minX: bounds.minX,
-      maxZ: bounds.maxZ,
+      minX: rotation.minX,
+      maxZ: rotation.maxZ,
     };
   }
 
   _toCanvas(fit, x, z) {
-    // 화면 y는 아래로 증가하므로 z를 뒤집어 지도처럼 보이게 한다.
+    // 회전한 좌표를 캔버스로 옮긴다. 화면 y는 아래로 증가하므로 z를 뒤집어
+    // 지도처럼 보이게 한다.
+    const rotatedX = x * fit.cos - z * fit.sin;
+    const rotatedZ = x * fit.sin + z * fit.cos;
     return [
-      fit.offsetX + (x - fit.minX) * fit.scale,
-      fit.offsetY + (fit.maxZ - z) * fit.scale,
+      fit.offsetX + (rotatedX - fit.minX) * fit.scale,
+      fit.offsetY + (fit.maxZ - rotatedZ) * fit.scale,
     ];
   }
 
@@ -386,29 +461,143 @@ export class TrackMapView {
     this.badge.style.color = style.line;
     this.badge.style.borderColor = style.line;
   }
+
+  /** 깃발 줄 다섯 칸을 서버가 준 `flags` 값으로 켜고 끈다. */
+  _renderFlags() {
+    if (!this.flagRow) return;
+    const flags = this.flags || {};
+    for (const chip of this.flagRow.querySelectorAll("[data-flag]")) {
+      chip.classList.toggle("on", Boolean(flags[chip.dataset.flag]));
+    }
+  }
 }
 
 function flagStyle(flag) {
   return FLAG_STYLES[flag] || FLAG_STYLES.none;
 }
 
-function outlineBounds(outline) {
-  const points = Array.isArray(outline) ? outline : [];
-  const xs = [];
-  const zs = [];
-  for (const point of points) {
+/**
+ * 윤곽([dist, x, z] 점 배열)을 0~179도로 1도씩 돌려 보고, 캔버스 그리기
+ * 영역(가장자리 여백 제외)에 `min(W/w, H/h)`가 가장 큰 각도를 고른다.
+ * 캔버스·DOM을 보지 않는 순수 함수다.
+ *
+ * 반환값의 `cos`·`sin`·`minX`·`maxZ`가 `_toCanvas`의 회전·이동 변환이 된다.
+ * 그릴 것이 부족하면 `null`.
+ */
+export function chooseRotation(
+  outline,
+  width,
+  height,
+  padding = MAP_PADDING_PX,
+) {
+  const points = outlinePoints(outline);
+  if (points.length < 2) return null;
+  const usableWidth = Math.max(width - padding * 2, 1);
+  const usableHeight = Math.max(height - padding * 2, 1);
+  if (!(usableWidth > 0) || !(usableHeight > 0)) return null;
+
+  let best = null;
+  for (
+    let angleDeg = 0;
+    angleDeg < ROTATION_LIMIT_DEG;
+    angleDeg += ROTATION_STEP_DEG
+  ) {
+    const radians = (angleDeg * Math.PI) / 180;
+    const cos = Math.cos(radians);
+    const sin = Math.sin(radians);
+    const bounds = rotatedBounds(points, cos, sin);
+    const spanX = Math.max(bounds.maxX - bounds.minX, 1);
+    const spanZ = Math.max(bounds.maxZ - bounds.minZ, 1);
+    const scale = Math.min(usableWidth / spanX, usableHeight / spanZ);
+    if (!Number.isFinite(scale)) continue;
+    if (!best || scale > best.scale) {
+      best = {
+        angleDeg,
+        cos,
+        sin,
+        scale,
+        minX: bounds.minX,
+        maxX: bounds.maxX,
+        minZ: bounds.minZ,
+        maxZ: bounds.maxZ,
+      };
+    }
+  }
+  return best;
+}
+
+/** 점들을 회전한 뒤의 가로·세로 범위. */
+function rotatedBounds(points, cos, sin) {
+  let minX = Infinity;
+  let maxX = -Infinity;
+  let minZ = Infinity;
+  let maxZ = -Infinity;
+  for (const [x, z] of points) {
+    const rotatedX = x * cos - z * sin;
+    const rotatedZ = x * sin + z * cos;
+    if (rotatedX < minX) minX = rotatedX;
+    if (rotatedX > maxX) maxX = rotatedX;
+    if (rotatedZ < minZ) minZ = rotatedZ;
+    if (rotatedZ > maxZ) maxZ = rotatedZ;
+  }
+  return { minX, maxX, minZ, maxZ };
+}
+
+/** 윤곽에서 유한한 `[x, z]` 점만 꺼낸다. */
+function outlinePoints(outline) {
+  const points = [];
+  if (!Array.isArray(outline)) return points;
+  for (const point of outline) {
     if (!Array.isArray(point) || point.length < 3) continue;
     if (!Number.isFinite(point[1]) || !Number.isFinite(point[2])) continue;
-    xs.push(point[1]);
-    zs.push(point[2]);
+    points.push([point[1], point[2]]);
   }
-  if (xs.length < 2) return null;
-  return {
-    minX: Math.min(...xs),
-    maxX: Math.max(...xs),
-    minZ: Math.min(...zs),
-    maxZ: Math.max(...zs),
-  };
+  return points;
+}
+
+/**
+ * 윤곽에서 `startM`~`endM` 구간의 점 목록(양 끝은 보간)을 만든다.
+ * 윤곽은 `[dist_m, x, z]`가 거리 순으로 들어 있다.
+ */
+function outlineSlice(outline, startM, endM) {
+  if (!Array.isArray(outline) || outline.length < 2) return [];
+  if (!(endM > startM)) return [];
+  const points = [];
+  const start = pointAtDistance(outline, startM);
+  if (start) points.push(start);
+  for (const point of outline) {
+    if (!Array.isArray(point) || point.length < 3) continue;
+    if (!Number.isFinite(point[1]) || !Number.isFinite(point[2])) continue;
+    if (point[0] > startM && point[0] < endM) points.push([point[1], point[2]]);
+  }
+  const end = pointAtDistance(outline, endM);
+  if (end) points.push(end);
+  return points;
+}
+
+/** 윤곽 위 `distance` 지점을 이웃한 두 점 사이 보간으로 구한다. */
+function pointAtDistance(outline, distance) {
+  if (!Array.isArray(outline) || outline.length === 0) return null;
+  const first = outline[0];
+  const last = outline[outline.length - 1];
+  if (!Array.isArray(first) || first.length < 3) return null;
+  if (distance <= first[0] || outline.length === 1) return [first[1], first[2]];
+  if (!Array.isArray(last) || last.length < 3) return null;
+  if (distance >= last[0]) return [last[1], last[2]];
+
+  for (let index = 1; index < outline.length; index += 1) {
+    const previous = outline[index - 1];
+    const current = outline[index];
+    if (!Array.isArray(previous) || !Array.isArray(current)) continue;
+    if (distance > current[0]) continue;
+    const span = current[0] - previous[0];
+    const ratio = span > 0 ? (distance - previous[0]) / span : 0;
+    return [
+      previous[1] + (current[1] - previous[1]) * ratio,
+      previous[2] + (current[2] - previous[2]) * ratio,
+    ];
+  }
+  return [last[1], last[2]];
 }
 
 function buildMetrics(metrics) {

@@ -291,6 +291,58 @@ def test_state_endpoint_shape() -> None:
     assert severities <= set(color_table()["colors"])
 
 
+def test_state_includes_flags_summary() -> None:
+    """SCRUM-80: /api/state의 flags가 패킷 값(SC·VSC·옐로 구역·블루·적기)을 담는다."""
+    store = StateStore()
+    builder = PacketBuilder(store)
+
+    session = _default_body(PacketId.SESSION)
+    entries = list(session["marshal_zones"])
+    entries[0] = {"zone_start": 0.25, "zone_flag": 3}
+    entries[1] = {"zone_start": 0.5, "zone_flag": 0}
+    session.update(
+        num_marshal_zones=2,
+        marshal_zones=entries,
+        safety_car_status=2,
+    )
+    builder.apply(PacketId.SESSION, session)
+    builder.apply(
+        PacketId.CAR_STATUS,
+        _player_body(
+            PacketId.CAR_STATUS, "car_status_data", vehicle_fia_flags=2
+        ),
+    )
+    builder.apply(
+        PacketId.EVENT,
+        {"event_string_code": "RDFL", "event_details": {}},
+    )
+
+    data = _client(store).get("/api/state").json()
+    assert data["flags"] == {
+        "red": True,
+        "blue": True,
+        "yellow": True,
+        "yellow_zones": [{"start": 0.25, "end": 0.5}],
+        "sc": False,
+        "vsc": True,
+    }
+    # 기존 필드는 그대로 있고, 트랙 선 색은 적기를 우선한다.
+    assert data["flag"] == "red_flag"
+    assert data["car"]["has_data"] is True
+
+
+def test_empty_state_flags_are_all_off() -> None:
+    data = _client(StateStore()).get("/api/state").json()
+    assert data["flags"] == {
+        "red": False,
+        "blue": False,
+        "yellow": False,
+        "yellow_zones": [],
+        "sc": False,
+        "vsc": False,
+    }
+
+
 def test_empty_state_keeps_skeleton_and_radio_status() -> None:
     data = _client(StateStore()).get("/api/state").json()
     car = data["car"]
@@ -356,6 +408,9 @@ def test_ws_pushes_updates() -> None:
     with client.websocket_connect("/ws/state") as websocket:
         first = websocket.receive_json()
         assert first["car"]["tyres"][0]["wear"]["value"] is None
+        # 깃발 요약도 같은 상태 묶음에 들어 있다(SCRUM-80).
+        assert first["flags"]["sc"] is False
+        assert first["flags"]["yellow_zones"] == []
 
         builder.apply(
             PacketId.CAR_DAMAGE,

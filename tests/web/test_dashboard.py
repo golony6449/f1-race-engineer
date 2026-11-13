@@ -134,6 +134,37 @@ def _wide_screen_css() -> str:
     return match.group(1)
 
 
+def test_map_section_has_flag_status_row() -> None:
+    """SCRUM-80: 서킷 지도 제목 아래 레드·블루·옐로·SC·VSC 다섯 칸."""
+    client = _client()
+    html = client.get("/").text
+
+    row = re.search(
+        r'<div class="flag-row"[^>]*>(.*?)</div>', html, re.S
+    )
+    assert row, "서킷 지도 제목 아래 깃발 상태 줄이 없습니다"
+    chips = re.findall(r'data-flag="([a-z]+)"', row.group(1))
+    assert chips == ["red", "blue", "yellow", "sc", "vsc"]
+    for label in ("레드", "블루", "옐로", "SC", "VSC"):
+        assert f">{label}</span>" in row.group(1)
+
+    # 꺼짐은 회색 테두리, 켜짐은 깃발 색인 클래스가 있다.
+    css = client.get("/static/style.css").text
+    assert ".flag-row" in css
+    assert ".flag-chip" in css
+    assert '.flag-chip.on[data-flag="red"]' in css
+    assert '.flag-chip.on[data-flag="blue"]' in css
+    assert '.flag-chip.on[data-flag="yellow"]' in css
+    assert '.flag-chip.on[data-flag="sc"]' in css
+    assert '.flag-chip.on[data-flag="vsc"]' in css
+
+    # map.js가 서버의 flags로 칸을 켜고, 옐로 구역을 지도 선 위에 칠한다.
+    script = client.get("/static/map.js").text
+    assert 'querySelectorAll("[data-flag]")' in script
+    assert "yellow_zones" in script
+    assert "_drawYellowZones" in script
+
+
 def test_wide_screen_puts_tyres_and_map_side_by_side() -> None:
     """SCRUM-79: 넓은 화면에서 타이어·브레이크와 지도를 좌우 반반으로 둔다."""
     block = _wide_screen_css()

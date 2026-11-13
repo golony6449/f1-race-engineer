@@ -1,0 +1,25 @@
+# 깃발 상태 표시 시험용 시나리오(SCRUM-80).
+# 옐로는 구역(랩 거리 비율 0~1)을 지정한다. SC·VSC는 기존 kind를 그대로 쓴다.
+# 그랑프리 기본 5랩(`--mode gp`)에 맞춰 한 랩에 하나씩 켠다.
+- lap: 1
+  kind: yellow_flag
+  params:
+    start: 0.2
+    end: 0.45
+    laps: 1
+- lap: 2
+  kind: blue_flag
+  params:
+    laps: 1
+- lap: 3
+  kind: red_flag
+  params:
+    laps: 1
+- lap: 4
+  kind: safety_car
+  params:
+    laps: 1
+- lap: 5
+  kind: vsc
+  params:
+    laps: 1

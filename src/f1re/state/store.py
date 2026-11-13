@@ -27,6 +27,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from f1re.state.events import Event, EventKind, EventQueue
+from f1re.state.flags import flag_summary
 from f1re.udp.parser import Packet, UnsupportedPacket
 from f1re.udp.spec import FORMATS, PacketId
 
@@ -96,6 +97,13 @@ class StateStore:
         self._last_weather: int | None = None
         self._last_paused: bool | None = None
         self._paused = False
+        self._last_safety_car_status: int | None = None
+
+        # 적기(RDFL)는 해제 Event가 없어 래치로 유지한다(SCRUM-80).
+        # `_red_flag_lap`은 RDFL 뒤 처음 본 내 차 랩 번호다. 그 랩을 넘어서면
+        # 세션이 재개된 것으로 보고 끈다.
+        self._red_flag = False
+        self._red_flag_lap: int | None = None
 
         self._max_frame: int | None = None
         self._flashback_pending = False
@@ -205,6 +213,11 @@ class StateStore:
                 "player_car_index": self._player_car_index,
                 "game_paused": self._paused,
                 "packets": _jsonable(self._packets),
+                "flags": flag_summary(
+                    self._packets,
+                    self._player_car_index,
+                    red=self._red_flag,
+                ),
                 "lap_validity": [
                     {
                         "car_index": car_index,
@@ -240,6 +253,8 @@ class StateStore:
         self._last_weather = None
         self._last_paused = None
         self._paused = False
+        self._last_safety_car_status = None
+        self._clear_red_flag()
         self._max_frame = None
         self._flashback_pending = False
         self._player_car_index = None
@@ -303,6 +318,17 @@ class StateStore:
                 )
             self._last_weather = weather
 
+        # 적기 뒤 SC·VSC가 나오면 세션이 재개 절차에 들어간 것으로 본다
+        # (SCRUM-80). 같은 상태가 이어지는 동안에는 끄지 않는다.
+        safety_car_status = _as_int(body.get("safety_car_status"))
+        if (
+            self._red_flag
+            and safety_car_status in (1, 2)
+            and safety_car_status != self._last_safety_car_status
+        ):
+            self._clear_red_flag()
+        self._last_safety_car_status = safety_car_status
+
         paused = bool(body.get("game_paused", 0))
         if paused and not self._last_paused:
             # 일시정지 중에 진행된 랩은 코칭·기준 랩에 쓰지 않는다.
@@ -320,6 +346,13 @@ class StateStore:
             lap = int(entry.get("current_lap_num", 0))
             if lap <= 0:
                 continue
+            if car_index == self._player_car_index and self._red_flag:
+                # RDFL 직후 처음 본 랩을 기준으로 잡는다. 그 랩을 넘어서면
+                # 랩 진행이 재개된 것으로 보고 적기를 끈다(SCRUM-80).
+                if self._red_flag_lap is None:
+                    self._red_flag_lap = lap
+                elif lap > self._red_flag_lap:
+                    self._clear_red_flag()
             distance = float(entry.get("lap_distance", 0.0))
             last_lap_time_ms = int(entry.get("last_lap_time_in_ms", 0))
             previous_lap = self._last_lap_num.get(car_index)
@@ -448,6 +481,8 @@ class StateStore:
             details = {}
         match code:
             case "SSTA":
+                # 새 세션 알림이면 적기 래치도 푼다(SCRUM-80).
+                self._clear_red_flag()
                 if self._session_marked:
                     return []
                 self._session_marked = True
@@ -468,6 +503,9 @@ class StateStore:
             case "PENA":
                 return self._penalty_event(details, recv_ns)
             case "RDFL":
+                # 적기는 해제 Event가 없다. 랩 진행·SC/VSC·새 세션에서 끈다.
+                self._red_flag = True
+                self._red_flag_lap = None
                 return [self._event(EventKind.RED_FLAG, recv_ns)]
             case _:
                 # RTMT(리타이어), SPTP(속도 트랩) 등은 아직 사건 종류가 없다.
@@ -567,6 +605,10 @@ class StateStore:
     # ------------------------------------------------------------------
     # 도우미
 
+    def _clear_red_flag(self) -> None:
+        self._red_flag = False
+        self._red_flag_lap = None
+
     def _note_received(self, recv_ns: int) -> None:
         self._recv_times.append(recv_ns)
         cutoff = recv_ns - _DIAGNOSTIC_WINDOW_NS
@@ -606,6 +648,15 @@ class StateStore:
             return int(module.PACKET_SIZES[PacketId(pkt.header.packet_id)])
         except (KeyError, ValueError):
             return None
+
+
+def _as_int(value: Any) -> int | None:
+    """JSON·패킷 값 하나를 정수로. bool은 정수로 본다(파서가 0/1로 준다)."""
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, int):
+        return value
+    return None
 
 
 def _jsonable(value: Any) -> Any:
