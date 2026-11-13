@@ -4,9 +4,10 @@
 주기 위한 읽기 전용 API다. 값은 `LiftCoastCoach`가 `LiftCoastState`에 남긴
 것을 그대로 돌려준다(화면은 계산하지 않는다, 설계 6.9).
 
-실서버 배선은 뒤 작업 몫이다. 라이브 파이프라인이 `LiftCoastCoach`를 만들 때
-`default_state()`를 넘기면 이 라우터와 같은 상태를 쓴다. 지금은 아무도 쓰지
-않으면 빈 추천 목록을 돌려준다.
+실서버 배선은 SCRUM-84에서 끝났다. `f1re.pipeline.RacePipeline`이
+`LiftCoastCoach`를 만들 때 이 상태(`LiftCoastCoach.state`)를 쓰고,
+`web/app.py`가 엔진 런타임의 파이프라인에서 그 상태를 꺼내 이 라우터에 넘긴다.
+코치가 아직 없으면(엔진 OFF·세션 전) 빈 상태를 돌려준다.
 
 응답 모양::
 
@@ -35,6 +36,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any
 
 from fastapi import APIRouter
@@ -44,20 +46,31 @@ from f1re.coaching.lift_coast import LiftCoastState
 
 _DEFAULT_STATE = LiftCoastState()
 
+# 라우터가 상태를 얻는 방법. `LiftCoastState`를 그대로 주거나, 요청마다
+# 엔진 런타임에서 꺼내는 함수를 줄 수 있다(실서버 배선, SCRUM-84).
+StateSource = LiftCoastState | Callable[[], "LiftCoastState | None"] | None
+
 
 def default_state() -> LiftCoastState:
     """이 프로세스가 함께 쓰는 기본 상태. 코치를 만들 때 넘긴다."""
     return _DEFAULT_STATE
 
 
-def create_lift_coast_router(state: LiftCoastState | None = None) -> APIRouter:
-    """리프트 앤 코스트 라우터. `web/app.py`가 앱에 한 줄로 붙인다."""
-    target = state or _DEFAULT_STATE
+def create_lift_coast_router(state: StateSource = None) -> APIRouter:
+    """리프트 앤 코스트 라우터. `web/app.py`가 앱에 한 줄로 붙인다.
+
+    `state`가 함수면 요청마다 불러 그 결과(`LiftCoastState`)를 읽는다. 엔진이
+    꺼져 있거나 아직 코치가 없으면 빈 기본 상태를 돌려준다.
+    """
     router = APIRouter()
+
+    def _target() -> LiftCoastState:
+        target = state() if callable(state) else state
+        return target if isinstance(target, LiftCoastState) else _DEFAULT_STATE
 
     @router.get("/api/lift-coast")
     def api_lift_coast() -> dict[str, Any]:
-        return target.snapshot()
+        return _target().snapshot()
 
     return router
 

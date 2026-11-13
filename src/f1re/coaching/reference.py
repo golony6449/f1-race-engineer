@@ -114,6 +114,19 @@ class ReferenceSet:
             return self._fastest_car_best_lap()
         raise ValueError(f"알 수 없는 기준 출처입니다: {source}")
 
+    def prune(self) -> None:
+        """차마다 최고 랩 하나만 남긴다(실서버 파이프라인 메모리 절약, SCRUM-84).
+
+        `best_for`·`best_lap`은 차마다 전체 랩 시간이 가장 짧은 랩 하나만 쓰므로
+        결과는 그대로다. 세션 내내 60Hz × 22대 샘플을 모두 들고 있지 않게 한다.
+        """
+        best: dict[int, LapTrace] = {}
+        for trace in self._laps:
+            current = best.get(trace.car_index)
+            if current is None or _lap_time_ms(trace) < _lap_time_ms(current):
+                best[trace.car_index] = trace
+        self._laps = list(best.values())
+
     # ------------------------------------------------------------------
     # 후보 선택
 

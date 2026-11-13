@@ -129,6 +129,10 @@ class LapTraceRecorder:
         self._fuel_kg: dict[int, float] = {}
         self._current: dict[int, _LapBuffer] = {}
 
+    def set_outline(self, outline: TrackOutline | None) -> None:
+        """중심선 윤곽을 바꾼다. 첫 유효 랩에서 윤곽을 배운 뒤 붙인다(SCRUM-84)."""
+        self._outline = outline
+
     # ------------------------------------------------------------------
     # 패킷 받기
 
