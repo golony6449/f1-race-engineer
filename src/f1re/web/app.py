@@ -64,6 +64,12 @@ STALE_AFTER_MS = 2000.0
 # F1 25 ERS 저장소 최대 에너지(J). 게임 패킷에는 최댓값이 없어 공식 규정값을 쓴다.
 ERS_STORE_MAX_J = 4_000_000.0
 
+# 한 랩 ERS 배포 한도(J)와 MGU-K 최대 출력(W). 화면 막대의 기준값이며
+# 값 칸의 `max`로 함께 내려 보낸다. 기준값을 이 한 곳에만 두어 화면이
+# 같은 숫자를 따로 들고 있지 않게 한다.
+ERS_LAP_DEPLOY_MAX_J = 4_000_000.0
+MGUK_MAX_POWER_W = 120_000.0
+
 # 타이어 배열은 공식 패킷 순서(뒤왼쪽, 뒤오른쪽, 앞왼쪽, 앞오른쪽)다.
 # 화면에는 앞왼쪽 → 앞오른쪽 → 뒤왼쪽 → 뒤오른쪽 순서로 보여 준다.
 _TYRE_DISPLAY_ORDER: tuple[tuple[int, str, str], ...] = (
@@ -276,9 +282,26 @@ def player_summary(snapshot: dict[str, Any]) -> dict[str, Any]:
         if ers_joules is not None
         else None
     )
+    # 게임 값 그대로(J, W)를 내려 주고 MJ·kW 변환은 화면에서만 한다.
     ers = {
         "store_pct": _number_cell(store_pct, unit="%"),
         "mode": _ers_mode_cell(status_entry.get("ers_deploy_mode")),
+        "deployed_this_lap": _number_cell(
+            status_entry.get("ers_deployed_this_lap"),
+            unit="J",
+            max_value=ERS_LAP_DEPLOY_MAX_J,
+        ),
+        "harvested_mguk": _number_cell(
+            status_entry.get("ers_harvested_this_lap_mguk"), unit="J"
+        ),
+        "harvested_mguh": _number_cell(
+            status_entry.get("ers_harvested_this_lap_mguh"), unit="J"
+        ),
+        "mguk_power": _number_cell(
+            status_entry.get("engine_power_mguk"),
+            unit="W",
+            max_value=MGUK_MAX_POWER_W,
+        ),
     }
 
     return {
@@ -537,16 +560,27 @@ def _list_get(values: Any, index: int) -> Any:
 
 
 def _number_cell(
-    value: Any, *, metric: str | None = None, unit: str | None = None
+    value: Any,
+    *,
+    metric: str | None = None,
+    unit: str | None = None,
+    max_value: float | None = None,
 ) -> dict[str, Any]:
-    """숫자 값 하나를 위험 단계와 함께 포장한다."""
+    """숫자 값 하나를 위험 단계와 함께 포장한다.
+
+    `max_value`는 화면 막대의 기준값이다. 게임 값과 같은 단위로 넣는다.
+    """
     number = _finite(value)
-    return {
+    cell = {
         "value": number,
         "unit": unit,
         "metric": metric,
         "severity": severity(metric, number).value if metric else None,
     }
+    # 막대 기준값이 있는 칸만 `max`를 더한다(기존 칸 모양은 그대로).
+    if max_value is not None:
+        cell["max"] = max_value
+    return cell
 
 
 def _text_cell(value: str | None, code: int | None) -> dict[str, Any]:

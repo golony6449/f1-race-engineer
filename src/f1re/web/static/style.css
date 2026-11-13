@@ -369,6 +369,27 @@ body {
   opacity: 0.42;
 }
 
+/* ERS 사용량·출력 막대(SCRUM-86). 기준값(`max`) 대비 비율만 칠한다. */
+.cell-bar {
+  height: 4px;
+  margin-top: 6px;
+  overflow: hidden;
+  background: var(--panel);
+  border-radius: 999px;
+}
+
+.cell-bar-fill {
+  width: 0;
+  height: 100%;
+  background: var(--text);
+  border-radius: inherit;
+  transition: width 160ms linear;
+}
+
+#dashboard.stale .cell-bar-fill {
+  opacity: 0.42;
+}
+
 #dashboard.stale .tyre-meta {
   opacity: 0.5;
 }
@@ -759,6 +780,11 @@ body {
   .cell-grid {
     gap: 6px;
     margin-top: 8px;
+  }
+
+  /* ERS는 여섯 칸이라 좁은 화면에서는 두 칸씩 붙이지 않고 한 열로 쌓는다. */
+  .ers .cell-grid {
+    grid-template-columns: 1fr;
   }
 
   .cell {
