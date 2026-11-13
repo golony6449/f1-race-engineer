@@ -28,6 +28,7 @@ from __future__ import annotations
 import math
 import sqlite3
 from collections import Counter, defaultdict
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
@@ -97,25 +98,38 @@ class _LossEntry:
 # 라우터
 
 
-def create_report_router(
-    store: StateStore,
-    radio: RadioService,
-    conn: sqlite3.Connection | None,
-) -> APIRouter:
-    """무전 기록·끄기·세션 리포트 라우터. `web/app.py`가 앱에 한 줄로 붙인다."""
+def create_report_router(runtime: Callable[[], Any | None]) -> APIRouter:
+    """무전 기록·끄기·세션 리포트 라우터. `web/app.py`가 앱에 한 줄로 붙인다.
+
+    `runtime`은 엔진이 켜져 있을 때 `Runtime`(저장소·무전 서비스·DB)을, 꺼져
+    있으면 `None`을 돌려준다. 요청마다 읽으므로 엔진을 껐다 켜도 같은 앱이
+    새 런타임을 쓴다(SCRUM-82).
+    """
     router = APIRouter()
+
+    def _current() -> Any:
+        current = runtime()
+        if current is None:
+            raise HTTPException(status_code=503, detail={"engine": "off"})
+        return current
 
     @router.get("/api/radio/log")
     def api_radio_log(
         session: int | None = Query(default=None, description="세션 UID"),
         limit: int = Query(default=DEFAULT_LOG_LIMIT, ge=1, le=MAX_LOG_LIMIT),
     ) -> dict[str, Any]:
+        current = _current()
         return radio_log_payload(
-            store, radio, conn, session_uid=session, limit=limit
+            current.store,
+            current.radio,
+            current.conn,
+            session_uid=session,
+            limit=limit,
         )
 
     @router.post("/api/radio/mute")
     def api_radio_mute(body: MuteRequest) -> dict[str, Any]:
+        radio = _current().radio
         kind = body.kind.strip().lower()
         try:
             changed = radio.queue.set_muted(kind, body.muted)
@@ -142,7 +156,10 @@ def create_report_router(
     def api_report(
         session: int | None = Query(default=None, description="세션 UID"),
     ) -> dict[str, Any]:
-        return report_payload(store, conn, session_uid=session)
+        current = _current()
+        return report_payload(
+            current.store, current.conn, session_uid=session
+        )
 
     return router
 

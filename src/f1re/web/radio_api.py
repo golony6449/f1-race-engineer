@@ -53,10 +53,10 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 
 from f1re.alerts.rules import AlertRules
+from f1re.engine import ENGINE_OFF, ENGINE_ON
 from f1re.radio.log import RadioLog
 from f1re.radio.queue import RadioMessage, RadioQueue
 from f1re.state.store import StateStore
-from f1re.tts.qwen import TTSUnavailable
 
 logger = logging.getLogger(__name__)
 
@@ -285,6 +285,10 @@ class RadioService:
             self._record(message, played=False, latency_ms=None)
 
     async def _speak(self, message: RadioMessage) -> None:
+        # 엔진이 꺼져 있는 서버 시작 경로에서 httpx(Qwen)를 불러오지 않도록
+        # 실제로 말할 때 import한다(SCRUM-82).
+        from f1re.tts.qwen import TTSUnavailable
+
         played = False
         interrupted = False
         latency_ms: int | None = None
@@ -480,9 +484,21 @@ def radio_page() -> FileResponse:
 
 @router.websocket("/ws/radio")
 async def ws_radio(websocket: WebSocket) -> None:
-    """무전 페이지 하나와 연결해 음성 조각·자막·상태를 보낸다."""
+    """무전 페이지 하나와 연결해 음성 조각·자막·상태를 보낸다.
+
+    엔진이 꺼져 있으면 연결하지 않고 ``{"type": "engine", "state": "off"}``를
+    보낸 뒤 닫는다. 켜져 있는 동안 엔진이 꺼지면 같은 메시지를 보내고 닫는다
+    (SCRUM-82).
+    """
     await websocket.accept()
-    service: RadioService | None = getattr(websocket.app.state, "radio", None)
+    engine = getattr(websocket.app.state, "engine", None)
+    if engine is not None and engine.state != ENGINE_ON:
+        await _send_engine_off(websocket)
+        return
+
+    service: RadioService | None = (
+        engine.radio if engine is not None else None
+    ) or getattr(websocket.app.state, "radio", None)
     if service is None:
         await websocket.send_json(
             {
@@ -506,19 +522,40 @@ async def ws_radio(websocket: WebSocket) -> None:
     client = service.add_client()
     sender = asyncio.create_task(_send_loop(websocket, client))
     receiver = asyncio.create_task(_receive_loop(websocket))
-    try:
-        await asyncio.wait(
-            {sender, receiver}, return_when=asyncio.FIRST_COMPLETED
+    tasks = [sender, receiver]
+    if engine is not None:
+        # 엔진 OFF 전환을 기다렸다가 알리고 끝난다. FIRST_COMPLETED가 되면
+        # 아래 finally가 나머지 루프를 정리하고 WebSocket을 닫는다.
+        tasks.append(
+            asyncio.create_task(
+                _engine_off_watcher(engine.off_event, websocket),
+                name="f1re-ws-engine-off",
+            )
         )
+    try:
+        await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
     finally:
-        for task in (sender, receiver):
+        for task in tasks:
             task.cancel()
-        for task in (sender, receiver):
+        for task in tasks:
             with contextlib.suppress(asyncio.CancelledError):
                 await task
         service.remove_client(client)
         with contextlib.suppress(Exception):
             await websocket.close()
+
+
+async def _engine_off_watcher(event: asyncio.Event, websocket: WebSocket) -> None:
+    """엔진이 꺼질 때까지 기다렸다가 engine-off 메시지를 보낸다."""
+    await event.wait()
+    await _send_engine_off(websocket)
+
+
+async def _send_engine_off(websocket: WebSocket) -> None:
+    with contextlib.suppress(Exception):
+        await websocket.send_json({"type": "engine", "state": ENGINE_OFF})
+    with contextlib.suppress(Exception):
+        await websocket.close()
 
 
 async def _send_loop(websocket: WebSocket, client: _Client) -> None:

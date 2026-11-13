@@ -12,3 +12,6 @@ assets/
 recordings/
 *.f1rec
 data/*.db
+# 레이스 엔지니어 마지막 ON/OFF 상태(서버가 만든다)
+data/engine-state.json
+data/engine-state.json.tmp
