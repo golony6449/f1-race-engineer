@@ -46,11 +46,25 @@ class WebConfig:
 
 
 @dataclass(frozen=True)
+class RadioConfig:
+    """무전 전달 계층 설정(설계 6.7).
+
+    안전 경고·박스 지시는 앞 무전이 재생되는 동안 기다려도 만료되지 않도록
+    충분한 유효 시간을 둔다(SCRUM-81). 코칭·추월처럼 시점이 중요한 무전의
+    유효 시간은 각 모듈이 정한다.
+    """
+
+    safety_ttl_s: float = 30.0
+    box_ttl_s: float = 30.0
+
+
+@dataclass(frozen=True)
 class AppConfig:
     """앱 전체 설정. `[global]` 섹션 값은 평평하게 둔다."""
 
     tts: TTSConfig = dataclasses.field(default_factory=TTSConfig)
     web: WebConfig = dataclasses.field(default_factory=WebConfig)
+    radio: RadioConfig = dataclasses.field(default_factory=RadioConfig)
     focus_corner_count: int = 5
     focus_recent_laps: int = 3
     big_loss_s: float = 0.3
@@ -89,17 +103,22 @@ def load_config(path: str | Path | None = None) -> AppConfig:
     global_values = raw.get("global", {})
     tts_values = raw.get("tts", {})
     web_values = raw.get("web", {})
+    radio_values = raw.get("radio", {})
     if (
         not isinstance(global_values, dict)
         or not isinstance(tts_values, dict)
         or not isinstance(web_values, dict)
+        or not isinstance(radio_values, dict)
     ):
-        raise ConfigError("[global], [tts], [web]은 표(table)여야 합니다")
+        raise ConfigError("[global], [tts], [web], [radio]는 표(table)여야 합니다")
 
     config = AppConfig(
         tts=_build(TTSConfig, tts_values, "tts"),
         web=_build(WebConfig, web_values, "web"),
-        **_known_fields(AppConfig, global_values, "global", skip={"tts", "web"}),
+        radio=_build(RadioConfig, radio_values, "radio"),
+        **_known_fields(
+            AppConfig, global_values, "global", skip={"tts", "web", "radio"}
+        ),
     )
     _validate(config)
     return config
@@ -140,3 +159,10 @@ def _validate(config: AppConfig) -> None:
         raise ConfigError("tts.model이 비어 있습니다")
     if not config.tts.voice:
         raise ConfigError("tts.voice가 비어 있습니다")
+    if (
+        not math.isfinite(config.radio.safety_ttl_s)
+        or config.radio.safety_ttl_s <= 0
+    ):
+        raise ConfigError("radio.safety_ttl_s는 0보다 큰 유한한 수여야 합니다")
+    if not math.isfinite(config.radio.box_ttl_s) or config.radio.box_ttl_s <= 0:
+        raise ConfigError("radio.box_ttl_s는 0보다 큰 유한한 수여야 합니다")

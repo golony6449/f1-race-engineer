@@ -32,8 +32,9 @@ WebSocket 메시지(JSON, 서버 → 브라우저):
 - ``{"type": "done", "text": ..., "played": true, "interrupted": false,
   "latency_ms": 12}``
 
-모든 무전은 `RadioLog`에 남긴다(재생 여부·지연 포함). 기록용 DB 연결은 호출자가
-넘기고, 세션이 바뀌면 그 세션 UID로 새 기록기를 만든다.
+모든 무전은 `RadioLog`에 남긴다(재생 여부·지연 포함). 큐가 유효 시간이 지나
+버린 무전도 `dropped_reason`과 함께 남긴다(SCRUM-81). 기록용 DB 연결은
+호출자가 넘기고, 세션이 바뀌면 그 세션 UID로 새 기록기를 만든다.
 """
 
 from __future__ import annotations
@@ -52,7 +53,7 @@ from typing import Any
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 
-from f1re.alerts.rules import AlertRules
+from f1re.alerts.rules import AlertRules, rules_from_config
 from f1re.engine import ENGINE_OFF, ENGINE_ON
 from f1re.radio.log import RadioLog
 from f1re.radio.queue import RadioMessage, RadioQueue
@@ -121,6 +122,8 @@ class RadioService:
     ) -> None:
         self._store = store
         self._queue = queue if queue is not None else RadioQueue(clock=clock)
+        # 큐가 유효 시간이 지나 버린 무전도 기록한다(SCRUM-81).
+        self._queue.set_drop_handler(self._record_dropped)
         self._cache = cache
         self._rules = rules if rules is not None else AlertRules(clock=clock)
         self._log = log
@@ -427,13 +430,28 @@ class RadioService:
         *,
         played: bool,
         latency_ms: int | None,
+        dropped_reason: str | None = None,
     ) -> None:
         try:
             log = self._log_for_session()
             if log is not None:
-                log.record(message, played=played, latency_ms=latency_ms)
+                log.record(
+                    message,
+                    played=played,
+                    latency_ms=latency_ms,
+                    dropped_reason=dropped_reason,
+                )
         except Exception:  # DB 오류가 재생을 막지 않는다.
             logger.exception("무전 기록을 남기지 못했습니다: %s", message.text)
+
+    def _record_dropped(self, message: RadioMessage, reason: str) -> None:
+        """큐가 버린 무전도 `played=False`와 이유로 기록한다(SCRUM-81)."""
+        self._record(
+            message,
+            played=False,
+            latency_ms=None,
+            dropped_reason=reason,
+        )
 
     def _log_for_session(self) -> RadioLog | None:
         if self._log is not None:
@@ -463,7 +481,13 @@ def build_radio_service(
     config = load_config()
     tts = QwenTTS(config.tts)
     cache = VoiceCache(tts, config=config.tts)
-    return RadioService(store, cache=cache, log_conn=log_conn, tts=tts)
+    return RadioService(
+        store,
+        cache=cache,
+        rules=rules_from_config(),
+        log_conn=log_conn,
+        tts=tts,
+    )
 
 
 # ---------------------------------------------------------------------------

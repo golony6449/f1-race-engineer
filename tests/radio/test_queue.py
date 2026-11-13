@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from f1re.radio.queue import (
+    DROP_REASON_EXPIRED,
     PRIORITY_BY_KIND,
     Priority,
     RadioKind,
@@ -189,6 +190,47 @@ def test_message_rejects_empty_text_and_accepts_plain_int_priority() -> None:
         expires_ns=FAR,
     )
     assert message.priority is Priority.SAFETY
+
+
+def test_expired_messages_are_reported_to_drop_handler() -> None:
+    """만료로 버린 무전은 이유와 함께 처리기에 알린다(SCRUM-81)."""
+    dropped: list[tuple[str, str]] = []
+    queue = RadioQueue(
+        clock=lambda: 0,
+        on_drop=lambda msg, reason: dropped.append((msg.text, reason)),
+    )
+    queue.push(_msg(RadioKind.COACHING, "곧 만료", expires_ns=100))
+    queue.push(_msg(RadioKind.SAFETY, "아직 유효", expires_ns=FAR))
+
+    assert queue.next(now_ns=100).text == "아직 유효"
+    queue.complete()
+    assert queue.next(now_ns=100) is None
+
+    assert dropped == [("곧 만료", DROP_REASON_EXPIRED)]
+    assert DROP_REASON_EXPIRED == "expired"
+
+
+def test_push_reports_already_expired_message_but_not_muted() -> None:
+    dropped: list[tuple[str, str]] = []
+    queue = RadioQueue(on_drop=lambda msg, reason: dropped.append((msg.text, reason)))
+    queue.set_muted(RadioKind.COACHING, True)
+
+    assert queue.push(_msg(RadioKind.COACHING, "끈 코칭", expires_ns=1)) is False
+    assert dropped == []
+
+    assert queue.push(_msg(RadioKind.SAFETY, "지난 경고", expires_ns=1)) is False
+    assert dropped == [("지난 경고", DROP_REASON_EXPIRED)]
+
+
+def test_drop_handler_can_be_removed() -> None:
+    dropped: list[str] = []
+    queue = RadioQueue()
+    queue.set_drop_handler(lambda msg, reason: dropped.append(msg.text))
+    queue.set_drop_handler(None)
+
+    queue.push(_msg(RadioKind.COACHING, "곧 만료", expires_ns=1))
+    assert queue.next(now_ns=1) is None
+    assert dropped == []
 
 
 def test_pending_and_clear() -> None:
