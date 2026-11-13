@@ -12,7 +12,8 @@
 
 API:
 
-- ``GET /api/state``  스냅샷 + 내 차 요약 + 연결 상태 + 음성·무전 페이지 상태
+- ``GET /api/state``  스냅샷 + 내 차 요약 + 연결 상태 + 깃발 요약(`flags`) +
+  음성·무전 페이지 상태
 - ``GET /api/thresholds``  색·문턱값 표(`color_table()`)
 - ``WS /ws/state``  같은 상태를 10Hz로 민다
 - ``GET /``  대시보드 HTML, ``/static/...``  빌드 없는 HTML/JS/CSS
@@ -140,7 +141,8 @@ def state_payload(
     """화면·API가 함께 쓰는 상태 묶음.
 
     `cars`·`flag`는 서킷 지도(작업 10)용이다. `map_state`가 없으면 빈 값으로
-    두어 지도 없이도 같은 모양을 유지한다.
+    두어 지도 없이도 같은 모양을 유지한다. `flags`는 깃발 상태 줄(SCRUM-80)이
+    쓰는 요약이며 `snapshot["flags"]`와 같은 값이다.
     """
     snapshot = store.snapshot()
     return {
@@ -150,6 +152,19 @@ def state_payload(
         "status": radio.status(),
         "cars": [] if map_state is None else map_state.car_positions(snapshot),
         "flag": "none" if map_state is None else map_state.flag(snapshot),
+        "flags": snapshot.get("flags", _empty_flags()),
+    }
+
+
+def _empty_flags() -> dict[str, Any]:
+    """스냅샷에 깃발 요약이 없을 때의 기본값(모두 꺼짐)."""
+    return {
+        "red": False,
+        "blue": False,
+        "yellow": False,
+        "yellow_zones": [],
+        "sc": False,
+        "vsc": False,
     }
 
 

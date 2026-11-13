@@ -376,6 +376,66 @@ body {
 /* ------------------------------------------------------------------ */
 /* 서킷 지도 */
 
+/*
+  깃발 상태 줄(SCRUM-80). 꺼짐은 회색 테두리, 켜짐은 해당 깃발 색 테두리와
+  글자다. 다섯 칸은 항상 보이고, 값이 끊겨도 서버가 마지막 값을 계속 준다.
+*/
+.flag-row {
+  display: flex;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 0 0 10px;
+}
+
+.flag-chip {
+  padding: 2px 10px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+  background: transparent;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+}
+
+/* 켜진 칸: 깃발 색. 레드·블루·옐로는 국제 깃발 색을 따른다. */
+.flag-chip.on[data-flag="red"] {
+  color: #ff5349;
+  background: rgba(225, 6, 0, 0.16);
+  border-color: #ff5349;
+}
+
+.flag-chip.on[data-flag="blue"] {
+  color: #4d8dff;
+  background: rgba(77, 141, 255, 0.16);
+  border-color: #4d8dff;
+}
+
+.flag-chip.on[data-flag="yellow"] {
+  color: #ffd166;
+  background: rgba(255, 209, 102, 0.16);
+  border-color: #ffd166;
+}
+
+/* SC·VSC는 주황·노랑 계열과 글자로 구분한다. */
+.flag-chip.on[data-flag="sc"] {
+  color: #ff9f1c;
+  background: rgba(255, 159, 28, 0.16);
+  border-color: #ff9f1c;
+}
+
+.flag-chip.on[data-flag="vsc"] {
+  color: #f2c200;
+  background: rgba(242, 194, 0, 0.16);
+  border-color: #f2c200;
+}
+
+/* 수신이 끊기면 마지막 깃발 상태를 흐리게 유지한다(설계 6.9-1). */
+#dashboard.stale .flag-row {
+  opacity: 0.5;
+}
+
 .map-wrap {
   position: relative;
   height: clamp(220px, 36vh, 440px);

@@ -9,6 +9,8 @@
  * - 팀 색: `/api/track`의 `team_colors`. 모르는 팀은 회색.
  * - 내 차는 흰 테두리, 앞차(추월 대상)는 노란 점선 테두리로 강조한다.
  * - SC·VSC·적기면 트랙 선 색을 바꾼다.
+ * - 깃발 줄(SCRUM-80)은 `/ws/state`의 `flags`만 보고 켜고 끈다. 옐로 구역
+ *   (`yellow_zones`, 랩 거리 비율)은 트랙 선 위에 노랗게 덧칠한다.
  * - 코너를 누르면 최근 지표(나 / 기준)를 보여 준다. 지표는 작업 15·16이
  *   채우며, 아직 없으면 자리 표시 문구를 보여 준다.
  */
@@ -24,6 +26,8 @@ const FLAG_STYLES = {
 const FALLBACK_TEAM_COLOR = "#8b97a8";
 const CORNER_HIT_PX = 16;
 const MAP_PADDING_PX = 28;
+// 옐로 구역을 트랙 선 위에 덧칠하는 색(SCRUM-80).
+const YELLOW_ZONE_COLOR = "#ffd166";
 
 // 리프트 앤 코스트 추천 구간(SCRUM-71)은 청록 점선 고리로 최소 강조한다.
 // 추천은 서버(`/api/lift-coast`)가 계산하고 화면은 그리기만 한다.
@@ -62,11 +66,17 @@ export class TrackMapView {
     this.track = null;
     this.cars = [];
     this.flag = "none";
+    this.flags = null;
+    this.yellowZones = [];
     this.stale = false;
     this.teamColors = {};
     this.bounds = null;
     this.cornerHits = [];
     this.selectedCorner = null;
+    // 깃발 상태 줄(SCRUM-80). `.map-wrap` 바깥, 지도 패널 제목 아래에 있다.
+    this.flagRow = root && root.parentElement
+      ? root.parentElement.querySelector(".flag-row")
+      : null;
     // 코너 번호 → 추천 구간(`/api/lift-coast`의 recommended 항목).
     this.liftZones = new Map();
     this.liftTimer = null;
@@ -120,9 +130,15 @@ export class TrackMapView {
     if (!payload) return;
     this.cars = payload.cars || [];
     if (payload.flag) this.flag = payload.flag;
+    this.flags = payload.flags || null;
+    this.yellowZones =
+      payload.flags && Array.isArray(payload.flags.yellow_zones)
+        ? payload.flags.yellow_zones
+        : [];
     this.stale = Boolean(payload.connection && payload.connection.stale);
     if (this.root) this.root.classList.toggle("stale", this.stale);
     this._updateBadge();
+    this._renderFlags();
     this._draw();
   }
 
@@ -180,6 +196,9 @@ export class TrackMapView {
     ctx.stroke();
     ctx.restore();
 
+    // 옐로 구역은 트랙 선 위에 노랗게 덧칠한다(SCRUM-80).
+    this._drawYellowZones(ctx, fit, outline);
+
     this._drawCorners(ctx, fit);
     this._drawCars(ctx, fit);
 
@@ -190,6 +209,37 @@ export class TrackMapView {
       ctx.fillText("데이터 안 옴 · 마지막 위치", 12, 20);
       ctx.restore();
     }
+  }
+
+  /**
+   * 옐로 구역을 트랙 선 위에 덧칠한다. 구역은 랩 거리 비율(0~1)이므로
+   * 서버가 준 랩 길이를 곱해 윤곽 위의 구간으로 자른다.
+   */
+  _drawYellowZones(ctx, fit, outline) {
+    if (!this.yellowZones.length) return;
+    const lapLength = this.track ? Number(this.track.length_m) : NaN;
+    if (!Number.isFinite(lapLength) || lapLength <= 0) return;
+
+    ctx.save();
+    ctx.lineWidth = 9;
+    ctx.lineJoin = "round";
+    ctx.lineCap = "round";
+    ctx.strokeStyle = YELLOW_ZONE_COLOR;
+    for (const zone of this.yellowZones) {
+      const start = Number(zone && zone.start);
+      const end = Number(zone && zone.end);
+      if (!Number.isFinite(start) || !Number.isFinite(end)) continue;
+      const points = outlineSlice(outline, start * lapLength, end * lapLength);
+      if (points.length < 2) continue;
+      ctx.beginPath();
+      points.forEach(([x, z], index) => {
+        const [px, py] = this._toCanvas(fit, x, z);
+        if (index === 0) ctx.moveTo(px, py);
+        else ctx.lineTo(px, py);
+      });
+      ctx.stroke();
+    }
+    ctx.restore();
   }
 
   _drawCorners(ctx, fit) {
@@ -386,6 +436,15 @@ export class TrackMapView {
     this.badge.style.color = style.line;
     this.badge.style.borderColor = style.line;
   }
+
+  /** 깃발 줄 다섯 칸을 서버가 준 `flags` 값으로 켜고 끈다. */
+  _renderFlags() {
+    if (!this.flagRow) return;
+    const flags = this.flags || {};
+    for (const chip of this.flagRow.querySelectorAll("[data-flag]")) {
+      chip.classList.toggle("on", Boolean(flags[chip.dataset.flag]));
+    }
+  }
 }
 
 function flagStyle(flag) {
@@ -409,6 +468,51 @@ function outlineBounds(outline) {
     minZ: Math.min(...zs),
     maxZ: Math.max(...zs),
   };
+}
+
+/**
+ * 윤곽에서 `startM`~`endM` 구간의 점 목록(양 끝은 보간)을 만든다.
+ * 윤곽은 `[dist_m, x, z]`가 거리 순으로 들어 있다.
+ */
+function outlineSlice(outline, startM, endM) {
+  if (!Array.isArray(outline) || outline.length < 2) return [];
+  if (!(endM > startM)) return [];
+  const points = [];
+  const start = pointAtDistance(outline, startM);
+  if (start) points.push(start);
+  for (const point of outline) {
+    if (!Array.isArray(point) || point.length < 3) continue;
+    if (!Number.isFinite(point[1]) || !Number.isFinite(point[2])) continue;
+    if (point[0] > startM && point[0] < endM) points.push([point[1], point[2]]);
+  }
+  const end = pointAtDistance(outline, endM);
+  if (end) points.push(end);
+  return points;
+}
+
+/** 윤곽 위 `distance` 지점을 이웃한 두 점 사이 보간으로 구한다. */
+function pointAtDistance(outline, distance) {
+  if (!Array.isArray(outline) || outline.length === 0) return null;
+  const first = outline[0];
+  const last = outline[outline.length - 1];
+  if (!Array.isArray(first) || first.length < 3) return null;
+  if (distance <= first[0] || outline.length === 1) return [first[1], first[2]];
+  if (!Array.isArray(last) || last.length < 3) return null;
+  if (distance >= last[0]) return [last[1], last[2]];
+
+  for (let index = 1; index < outline.length; index += 1) {
+    const previous = outline[index - 1];
+    const current = outline[index];
+    if (!Array.isArray(previous) || !Array.isArray(current)) continue;
+    if (distance > current[0]) continue;
+    const span = current[0] - previous[0];
+    const ratio = span > 0 ? (distance - previous[0]) / span : 0;
+    return [
+      previous[1] + (current[1] - previous[1]) * ratio,
+      previous[2] + (current[2] - previous[2]) * ratio,
+    ];
+  }
+  return [last[1], last[2]];
 }
 
 function buildMetrics(metrics) {

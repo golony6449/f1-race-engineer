@@ -159,9 +159,18 @@
       <!--
         서킷 지도(설계 6.9-2). 윤곽·코너·차 위치는 서버 API가 계산해 준다.
         UI는 map.js가 그리고, 코너를 누르면 최근 지표(나 / 기준)를 보여 준다.
+        제목 아래 깃발 줄(SCRUM-80)은 레드·블루·옐로·SC·VSC 상태를 한눈에
+        보여 준다. 판정은 서버 API의 `flags`만 쓴다.
       -->
       <section class="panel map">
         <h2>서킷 지도</h2>
+        <div class="flag-row" id="flag-row" role="group" aria-label="깃발 상태">
+          <span class="flag-chip" data-flag="red">레드</span>
+          <span class="flag-chip" data-flag="blue">블루</span>
+          <span class="flag-chip" data-flag="yellow">옐로</span>
+          <span class="flag-chip" data-flag="sc">SC</span>
+          <span class="flag-chip" data-flag="vsc">VSC</span>
+        </div>
         <div class="map-wrap" id="track-map">
           <canvas id="track-canvas" aria-label="서킷 지도"></canvas>
           <p class="map-waiting">지도 없음 · 첫 유효 랩의 위치를 기다리는 중</p>

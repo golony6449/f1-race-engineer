@@ -138,6 +138,38 @@ class PacketBuilder:
         }
         return self.packet(PacketId.EVENT, body, frame=frame, uid=uid)
 
+    def car_status(
+        self,
+        *,
+        car: int = 0,
+        frame: int | None = None,
+        uid: int | None = None,
+        **overrides: Any,
+    ) -> Packet:
+        body = _default_body(PacketId.CAR_STATUS)
+        entry = body["car_status_data"][car]
+        entry.update(overrides)
+        return self.packet(PacketId.CAR_STATUS, body, frame=frame, uid=uid)
+
+    def session_with_zones(
+        self,
+        zones: list[dict[str, Any]],
+        *,
+        frame: int | None = None,
+        uid: int | None = None,
+        **overrides: Any,
+    ) -> Packet:
+        """마셜 구역 배열을 채운 Session 패킷(나머지 칸은 0으로 둔다)."""
+        body = _default_body(PacketId.SESSION)
+        body.update(weather=0, track_id=13, session_type=13, game_paused=0)
+        entries = list(body["marshal_zones"])
+        for index, zone in enumerate(zones[: len(entries)]):
+            entries[index] = dict(zone)
+        body["marshal_zones"] = entries
+        body["num_marshal_zones"] = min(len(zones), len(entries))
+        body.update(overrides)
+        return self.packet(PacketId.SESSION, body, frame=frame, uid=uid)
+
 
 def _kinds(events: list[Any]) -> list[EventKind]:
     return [event.kind for event in events]
@@ -460,3 +492,131 @@ def test_pause_invalidates_current_lap() -> None:
     assert completed[0].data["valid"] is False
     assert completed[0].data["invalid_reason"] == "paused"
     assert store.snapshot()["lap_validity"][0]["valid"] is True
+
+
+# ---------------------------------------------------------------------------
+# 깃발 요약(SCRUM-80)
+
+
+def _flags(store: StateStore) -> dict[str, Any]:
+    return store.snapshot()["flags"]
+
+
+def test_flags_default_to_all_off() -> None:
+    assert _flags(StateStore()) == {
+        "red": False,
+        "blue": False,
+        "yellow": False,
+        "yellow_zones": [],
+        "sc": False,
+        "vsc": False,
+    }
+
+
+def test_sc_and_vsc_follow_safety_car_status() -> None:
+    """safety_car_status 1=SC, 2=VSC, 0·3=꺼짐."""
+    for status in (0, 1, 2, 3):
+        store = StateStore()
+        store.apply(PacketBuilder().session(safety_car_status=status), 1_000)
+        flags = _flags(store)
+        assert flags["sc"] is (status == 1), status
+        assert flags["vsc"] is (status == 2), status
+
+
+def test_yellow_flag_comes_from_marshal_zones() -> None:
+    builder = PacketBuilder()
+    store = StateStore()
+    store.apply(
+        builder.session_with_zones(
+            [
+                {"zone_start": 0.0, "zone_flag": 0},
+                {"zone_start": 0.25, "zone_flag": 3},
+                {"zone_start": 0.5, "zone_flag": 3},
+                {"zone_start": 0.75, "zone_flag": 1},
+            ]
+        ),
+        1_000,
+    )
+
+    flags = _flags(store)
+    assert flags["yellow"] is True
+    # 구역의 끝은 다음 구역의 시작이다. 인접한 옐로 구역은 따로 남는다.
+    assert flags["yellow_zones"] == [
+        {"start": 0.25, "end": 0.5},
+        {"start": 0.5, "end": 0.75},
+    ]
+
+
+def test_yellow_flag_ignores_other_flags_and_unused_zones() -> None:
+    """그린(1)·블루(2)·정보 없음(-1)은 옐로가 아니고, num 밖의 칸도 읽지 않는다."""
+    builder = PacketBuilder()
+    store = StateStore()
+    body = _default_body(PacketId.SESSION)
+    entries = list(body["marshal_zones"])
+    entries[0] = {"zone_start": 0.0, "zone_flag": 1}
+    entries[1] = {"zone_start": 0.2, "zone_flag": 2}
+    entries[2] = {"zone_start": 0.4, "zone_flag": -1}
+    # num_marshal_zones 밖(4번째)에 옐로가 있어도 무시해야 한다.
+    entries[3] = {"zone_start": 0.6, "zone_flag": 3}
+    body["marshal_zones"] = entries
+    body["num_marshal_zones"] = 3
+    store.apply(builder.packet(PacketId.SESSION, body), 1_000)
+
+    flags = _flags(store)
+    assert flags["yellow"] is False
+    assert flags["yellow_zones"] == []
+
+
+def test_blue_flag_comes_from_player_fia_flag() -> None:
+    for fia_flag in (-1, 0, 1, 2, 3):
+        store = StateStore()
+        store.apply(PacketBuilder().car_status(vehicle_fia_flags=fia_flag), 1_000)
+        assert _flags(store)["blue"] is (fia_flag == 2), fia_flag
+
+
+def test_red_flag_latches_until_lap_progress() -> None:
+    builder = PacketBuilder()
+    store = StateStore()
+    store.apply(builder.lap(lap=3, distance=100.0), 1_000)
+    store.apply(builder.event("RDFL"), 2_000)
+    assert _flags(store)["red"] is True
+
+    # 같은 랩에서 위치가 움직이는 것만으로는 꺼지지 않는다.
+    store.apply(builder.lap(lap=3, distance=200.0), 3_000)
+    assert _flags(store)["red"] is True
+
+    # 다음 랩으로 넘어가면 랩 진행이 재개된 것으로 보고 끈다.
+    store.apply(builder.lap(lap=4, distance=0.0), 4_000)
+    assert _flags(store)["red"] is False
+
+
+def test_red_flag_clears_on_safety_car_and_session_restart() -> None:
+    builder = PacketBuilder()
+    store = StateStore()
+    store.apply(builder.session(safety_car_status=0), 1_000)
+    store.apply(builder.event("RDFL"), 2_000)
+    assert _flags(store)["red"] is True
+
+    store.apply(builder.session(safety_car_status=1), 3_000)
+    assert _flags(store)["red"] is False
+    assert _flags(store)["sc"] is True
+
+    store.apply(builder.event("RDFL"), 4_000)
+    assert _flags(store)["red"] is True
+    store.apply(builder.session(safety_car_status=0), 5_000)
+    assert _flags(store)["red"] is True, "SC가 풀린 것만으로는 적기를 끄지 않는다"
+
+    # 새 세션 UID면 적기 래치를 푼다.
+    store.apply(builder.session(uid=SESSION_UID + 1), 6_000)
+    assert _flags(store)["red"] is False
+
+
+def test_red_flag_does_not_clear_on_same_safety_car_status() -> None:
+    """RDFL 때 이미 SC였어도 같은 상태가 이어지면 적기를 유지한다."""
+    builder = PacketBuilder()
+    store = StateStore()
+    store.apply(builder.session(safety_car_status=1), 1_000)
+    store.apply(builder.event("RDFL"), 2_000)
+    store.apply(builder.session(safety_car_status=1), 3_000)
+
+    assert _flags(store)["red"] is True
