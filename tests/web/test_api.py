@@ -164,6 +164,10 @@ def _populated_store(*, recv_ns: int | None = None) -> StateStore:
             tyres_age_laps=3,
             ers_store_energy=2_000_000.0,
             ers_deploy_mode=2,
+            ers_deployed_this_lap=3_000_000.0,
+            ers_harvested_this_lap_mguk=500_000.0,
+            ers_harvested_this_lap_mguh=250_000.0,
+            engine_power_mguk=95_000.0,
         ),
         recv_ns=when,
     )
@@ -289,6 +293,41 @@ def test_state_endpoint_shape() -> None:
     # 모든 severity는 /api/thresholds 색 표의 키다(화면은 이 키로 색만 고른다).
     severities = set(_severities(car))
     assert severities <= set(color_table()["colors"])
+
+
+def test_state_includes_ers_usage_power_and_harvest() -> None:
+    """SCRUM-86: ERS 사용량·MGU-K 출력·회수량을 게임 원래 단위로 내려 준다.
+
+    화면 단위(MJ·kW) 변환은 대시보드 JS가 한다. 단위와 막대 기준(`max`)만
+    API가 함께 준다. 네 값 모두 문턱값 표에 없어 색 단계는 없다.
+    """
+    ers = _client(_populated_store()).get("/api/state").json()["car"]["ers"]
+
+    assert ers["deployed_this_lap"]["value"] == pytest.approx(3_000_000.0)
+    assert ers["deployed_this_lap"]["unit"] == "J"
+    assert ers["deployed_this_lap"]["max"] == pytest.approx(4_000_000.0)
+    assert ers["harvested_mguk"]["value"] == pytest.approx(500_000.0)
+    assert ers["harvested_mguk"]["unit"] == "J"
+    assert ers["harvested_mguh"]["value"] == pytest.approx(250_000.0)
+    assert ers["harvested_mguh"]["unit"] == "J"
+    assert ers["mguk_power"]["value"] == pytest.approx(95_000.0)
+    assert ers["mguk_power"]["unit"] == "W"
+    assert ers["mguk_power"]["max"] == pytest.approx(120_000.0)
+
+    new_keys = (
+        "deployed_this_lap",
+        "harvested_mguk",
+        "harvested_mguh",
+        "mguk_power",
+    )
+    for key in new_keys:
+        assert ers[key]["severity"] is None
+
+    # 패킷이 아직 없어도 네 칸은 남고 값만 비어 있다.
+    empty = _client(StateStore()).get("/api/state").json()["car"]["ers"]
+    for key in new_keys:
+        assert empty[key]["value"] is None
+        assert empty[key]["severity"] is None
 
 
 def test_state_includes_flags_summary() -> None:
