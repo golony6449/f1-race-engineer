@@ -6,13 +6,17 @@ F1 25 게임 PC가 보내는 UDP 텔레메트리를 홈서버(리눅스)에서 �
 
 - **서비스 등록·시작, 방화벽 설정은 서버에 로그인한 사용자가 직접 실행한다.**
   이 레포에는 서비스 파일과 문서만 있다.
-- 기준 경로: `/home/golony/dev/repo/f1-race-engineer/f1-race-engineer`
+- 기준 경로: `/home/golony/dev/repo/f1-race-engineer`
 - 기준 사용자: `golony` — 다르면 아래 경로와 `deploy/f1re.service`의 사용자명 부분을 바꾼다.
-- 포트: **UDP 20777**(게임 → 서버), **TCP 8093**(태블릿·게임 PC → 서버 웹)
+- 포트: **UDP 20777**(게임 → 서버, 외부에 연다), **TCP 8093**(웹, 서버 안 `127.0.0.1`에서만 받는다)
+- 웹 접속: 태블릿·게임 PC는 같은 서버의 **nginx**(HTTPS)를 거쳐 들어온다. nginx가
+  `127.0.0.1:8093`으로 넘긴다.
 
 ```
-[게임 PC] F1 25 ──UDP 20777──▶ [홈서버] f1re serve ──TCP 8093──▶ [태블릿 대시보드]
-                                        └──────────────────────▶ [게임 PC /radio]
+[게임 PC] F1 25 ──UDP 20777──▶ [홈서버] f1re serve (웹 127.0.0.1:8093)
+                                        ▲
+                               [홈서버] nginx (HTTPS) ◀── [태블릿 대시보드]
+                                                     ◀── [게임 PC /radio]
 ```
 
 ## 1. 준비물
@@ -36,8 +40,8 @@ F1 25 게임 PC가 보내는 UDP 텔레메트리를 홈서버(리눅스)에서 �
 ```sh
 mkdir -p /home/golony/dev/repo/f1-race-engineer
 git clone https://github.com/golony6449/f1-race-engineer.git \
-  /home/golony/dev/repo/f1-race-engineer/f1-race-engineer
-cd /home/golony/dev/repo/f1-race-engineer/f1-race-engineer
+  /home/golony/dev/repo/f1-race-engineer
+cd /home/golony/dev/repo/f1-race-engineer
 uv sync
 ```
 
@@ -49,7 +53,7 @@ uv sync
 
 ```sh
 uv run python tools/fetch_assets.py
-# 저장: /home/golony/dev/repo/f1-race-engineer/f1-race-engineer/assets/radio-intro.wav
+# 저장: /home/golony/dev/repo/f1-race-engineer/assets/radio-intro.wav
 ```
 
 이미 있으면 건너뛴다(`--force`면 다시 받는다). 파일이 없어도 무전 음성은 나오고,
@@ -62,7 +66,7 @@ uv run python tools/fetch_assets.py
 | 항목 | 설정 키 | 기본값 | 뜻 |
 |---|---|---|---|
 | 게임 수신 | `[global] udp_port` | `20777` | 게임 PC가 보내는 UDP 포트 |
-| 웹 주소 | `[web] host` | `"0.0.0.0"` | 태블릿·게임 PC가 접속할 주소(모든 인터페이스) |
+| 웹 주소 | `[web] host` | `"0.0.0.0"` | 웹을 받을 주소. 서비스는 `--web-host 127.0.0.1`로 덮어쓴다 |
 | 웹 포트 | `[web] port` | `8093` | 대시보드·무전 페이지 포트 |
 
 명령줄로 덮어쓸 수도 있다. **`--port`는 UDP 포트, `--web-port`는 웹 포트**다.
@@ -70,23 +74,48 @@ uv run python tools/fetch_assets.py
 ```sh
 uv run f1re serve                          # UDP 20777 + 웹 8093
 uv run f1re serve --port 20777 --web-port 8093
-uv run f1re serve --web-host 127.0.0.1     # 서버 안에서만 웹을 볼 때
+uv run f1re serve --web-host 127.0.0.1     # 서버 안에서만 웹을 받는다(서비스 기본)
 ```
 
-방화벽에서 두 포트를 연다(예: Ubuntu `ufw`. 이미 허용되어 있으면 건너뛴다):
+방화벽에서는 게임 텔레메트리 UDP만 연다(예: Ubuntu `ufw`. 이미 허용되어 있으면
+건너뛴다). 웹 8093은 `127.0.0.1`에서만 받으므로 열지 않는다.
 
 ```sh
 sudo ufw allow 20777/udp
-sudo ufw allow 8093/tcp
 sudo ufw status
 ```
 
 `firewalld`를 쓰면 같은 뜻으로:
 
 ```sh
-sudo firewall-cmd --permanent --add-port=20777/udp --add-port=8093/tcp
+sudo firewall-cmd --permanent --add-port=20777/udp
 sudo firewall-cmd --reload
 ```
+
+### nginx
+
+같은 서버의 nginx가 HTTPS를 받아 `127.0.0.1:8093`으로 넘긴다. 대시보드
+(`/ws/state`)와 무전(`/ws/radio`)이 WebSocket을 쓰므로 업그레이드 헤더를 꼭
+넘긴다. 빠지면 페이지는 열려도 값이 갱신되지 않고 무전이 연결되지 않는다.
+
+```nginx
+server {
+    listen 443 ssl http2;
+    server_name <도메인>;
+    # ssl_certificate ... (서버의 인증서 설정)
+
+    location / {
+        proxy_pass http://127.0.0.1:8093;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_read_timeout 86400s;   # 무전 WebSocket이 오래 열려 있다
+    }
+}
+```
+
+HTTPS로 열면 페이지가 스스로 `wss://`로 연결한다.
 
 ## 4. Qwen 키(시크릿)
 
@@ -112,7 +141,7 @@ sudo firewall-cmd --reload
 `deploy/f1re.service`는 systemd **사용자 서비스**다(`sudo` 불필요).
 
 ```sh
-cd /home/golony/dev/repo/f1-race-engineer/f1-race-engineer
+cd /home/golony/dev/repo/f1-race-engineer
 command -v uv        # 다르면 아래 파일의 ExecStart를 그 경로로 고친다
 nano deploy/f1re.service   # 필요할 때만: uv 경로, 체크아웃 위치, 포트 인자
 
@@ -148,7 +177,7 @@ systemctl --user disable --now f1re
 업데이트:
 
 ```sh
-cd /home/golony/dev/repo/f1-race-engineer/f1-race-engineer
+cd /home/golony/dev/repo/f1-race-engineer
 git pull
 uv sync
 systemctl --user restart f1re
@@ -173,9 +202,9 @@ systemctl --user restart f1re
 
 ## 7. 접속 확인
 
-1. **태블릿**: 브라우저에서 `http://<서버 IP>:8093/` — 대시보드가 뜨고, 게임을
+1. **태블릿**: 브라우저에서 `https://<도메인>/` — 대시보드가 뜨고, 게임을
    시작하면 차량 상태·서킷 지도가 갱신된다.
-2. **게임 PC(무전)**: 브라우저에서 `http://<서버 IP>:8093/radio` 를 열고
+2. **게임 PC(무전)**: 브라우저에서 `https://<도메인>/radio` 를 열고
    **무전 연결** 버튼을 한 번 누른다(브라우저 자동 재생 정책 때문). 연결 상태와
    마지막 무전 자막이 크게 보이고, 연결이 끊기면 페이지가 스스로 다시 연결한다.
    게임 화면과 함께 보려면 브라우저 창을 옆 모니터·태블릿에 두거나
@@ -202,9 +231,10 @@ uv run f1re-demo --track suzuka --mode tt --host 127.0.0.1 --port 20777 --laps 1
 
 | 증상 | 확인 |
 |---|---|
-| 대시보드가 안 열린다 | `systemctl --user status f1re`, `ss -ltnp \| grep 8093`, 방화벽의 8093/tcp |
+| 대시보드가 안 열린다 | `systemctl --user status f1re`, `ss -ltnp \| grep 8093`(`127.0.0.1:8093`이어야 한다), `curl http://127.0.0.1:8093/`, nginx 설정·`allow` 범위 |
+| 화면은 뜨는데 값·무전이 안 온다 | nginx에 WebSocket 업그레이드 헤더(`Upgrade`·`Connection`)가 있는지 |
 | 게임을 켜도 화면이 그대로다 | 게임 텔레메트리 IP·포트(20777)·형식 2025, `ss -lunp \| grep 20777`, 방화벽의 20777/udp, 서버 로그의 `UDP 수신 대기` |
 | 무전 소리가 안 난다 | `/radio`에서 **무전 연결**을 눌렀는지, 서버 로그의 Qwen 오류, 4장의 키 확인 |
 | 시작 효과음이 클릭음이다 | `uv run python tools/fetch_assets.py`로 `assets/radio-intro.wav` 받기 |
 | 재부팅 뒤 서비스가 없다 | `loginctl enable-linger "$USER"` 실행 여부, `systemctl --user is-enabled f1re` |
-| 웹 포트가 이미 쓰인다 | `ss -ltnp \| grep 8093`으로 사용 프로세스 확인, `[web] port` 또는 `--web-port` 변경(방화벽도 함께) |
+| 웹 포트가 이미 쓰인다 | `ss -ltnp \| grep 8093`으로 사용 프로세스 확인, `[web] port` 또는 `--web-port` 변경(nginx `proxy_pass`도 함께) |
