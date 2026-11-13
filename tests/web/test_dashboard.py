@@ -60,6 +60,21 @@ def test_dashboard_combines_tyres_and_brakes_into_one_section() -> None:
     assert set(boxes) == TYRE_POSITIONS
 
 
+def test_statusbar_merges_voice_and_radio_page_into_one_cell() -> None:
+    html = _dashboard_html()
+
+    # 음성·무전 페이지 두 칸을 "무전" 한 칸으로 합쳤다.
+    assert 'id="status-radio"' in html
+    assert 'id="status-voice"' not in html
+    assert 'id="status-radio-page"' not in html
+    assert html.count('class="status"') == 2
+
+    # 한 칸 안에 두 상태를 함께 보여 주고, 아래에 출처를 적는다.
+    assert len(re.findall(r'data-field="radio"', html)) == 1
+    assert "음성 오프라인 · 무전 페이지 미연결" in html
+    assert "Qwen TTS · 게임 PC /radio" in html
+
+
 def test_car_section_static_assets_are_served() -> None:
     client = _client()
 
@@ -77,6 +92,10 @@ def test_car_section_static_assets_are_served() -> None:
     assert "this.colors" in script
     assert "this.tyreShapes" in script
     assert "this.brakeDiscs" in script
+    # 무전 칸은 음성·무전 페이지를 한 값으로 합쳐 정상/경고 색을 고른다.
+    assert '[data-field="radio"]' in script
+    assert "음성 온라인" in script
+    assert "무전 페이지 연결" in script
 
     css_response = client.get("/static/style.css")
     assert css_response.status_code == 200
@@ -84,5 +103,8 @@ def test_car_section_static_assets_are_served() -> None:
     assert ".car-view" in css
     assert ".car-svg .tyre-shape" in css
     assert ".car-svg .brake-disc" in css
+    # 정상/경고 색은 상태줄 클래스가 칠한다.
+    assert ".status-value.ok" in css
+    assert ".status-value.warn" in css
     # 좁은 화면에서는 상자를 그림 위/아래로 접어 가로 스크롤을 만들지 않는다.
     assert "@media (max-width: 720px)" in css

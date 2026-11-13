@@ -9,6 +9,8 @@
   --text: #e8edf5;
   --muted: #8b97a8;
   --accent: #e10600;
+  --ok: #22c55e;
+  --warn: #f59e0b;
   --radius: 14px;
 }
 
@@ -38,7 +40,7 @@ body {
 
 .statusbar {
   display: grid;
-  grid-template-columns: 1.4fr 1fr 1fr;
+  grid-template-columns: 1.4fr 1fr;
   gap: 8px;
 }
 
@@ -76,6 +78,15 @@ body {
   color: var(--muted);
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* 무전 칸: 음성·무전 페이지가 모두 정상일 때만 정상 색, 아니면 경고 색. */
+.status-value.ok {
+  color: var(--ok);
+}
+
+.status-value.warn {
+  color: var(--warn);
 }
 
 /* ------------------------------------------------------------------ */

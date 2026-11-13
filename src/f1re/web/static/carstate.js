@@ -294,14 +294,33 @@ export function renderStatusBar(payload) {
     detail2.textContent = `미지원 ${unsupported} · 오류 ${errors} · 세션 ${session}`;
   }
 
-  setStatusText("voice", status.voice);
-  setStatusText("radio_page", status.radio_page);
+  renderRadioStatus(status.voice, status.radio_page);
 }
 
-function setStatusText(field, state) {
-  const node = document.querySelector(`[data-field="${field}"]`);
+/**
+ * 무전 칸: 음성과 무전 페이지 상태를 한 줄로 합친다.
+ *
+ * 둘 다 정상일 때만 정상 색(ok), 하나라도 문제면 경고 색(warn)이다.
+ * 색은 상태줄 클래스(.status-value.ok / .status-value.warn)가 칠한다.
+ */
+function renderRadioStatus(voice, radioPage) {
+  const node = document.querySelector('[data-field="radio"]');
   if (!node) return;
-  node.textContent = (state && state.label) || "알 수 없음";
+
+  const online = Boolean(voice && voice.state === "online");
+  const connected = Boolean(radioPage && radioPage.connected);
+  const clients =
+    radioPage && Number.isFinite(radioPage.clients) ? radioPage.clients : 0;
+
+  const voiceText = online ? "음성 온라인" : "음성 오프라인";
+  const radioText = connected
+    ? `무전 페이지 연결 ${clients}`
+    : "무전 페이지 미연결";
+  node.textContent = `${voiceText} · ${radioText}`;
+
+  const healthy = online && connected;
+  node.classList.toggle("ok", healthy);
+  node.classList.toggle("warn", !healthy);
 }
 
 /** 값이 끊겼을 때 칸은 그대로 두고 숫자만 흐리게 한다. */

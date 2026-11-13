@@ -8,8 +8,9 @@
   </head>
   <body>
     <!--
-      상단 상태줄(설계 6.9-5). 음성·무전 페이지 상태는 서버가 실제 값으로
-      내려 준다(음성 온라인/오프라인, 무전 페이지 연결/미연결).
+      상단 상태줄(설계 6.9-5). 음성·무전 페이지 상태는 한 칸에 모아 서버가
+      실제 값으로 내려 준다(음성 온라인/오프라인, 무전 페이지 연결 수/미연결).
+      둘 다 정상이면 정상 색, 하나라도 문제면 경고 색이다.
     -->
     <header class="statusbar">
       <section class="status" id="status-connection">
@@ -18,15 +19,12 @@
         <span class="status-detail" id="connection-detail"></span>
         <span class="status-detail" id="connection-detail-2"></span>
       </section>
-      <section class="status" id="status-voice">
-        <span class="status-label">음성</span>
-        <span class="status-value" data-field="voice">음성 오프라인</span>
-        <span class="status-detail">Qwen TTS</span>
-      </section>
-      <section class="status" id="status-radio-page">
-        <span class="status-label">무전 페이지</span>
-        <span class="status-value" data-field="radio_page">무전 페이지 미연결</span>
-        <span class="status-detail">게임 PC 브라우저 /radio</span>
+      <section class="status" id="status-radio">
+        <span class="status-label">무전</span>
+        <span class="status-value warn" data-field="radio"
+          >음성 오프라인 · 무전 페이지 미연결</span
+        >
+        <span class="status-detail">Qwen TTS · 게임 PC /radio</span>
       </section>
     </header>
 
