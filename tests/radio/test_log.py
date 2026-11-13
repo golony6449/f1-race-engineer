@@ -72,6 +72,7 @@ def test_migration_adds_radio_messages_without_touching_sessions(
             "evidence",
             "played",
             "latency_ms",
+            "dropped_reason",
         } <= columns
 
         session_columns = {
@@ -125,6 +126,31 @@ def test_record_not_played_and_missing_timestamp_uses_clock(tmp_path: Path) -> N
         assert row["played"] is False
         assert row["latency_ms"] is None
         assert row["evidence"] == {}
+    finally:
+        conn.close()
+
+
+def test_record_expired_message_with_reason(tmp_path: Path) -> None:
+    """큐가 만료로 버린 무전도 played=False와 이유로 남는다(SCRUM-81)."""
+    conn = _open(tmp_path)
+    try:
+        log = RadioLog(conn, session_uid=42)
+        log.record(
+            _message("타이어 4개 마모 88퍼센트.", kind=RadioKind.SAFETY),
+            played=False,
+            latency_ms=None,
+            dropped_reason="expired",
+        )
+        log.record(_message("정상 재생"), played=True, latency_ms=12)
+
+        rows = {row["text"]: row for row in log.recent()}
+        expired = rows["타이어 4개 마모 88퍼센트."]
+        played = rows["정상 재생"]
+        assert expired["played"] is False
+        assert expired["latency_ms"] is None
+        assert expired["dropped_reason"] == "expired"
+        assert played["played"] is True
+        assert played["dropped_reason"] is None
     finally:
         conn.close()
 

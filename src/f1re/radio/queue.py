@@ -7,11 +7,14 @@
 - 말하는 중에 더 높은 우선순위 무전이 오면 `interrupt_if_higher()`가 True를
   돌려준다. 재생기는 지금 소리를 끊고 `complete()` 뒤 `next()`로 새 무전을 꺼낸다.
 - 낮은 우선순위 무전은 대기하고, 유효 시간이 지나면 `next()`가 버린다.
+- 버린 무전은 `set_drop_handler()`로 넘긴 처리기(무전 기록 등)에 이유와 함께
+  알린다. 재생되지 않은 무전도 세션 뒤에 왜 사라졌는지 볼 수 있다(SCRUM-81).
 - 안전 경고는 끌 수 없다(`set_muted`가 False를 돌려주고 아무것도 바꾸지 않는다).
 """
 
 from __future__ import annotations
 
+import logging
 import threading
 import time
 from collections.abc import Callable, Iterator
@@ -50,6 +53,9 @@ PRIORITY_BY_KIND: dict[str, Priority] = {
 
 # 끌 수 있는 종류. 안전 경고는 설계 6.7(마스터 판단)에 따라 뺄 수 없다.
 MUTABLE_KINDS = frozenset(RadioKind) - {RadioKind.SAFETY}
+
+# 큐가 무전을 버린 이유. 지금은 유효 시간 만료뿐이다.
+DROP_REASON_EXPIRED = "expired"
 
 
 @dataclass(frozen=True)
@@ -119,30 +125,47 @@ class _Entry:
     msg: RadioMessage
 
 
+# 버린 무전을 받는 처리기. `RadioService`가 무전 기록에 남기는 데 쓴다.
+DropHandler = Callable[[RadioMessage, str], None]
+
+
 class RadioQueue:
     """여러 스레드가 넣고 재생기 한 곳이 꺼내 가는 무전 큐."""
 
-    def __init__(self, *, clock: Callable[[], int] = time.time_ns) -> None:
+    def __init__(
+        self,
+        *,
+        clock: Callable[[], int] = time.time_ns,
+        on_drop: DropHandler | None = None,
+    ) -> None:
         self._clock = clock
         self._lock = threading.Lock()
         self._pending: list[_Entry] = []
         self._next_seq = 0
         self._muted: set[str] = set()
         self._current: RadioMessage | None = None
+        self._on_drop = on_drop
 
     # --- 넣기 -------------------------------------------------------------
 
     def push(self, msg: RadioMessage) -> bool:
-        """큐에 넣는다. 끈 종류거나 이미 유효 시간이 지났으면 False."""
+        """큐에 넣는다. 끈 종류거나 이미 유효 시간이 지났으면 False.
+
+        끈 종류는 사용자가 고른 것이므로 조용히 버리고, 이미 유효 시간이
+        지난 무전은 버린 이유를 처리기에 알린다.
+        """
         with self._lock:
             if msg.kind in self._muted:
                 return False
             if msg.expired(self._clock()):
-                return False
-            self._pending.append(_Entry(self._next_seq, msg))
-            self._next_seq += 1
-            self._pending.sort(key=self._order_key)
-            return True
+                handler = self._on_drop
+            else:
+                self._pending.append(_Entry(self._next_seq, msg))
+                self._next_seq += 1
+                self._pending.sort(key=self._order_key)
+                return True
+        self._notify_drop(handler, msg)
+        return False
 
     # --- 꺼내기 -----------------------------------------------------------
 
@@ -150,15 +173,17 @@ class RadioQueue:
         """가장 높은 우선순위의 유효한 무전을 꺼내 '재생 중'으로 표시한다.
 
         같은 우선순위면 먼저 넣은 것이 먼저 나간다(FIFO). 유효 시간이 지난
-        무전은 꺼내지 않고 버린다.
+        무전은 꺼내지 않고 버리며, 버린 무전은 처리기에 알린다.
         """
         with self._lock:
-            self._drop_expired(now_ns)
-            if not self._pending:
-                return None
-            msg = self._pending.pop(0).msg
-            self._current = msg
-            return msg
+            dropped = self._drop_expired(now_ns)
+            handler = self._on_drop
+            msg = self._pending.pop(0).msg if self._pending else None
+            if msg is not None:
+                self._current = msg
+        for expired in dropped:
+            self._notify_drop(handler, expired)
+        return msg
 
     def complete(self) -> None:
         """지금 재생 중인 무전이 끝났음을 알린다(끊겼을 때도 부른다)."""
@@ -206,6 +231,11 @@ class RadioQueue:
         with self._lock:
             return kind in self._muted
 
+    def set_drop_handler(self, handler: DropHandler | None) -> None:
+        """유효 시간이 지나 버린 무전을 받을 처리기를 정한다(없애려면 None)."""
+        with self._lock:
+            self._on_drop = handler
+
     # --- 조회 -------------------------------------------------------------
 
     @property
@@ -239,10 +269,29 @@ class RadioQueue:
     def _order_key(entry: _Entry) -> tuple[int, int]:
         return (int(entry.msg.priority), entry.seq)
 
-    def _drop_expired(self, now_ns: int) -> None:
-        self._pending = [
-            entry for entry in self._pending if not entry.msg.expired(now_ns)
-        ]
+    def _drop_expired(self, now_ns: int) -> list[RadioMessage]:
+        """유효 시간이 지난 대기 무전을 버리고 그 목록을 돌려준다."""
+        kept: list[_Entry] = []
+        dropped: list[RadioMessage] = []
+        for entry in self._pending:
+            if entry.msg.expired(now_ns):
+                dropped.append(entry.msg)
+            else:
+                kept.append(entry)
+        self._pending = kept
+        return dropped
+
+    @staticmethod
+    def _notify_drop(handler: DropHandler | None, msg: RadioMessage) -> None:
+        """처리기에 버린 이유를 알린다. 처리기 오류가 큐를 막지 않는다."""
+        if handler is None:
+            return
+        try:
+            handler(msg, DROP_REASON_EXPIRED)
+        except Exception:  # 기록 실패가 무전 전달을 멈추지 않게 한다.
+            logging.getLogger(__name__).exception(
+                "만료 무전을 처리기에 넘기지 못했습니다: %s", msg.text
+            )
 
     def __iter__(self) -> Iterator[RadioMessage]:
         return iter(self.pending())
