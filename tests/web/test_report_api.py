@@ -54,9 +54,13 @@ def _record(
     session_uid: int = SESSION_UID,
     played: bool = True,
     latency_ms: int | None = 40,
+    dropped_reason: str | None = None,
 ) -> int:
     return RadioLog(conn, session_uid=session_uid).record(
-        message, played=played, latency_ms=latency_ms
+        message,
+        played=played,
+        latency_ms=latency_ms,
+        dropped_reason=dropped_reason,
     )
 
 
@@ -132,6 +136,7 @@ def test_log_includes_evidence_and_latency(tmp_path: Path) -> None:
         assert oldest["played"] is True
         assert oldest["latency_ms"] == 87
         assert oldest["recorded_at_iso"] is not None
+        assert oldest["dropped_reason"] is None
 
         assert data["muted_kinds"] == []
         kinds = {item["kind"]: item for item in data["kinds"]}
@@ -143,6 +148,34 @@ def test_log_includes_evidence_and_latency(tmp_path: Path) -> None:
         }
         assert kinds["coaching"]["mutable"] is True
         assert kinds["improvement"]["label"] == "개선 알림"
+    finally:
+        conn.close()
+
+
+def test_log_includes_dropped_reason(tmp_path: Path) -> None:
+    """만료로 재생되지 못한 무전은 이유와 함께 API에 보인다(SCRUM-81)."""
+    conn = _open(tmp_path)
+    try:
+        expired = _message(
+            "타이어 4개 마모 88퍼센트.",
+            kind=RadioKind.SAFETY,
+            created_ns=1_000,
+        )
+        _record(
+            conn,
+            expired,
+            played=False,
+            latency_ms=None,
+            dropped_reason="expired",
+        )
+
+        with _client(conn) as client:
+            data = client.get(f"/api/radio/log?session={SESSION_UID}").json()
+
+        message = data["messages"][0]
+        assert message["played"] is False
+        assert message["latency_ms"] is None
+        assert message["dropped_reason"] == "expired"
     finally:
         conn.close()
 

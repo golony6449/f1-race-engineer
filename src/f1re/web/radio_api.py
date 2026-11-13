@@ -32,8 +32,9 @@ WebSocket 메시지(JSON, 서버 → 브라우저):
 - ``{"type": "done", "text": ..., "played": true, "interrupted": false,
   "latency_ms": 12}``
 
-모든 무전은 `RadioLog`에 남긴다(재생 여부·지연 포함). 기록용 DB 연결은 호출자가
-넘기고, 세션이 바뀌면 그 세션 UID로 새 기록기를 만든다.
+모든 무전은 `RadioLog`에 남긴다(재생 여부·지연 포함). 큐가 유효 시간이 지나
+버린 무전도 `dropped_reason`과 함께 남긴다(SCRUM-81). 기록용 DB 연결은
+호출자가 넘기고, 세션이 바뀌면 그 세션 UID로 새 기록기를 만든다.
 """
 
 from __future__ import annotations
@@ -52,11 +53,11 @@ from typing import Any
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 
-from f1re.alerts.rules import AlertRules
+from f1re.alerts.rules import AlertRules, rules_from_config
+from f1re.engine import ENGINE_OFF, ENGINE_ON
 from f1re.radio.log import RadioLog
 from f1re.radio.queue import RadioMessage, RadioQueue
 from f1re.state.store import StateStore
-from f1re.tts.qwen import TTSUnavailable
 
 logger = logging.getLogger(__name__)
 
@@ -121,6 +122,8 @@ class RadioService:
     ) -> None:
         self._store = store
         self._queue = queue if queue is not None else RadioQueue(clock=clock)
+        # 큐가 유효 시간이 지나 버린 무전도 기록한다(SCRUM-81).
+        self._queue.set_drop_handler(self._record_dropped)
         self._cache = cache
         self._rules = rules if rules is not None else AlertRules(clock=clock)
         self._log = log
@@ -285,6 +288,10 @@ class RadioService:
             self._record(message, played=False, latency_ms=None)
 
     async def _speak(self, message: RadioMessage) -> None:
+        # 엔진이 꺼져 있는 서버 시작 경로에서 httpx(Qwen)를 불러오지 않도록
+        # 실제로 말할 때 import한다(SCRUM-82).
+        from f1re.tts.qwen import TTSUnavailable
+
         played = False
         interrupted = False
         latency_ms: int | None = None
@@ -423,13 +430,28 @@ class RadioService:
         *,
         played: bool,
         latency_ms: int | None,
+        dropped_reason: str | None = None,
     ) -> None:
         try:
             log = self._log_for_session()
             if log is not None:
-                log.record(message, played=played, latency_ms=latency_ms)
+                log.record(
+                    message,
+                    played=played,
+                    latency_ms=latency_ms,
+                    dropped_reason=dropped_reason,
+                )
         except Exception:  # DB 오류가 재생을 막지 않는다.
             logger.exception("무전 기록을 남기지 못했습니다: %s", message.text)
+
+    def _record_dropped(self, message: RadioMessage, reason: str) -> None:
+        """큐가 버린 무전도 `played=False`와 이유로 기록한다(SCRUM-81)."""
+        self._record(
+            message,
+            played=False,
+            latency_ms=None,
+            dropped_reason=reason,
+        )
 
     def _log_for_session(self) -> RadioLog | None:
         if self._log is not None:
@@ -459,7 +481,13 @@ def build_radio_service(
     config = load_config()
     tts = QwenTTS(config.tts)
     cache = VoiceCache(tts, config=config.tts)
-    return RadioService(store, cache=cache, log_conn=log_conn, tts=tts)
+    return RadioService(
+        store,
+        cache=cache,
+        rules=rules_from_config(),
+        log_conn=log_conn,
+        tts=tts,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -480,9 +508,21 @@ def radio_page() -> FileResponse:
 
 @router.websocket("/ws/radio")
 async def ws_radio(websocket: WebSocket) -> None:
-    """무전 페이지 하나와 연결해 음성 조각·자막·상태를 보낸다."""
+    """무전 페이지 하나와 연결해 음성 조각·자막·상태를 보낸다.
+
+    엔진이 꺼져 있으면 연결하지 않고 ``{"type": "engine", "state": "off"}``를
+    보낸 뒤 닫는다. 켜져 있는 동안 엔진이 꺼지면 같은 메시지를 보내고 닫는다
+    (SCRUM-82).
+    """
     await websocket.accept()
-    service: RadioService | None = getattr(websocket.app.state, "radio", None)
+    engine = getattr(websocket.app.state, "engine", None)
+    if engine is not None and engine.state != ENGINE_ON:
+        await _send_engine_off(websocket)
+        return
+
+    service: RadioService | None = (
+        engine.radio if engine is not None else None
+    ) or getattr(websocket.app.state, "radio", None)
     if service is None:
         await websocket.send_json(
             {
@@ -506,19 +546,40 @@ async def ws_radio(websocket: WebSocket) -> None:
     client = service.add_client()
     sender = asyncio.create_task(_send_loop(websocket, client))
     receiver = asyncio.create_task(_receive_loop(websocket))
-    try:
-        await asyncio.wait(
-            {sender, receiver}, return_when=asyncio.FIRST_COMPLETED
+    tasks = [sender, receiver]
+    if engine is not None:
+        # 엔진 OFF 전환을 기다렸다가 알리고 끝난다. FIRST_COMPLETED가 되면
+        # 아래 finally가 나머지 루프를 정리하고 WebSocket을 닫는다.
+        tasks.append(
+            asyncio.create_task(
+                _engine_off_watcher(engine.off_event, websocket),
+                name="f1re-ws-engine-off",
+            )
         )
+    try:
+        await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
     finally:
-        for task in (sender, receiver):
+        for task in tasks:
             task.cancel()
-        for task in (sender, receiver):
+        for task in tasks:
             with contextlib.suppress(asyncio.CancelledError):
                 await task
         service.remove_client(client)
         with contextlib.suppress(Exception):
             await websocket.close()
+
+
+async def _engine_off_watcher(event: asyncio.Event, websocket: WebSocket) -> None:
+    """엔진이 꺼질 때까지 기다렸다가 engine-off 메시지를 보낸다."""
+    await event.wait()
+    await _send_engine_off(websocket)
+
+
+async def _send_engine_off(websocket: WebSocket) -> None:
+    with contextlib.suppress(Exception):
+        await websocket.send_json({"type": "engine", "state": ENGINE_OFF})
+    with contextlib.suppress(Exception):
+        await websocket.close()
 
 
 async def _send_loop(websocket: WebSocket, client: _Client) -> None:

@@ -141,6 +141,30 @@
         margin: 0;
         padding-left: 20px;
       }
+      /*
+        레이스 엔지니어가 꺼져 있을 때의 안내(SCRUM-82). 웹 서버는 항상 뜨지만
+        UDP 수신·분석·무전은 멈춘 상태다. 대시보드 우측 아래 설정에서 켠다.
+      */
+      .engine-off {
+        margin: 0 0 20px;
+        padding: 20px 22px;
+        text-align: center;
+        font-size: 20px;
+        font-weight: 700;
+        color: var(--warn);
+        background: var(--panel);
+        border: 2px solid var(--warn);
+        border-radius: 16px;
+      }
+      .engine-off p {
+        margin: 6px 0 0;
+        font-size: 15px;
+        font-weight: 400;
+        color: var(--muted);
+      }
+      .engine-off[hidden] {
+        display: none;
+      }
       code {
         color: var(--text);
         background: #1f2630;
@@ -156,6 +180,11 @@
         게임 PC에서 이 페이지를 띄워 두면 레이스 엔지니어 무전이 헤드셋으로
         나옵니다. 화면(차량 상태·지도)은 태블릿으로 보세요.
       </p>
+
+      <div class="engine-off" id="engine-off" hidden>
+        레이스 엔지니어가 꺼져 있습니다.
+        <p>대시보드 우측 아래 설정에서 켜세요. 웹 페이지만 떠 있고 UDP 수신·분석·무전은 멈춰 있습니다.</p>
+      </div>
 
       <!-- 연결 상태를 크게 보여 준다(설계 6.10). -->
       <div

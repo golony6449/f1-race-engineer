@@ -24,6 +24,7 @@ API:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import math
 import sqlite3
 import time
@@ -31,11 +32,19 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse
+from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
 
 from f1re.alerts.thresholds import color_table, severity
+from f1re.engine import (
+    ENGINE_OFF,
+    ENGINE_ON,
+    ENGINE_STATES,
+    Engine,
+    Runtime,
+)
 from f1re.state.store import StateStore
 from f1re.web.lift_coast_api import router as lift_coast_router
 from f1re.web.map_api import TrackMap, create_map_router
@@ -295,42 +304,86 @@ def connection_info(
 # ---------------------------------------------------------------------------
 
 
+class EngineStateRequest(BaseModel):
+    """`POST /api/engine` 요청. ``state``는 ``"on"`` 또는 ``"off"``."""
+
+    state: str
+
+
+# 엔진이 꺼져 있어도 동작해야 하는 HTTP 경로(SCRUM-82).
+# 그 밖의 API는 503 `{"engine": "off"}`로 답한다. 화면·정적 파일은 항상 뜬다.
+_ENGINE_OFF_ALLOWED_PATHS = {"/", "/radio", "/health", "/api/engine"}
+
+
+def _engine_off_allowed(path: str) -> bool:
+    return path in _ENGINE_OFF_ALLOWED_PATHS or path.startswith("/static/")
+
+
 def create_app(
-    store: StateStore,
+    store: StateStore | None = None,
     radio: RadioService | None = None,
     *,
     conn: sqlite3.Connection | None = None,
+    engine: Engine | None = None,
 ) -> FastAPI:
     """상태 저장소 하나를 읽는 FastAPI 앱을 만든다.
 
-    `radio`를 넘기면 그 무전 서비스를 쓴다(실서버는 음성 캐시·DB 기록을 붙인
-    서비스를 넘긴다). 생략하면 음성 캐시 없는 기본 서비스를 만들어, 상태가
-    "음성 오프라인"/"무전 페이지 미연결"로 정직하게 보인다.
-    `conn`은 학습한 서킷 윤곽(작업 10)을 읽을 SQLite 연결이다. 없으면 패키지
-    데이터 파일의 중심선만 쓴다(테스트·단독 실행).
+    실서버는 `engine`을 넘긴다. 웹 서버는 항상 뜨고, 엔진이 꺼져 있으면
+    화면·정적 파일·health·엔진 API만 동작하며 나머지 API는 503으로 답한다.
+
+    `engine` 없이 `store`/`radio`/`conn`을 넘기면 그 자원에 붙은 고정 엔진(항상
+    ON)을 만들어 준다. 테스트·단독 실행이 쓰는 예전 방식이다. `radio`를 생략하면
+    음성 캐시 없는 기본 서비스를 만든다.
     """
-    service = radio if radio is not None else RadioService(store)
-    map_state = TrackMap(conn)
-
-    @asynccontextmanager
-    async def lifespan(_app: FastAPI):
-        service.ensure_started()
-        try:
-            yield
-        finally:
-            await service.aclose()
-
+    if engine is None:
+        state_store = store if store is not None else StateStore()
+        service = radio if radio is not None else RadioService(state_store)
+        engine = Engine(
+            runtime=Runtime(
+                store=state_store,
+                radio=service,
+                conn=conn,
+                map=TrackMap(conn),
+            )
+        )
     app = FastAPI(
         title="F1 레이스 엔지니어 대시보드",
-        lifespan=lifespan,
+        lifespan=_lifespan(engine),
     )
-    app.state.radio = service
+    app.state.engine = engine
+    app.state.radio = engine.radio
+
+    @app.middleware("http")
+    async def pages_and_engine_guard(request: Request, call_next):
+        path = request.url.path
+        # OFF면 엔진이 필요한 API를 부르지 않는다. health·화면·엔진 API는 통과.
+        if engine.state == ENGINE_OFF and not _engine_off_allowed(path):
+            response: Any = JSONResponse(
+                status_code=503, content={"engine": ENGINE_OFF}
+            )
+        else:
+            response = await call_next(request)
+        # 배포·업데이트 뒤 브라우저가 예전 JS/CSS를 캐시에서 써서 화면이 멈춘 일이
+        # 있었다(SCRUM-79). 화면(/, /radio)과 정적 파일은 매번 서버에 다시 확인하게
+        # 한다. `no-cache`는 저장 금지가 아니라 재검증 요구라, 안 바뀐 파일은
+        # StaticFiles가 304로 가볍게 답한다. API 응답 정책은 그대로 둔다.
+        if path in {"/", "/radio", "/static"} or path.startswith("/static/"):
+            response.headers["Cache-Control"] = "no-cache"
+        return response
 
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
     app.include_router(radio_router)
-    app.include_router(create_map_router(store, map_state))
-    app.include_router(create_report_router(store, service, conn))
+    app.include_router(create_map_router(lambda: engine.runtime))
+    app.include_router(create_report_router(lambda: engine.runtime))
     app.include_router(lift_coast_router)
+
+    def _runtime() -> Runtime:
+        runtime = engine.runtime
+        if runtime is None:
+            raise HTTPException(
+                status_code=503, detail={"engine": ENGINE_OFF}
+            )
+        return runtime
 
     @app.get("/", include_in_schema=False)
     def dashboard() -> FileResponse:
@@ -339,9 +392,43 @@ def create_app(
             media_type="text/html; charset=utf-8",
         )
 
+    @app.get("/health")
+    def health() -> dict[str, str]:
+        """모니터링용. 엔진 상태와 무관하게 200으로 답한다."""
+        return {"status": "ok", "engine": engine.state}
+
+    @app.get("/api/engine")
+    def api_engine_get() -> dict[str, str]:
+        return {"state": engine.state}
+
+    @app.post("/api/engine")
+    async def api_engine_post(body: EngineStateRequest) -> dict[str, str]:
+        state = body.state.strip().lower()
+        if state not in ENGINE_STATES:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "message": "state는 'on' 또는 'off'여야 합니다",
+                    "state": body.state,
+                },
+            )
+        try:
+            # 전환은 잠금으로 순서대로 처리된다. 같은 상태면 그대로 성공한다.
+            await engine.set_state(state)
+        except Exception as exc:  # 포트 사용 중 등. 웹은 계속 뜬다.
+            raise HTTPException(
+                status_code=500,
+                detail={
+                    "engine": engine.state,
+                    "message": f"{type(exc).__name__}: {exc}",
+                },
+            ) from exc
+        return {"state": engine.state}
+
     @app.get("/api/state")
     def api_state() -> dict[str, Any]:
-        return state_payload(store, service, map_state)
+        runtime = _runtime()
+        return state_payload(runtime.store, runtime.radio, runtime.map)
 
     @app.get("/api/thresholds")
     def api_thresholds() -> dict[str, Any]:
@@ -350,15 +437,61 @@ def create_app(
     @app.websocket("/ws/state")
     async def ws_state(websocket: WebSocket) -> None:
         await websocket.accept()
+        if engine.state != ENGINE_ON:
+            await _send_engine_off(websocket)
+            return
+        off_event = engine.off_event
         try:
-            while True:
-                await websocket.send_json(state_payload(store, service, map_state))
-                await asyncio.sleep(PUSH_INTERVAL_S)
+            while engine.state == ENGINE_ON:
+                runtime = engine.runtime
+                if runtime is None:
+                    break
+                await websocket.send_json(
+                    state_payload(runtime.store, runtime.radio, runtime.map)
+                )
+                await _wait_or_off(off_event, PUSH_INTERVAL_S)
         except (WebSocketDisconnect, RuntimeError, OSError):
             # 브라우저가 닫혔다. 정리는 Starlette가 한다.
             return
+        # 엔진이 꺼졌다. 열려 있던 연결에도 알리고 닫는다(SCRUM-82).
+        await _send_engine_off(websocket)
 
     return app
+
+
+def _lifespan(engine: Engine):
+    """고정 엔진이면 무전 루프를 앱 수명에 묶고, 소유 엔진이면 종료 때 정리한다."""
+
+    @asynccontextmanager
+    async def lifespan(_app: FastAPI):
+        radio = None if engine.managed else engine.radio
+        if radio is not None:
+            radio.ensure_started()
+        try:
+            yield
+        finally:
+            radio = None if engine.managed else engine.radio
+            if radio is not None:
+                await radio.aclose()
+            else:
+                # 종료는 사용자가 끈 것이 아니므로 저장 상태를 바꾸지 않는다.
+                await engine.aclose()
+
+    return lifespan
+
+
+async def _wait_or_off(off_event: asyncio.Event, timeout_s: float) -> None:
+    """다음 푸시까지 기다리되, 엔진이 꺼지면 바로 깨어난다."""
+    with contextlib.suppress(asyncio.TimeoutError):
+        await asyncio.wait_for(off_event.wait(), timeout_s)
+
+
+async def _send_engine_off(websocket: WebSocket) -> None:
+    """엔진이 꺼졌다는 메시지를 보내고 WebSocket을 닫는다."""
+    with contextlib.suppress(Exception):
+        await websocket.send_json({"type": "engine", "state": ENGINE_OFF})
+    with contextlib.suppress(Exception):
+        await websocket.close()
 
 
 # ---------------------------------------------------------------------------

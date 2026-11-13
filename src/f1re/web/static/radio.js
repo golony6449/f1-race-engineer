@@ -25,12 +25,16 @@ const connectButton = document.getElementById("connect");
 const voiceNode = document.getElementById("voice");
 const captionText = document.getElementById("caption-text");
 const captionMeta = document.getElementById("caption-meta");
+const engineOffNode = document.getElementById("engine-off");
 
 let socket = null;
 let audioContext = null;
 let nextStartTime = 0;
 let reconnectTimer = null;
+let enginePollTimer = null;
 let started = false;
+// 레이스 엔지니어 ON/OFF(SCRUM-82). OFF면 무전 서버가 없으므로 연결하지 않는다.
+let engineState = "off";
 // 지금 재생 중인(또는 마지막으로 시작한) 무전의 우선순위. 숫자가 작을수록 높다.
 // 서버는 재생 길이에 맞춰 음성을 보내고, 더 높은 우선순위가 오면 `interrupt`를
 // 보낸 뒤 새 무전을 보낸다(설계 6.7). 이 값은 그 전에 도착한 caption을 받아
@@ -46,6 +50,63 @@ function setConnection(state, text) {
 
 function setVoice(label) {
   voiceNode.textContent = label || "음성 오프라인";
+}
+
+/**
+ * 엔진 상태에 맞춰 무전 페이지를 바꾼다.
+ * OFF면 안내를 보여 주고 연결·재연결을 멈춘다. 웹 서버는 살아 있으므로
+ * 몇 초마다 `/api/engine`을 다시 확인해 켜지면 버튼을 되살린다.
+ */
+function setEngineState(state, { pollWhenOff = true } = {}) {
+  engineState = state === "on" ? "on" : "off";
+  const on = engineState === "on";
+  if (engineOffNode) engineOffNode.hidden = on;
+  connectButton.disabled = !on;
+  if (on) {
+    if (connectionNode.dataset.state === "disconnected") {
+      setConnection("disconnected", "무전 연결 대기");
+    }
+    return;
+  }
+  started = false;
+  if (reconnectTimer !== null) {
+    window.clearTimeout(reconnectTimer);
+    reconnectTimer = null;
+  }
+  if (socket) {
+    const closing = socket;
+    socket = null;
+    try {
+      closing.close();
+    } catch (error) {
+      // 이미 닫힌 소켓은 무시한다.
+    }
+  }
+  stopAudio();
+  currentPriority = null;
+  setConnection("disconnected", "레이스 엔지니어 꺼짐");
+  if (pollWhenOff) scheduleEnginePoll();
+}
+
+function scheduleEnginePoll() {
+  if (enginePollTimer !== null) return;
+  enginePollTimer = window.setTimeout(async () => {
+    enginePollTimer = null;
+    await refreshEngineState({ pollWhenOff: false });
+    if (engineState !== "on") scheduleEnginePoll();
+  }, 3000);
+}
+
+async function refreshEngineState({ pollWhenOff = true } = {}) {
+  try {
+    const response = await fetch("/api/engine", { cache: "no-store" });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const data = await response.json();
+    setEngineState(data.state, { pollWhenOff });
+  } catch (error) {
+    // 서버가 아직 안 떴거나 잠깐 실패했다. 다시 확인한다.
+    if (engineState !== "on") scheduleEnginePoll();
+  }
 }
 
 function showCaption(text, meta) {
@@ -155,6 +216,10 @@ function metaFor(payload) {
 
 function handleMessage(payload) {
   switch (payload.type) {
+    case "engine":
+      // 서버가 엔진을 껐다. 안내로 바꾸고 재연결하지 않는다(SCRUM-82).
+      setEngineState(payload.state);
+      break;
     case "status":
       handleStatus(payload);
       break;
@@ -196,6 +261,7 @@ function handleMessage(payload) {
 }
 
 function connect() {
+  if (engineState !== "on") return;
   if (socket && (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING)) {
     return;
   }
@@ -218,6 +284,10 @@ function connect() {
 
   socket.addEventListener("close", () => {
     socket = null;
+    if (engineState !== "on") {
+      setConnection("disconnected", "레이스 엔지니어 꺼짐");
+      return;
+    }
     setConnection("disconnected", "서버 연결 끊김 · 다시 연결 중…");
     scheduleReconnect();
   });
@@ -236,6 +306,7 @@ function scheduleReconnect() {
 }
 
 connectButton.addEventListener("click", () => {
+  if (engineState !== "on") return;
   // 사용자 클릭 안에서 AudioContext를 만들어야 자동 재생 정책을 통과한다.
   ensureAudioContext();
   if (audioContext && audioContext.state === "suspended") {
@@ -252,3 +323,7 @@ document.addEventListener("visibilitychange", () => {
     audioContext.resume().catch(() => {});
   }
 });
+
+// 페이지를 열면 엔진 상태를 먼저 확인한다. OFF면 안내만 보여 주고 3초마다
+// 다시 확인해, 대시보드에서 켜면 이 페이지의 연결 버튼도 되살아난다.
+refreshEngineState();

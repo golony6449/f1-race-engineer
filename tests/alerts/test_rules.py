@@ -10,9 +10,15 @@ from typing import Any
 
 import pytest
 
-from f1re.alerts.rules import BOX_TTL_NS, SAFETY_TTL_NS, AlertRules
+from f1re.alerts.rules import (
+    BOX_TTL_NS,
+    SAFETY_TTL_NS,
+    AlertRules,
+    rules_from_config,
+)
 from f1re.alerts.thresholds import metric_threshold
-from f1re.radio.queue import Priority, RadioKind
+from f1re.config import load_config
+from f1re.radio.queue import Priority, RadioKind, RadioQueue
 from f1re.state.events import Event, EventKind
 
 NOW = 1_000_000_000_000
@@ -335,3 +341,238 @@ def test_message_priority_evidence_and_ttl() -> None:
 
     box = messages[1]
     assert box.expires_ns == NOW + BOX_TTL_NS
+
+
+# ---------------------------------------------------------------------------
+# 바퀴별 경고 묶기와 유효 시간 (SCRUM-81)
+
+
+class _FakeClock:
+    """테스트용 시계. 재생 시간을 직접 흘려보낸다."""
+
+    def __init__(self, now_ns: int = NOW) -> None:
+        self.now_ns = now_ns
+
+    def __call__(self) -> int:
+        return self.now_ns
+
+    def advance_s(self, seconds: float) -> None:
+        self.now_ns += int(seconds * 1_000_000_000)
+
+
+def _play_all(
+    queue: RadioQueue, clock: _FakeClock, seconds: float = 3.0
+) -> list[str]:
+    """무전을 하나씩 꺼내 `seconds`초씩 재생한 것으로 치고 문장을 모은다."""
+    played: list[str] = []
+    while (message := queue.next(clock())) is not None:
+        played.append(message.text)
+        clock.advance_s(seconds)
+        queue.complete()
+    return played
+
+
+def test_wheel_danger_merged_into_one_message() -> None:
+    """네 바퀴가 한 평가 주기에 함께 위험해지면 무전 한 건이다."""
+    rules = _rules()
+    messages = rules.evaluate(_wear(tyres_wear=[88.0, 88.0, 88.0, 88.0]))
+
+    assert [message.text for message in messages] == [
+        "타이어 4개 마모 88퍼센트.",
+        "박스, 박스.",
+    ]
+    safety = messages[0]
+    assert safety.evidence["tyres"] == "4개"
+    assert safety.evidence["value"] == pytest.approx(88.0)
+    # 근거에는 문장에 넣지 않은 바퀴까지 값이 모두 남는다.
+    assert [item["tyre"] for item in safety.evidence["values"]] == [
+        "뒤왼쪽",
+        "뒤오른쪽",
+        "앞왼쪽",
+        "앞오른쪽",
+    ]
+    assert [item["value"] for item in safety.evidence["values"]] == [88.0] * 4
+
+
+def test_front_wing_both_sides_merged_into_one_message() -> None:
+    rules = _rules()
+    messages = rules.evaluate(
+        _snapshot(
+            damage={
+                "front_left_wing_damage": 55,
+                "front_right_wing_damage": 60,
+            }
+        )
+    )
+    safety = [message for message in messages if message.kind == "safety"]
+    assert [message.text for message in safety] == ["앞날개 양쪽 손상 60퍼센트."]
+    assert safety[0].evidence["value"] == pytest.approx(60.0)
+    assert [side["value"] for side in safety[0].evidence["sides"]] == [55.0, 60.0]
+    assert safety[0].evidence["new_sides"] == ["왼쪽", "오른쪽"]
+
+
+def test_temperature_and_brake_bundles_use_worst_value() -> None:
+    rules = _rules()
+    messages = rules.evaluate(
+        _snapshot(
+            telemetry={
+                "tyres_surface_temperature": [121, 122, 90, 90],
+                "tyres_inner_temperature": [100, 100, 100, 100],
+                "brakes_temperature": [1050, 1040, 400, 400],
+            }
+        )
+    )
+    texts = [message.text for message in messages]
+    assert "타이어 뒤 두 개 온도 122도." in texts
+    assert "브레이크 온도 1050도. 뒤 두 바퀴." in texts
+
+
+def test_partial_wheel_danger_speaks_only_new_wheels() -> None:
+    rules = _rules()
+    rear = rules.evaluate(_wear(tyres_wear=[88.0, 88.0, 10.0, 10.0]))
+    assert [message.text for message in rear] == [
+        "타이어 뒤 두 개 마모 88퍼센트.",
+        "박스, 박스.",
+    ]
+
+    # 뒤 두 바퀴는 이미 DANGER다. 새로 위험해진 앞 두 바퀴만 알린다.
+    front = rules.evaluate(_wear(tyres_wear=[88.0, 88.0, 90.0, 90.0]))
+    assert [message.text for message in front] == [
+        "타이어 앞 두 개 마모 90퍼센트."
+    ]
+    assert [item["value"] for item in front[0].evidence["values"]] == [
+        88,
+        88,
+        90,
+        90,
+    ]
+
+    # 붙어 있지 않은 바퀴 둘은 이름을 그대로 나열한다.
+    diagonal_rules = _rules()
+    diagonal = diagonal_rules.evaluate(
+        _wear(tyres_wear=[88.0, 10.0, 10.0, 88.0])
+    )
+    assert diagonal[0].text == "타이어 뒤왼쪽·앞오른쪽 마모 88퍼센트."
+
+
+def test_wheel_bundle_keeps_transition_once_rule() -> None:
+    rules = _rules()
+    first = rules.evaluate(_wear(tyres_wear=[88.0] * 4))
+    assert [message.kind for message in first] == ["safety", "box"]
+
+    # 계속 DANGER면 다시 말하지 않는다.
+    assert rules.evaluate(_wear(tyres_wear=[89.0] * 4)) == []
+
+    # 한 바퀴가 풀렸다가 다시 위험이 되면 그 바퀴만 말한다.
+    assert rules.evaluate(_wear(tyres_wear=[10.0, 88.0, 88.0, 88.0])) == []
+    again = rules.evaluate(_wear(tyres_wear=[90.0, 88.0, 88.0, 88.0]))
+    assert [message.text for message in again] == ["타이어 뒤왼쪽 마모 90퍼센트."]
+
+
+def test_followup_radio_survives_playback_and_priority() -> None:
+    """데모 표본: 바퀴 경고가 한 건으로 묶이고 뒤 무전이 만료되지 않는다.
+
+    무전 하나가 3초씩 재생되는 동안(총 24초) 박스·페널티·SC·연료·VSC가
+    앞 무전 뒤에서 기다려도 유효 시간이 지나지 않는다. 큐는 우선순위대로
+    꺼내므로 안전 경고가 모두 나간 뒤 박스가 나간다(설계 6.7).
+    """
+    clock = _FakeClock()
+    rules = AlertRules(clock=clock)
+    queue = RadioQueue(clock=clock)
+
+    # 랩 1: 앞날개 좌우 60% 동시 손상 → 한 무전.
+    lap1 = rules.evaluate(
+        _snapshot(
+            damage={
+                "front_left_wing_damage": 60,
+                "front_right_wing_damage": 60,
+            }
+        )
+    )
+    assert [message.text for message in lap1] == ["앞날개 양쪽 손상 60퍼센트."]
+    for message in lap1:
+        assert queue.push(message)
+
+    # 랩 2: 네 바퀴 타이어 마모 88% → 한 무전 + 박스.
+    lap2 = rules.evaluate(_wear(tyres_wear=[88.0, 88.0, 88.0, 88.0]))
+    assert [message.text for message in lap2] == [
+        "타이어 4개 마모 88퍼센트.",
+        "박스, 박스.",
+    ]
+    for message in lap2:
+        assert queue.push(message)
+
+    # 랩 3: 브레이크 네 바퀴 1050도 → 한 무전, 세이프티 카, 페널티 5초.
+    lap3 = rules.evaluate(
+        _snapshot(
+            damage={"tyres_wear": [88.0] * 4},
+            telemetry={"brakes_temperature": [1050, 1050, 1050, 1050]},
+            lap={"penalties": 5},
+            session={"safety_car_status": 1},
+        )
+    )
+    lap3_texts = [message.text for message in lap3]
+    assert "브레이크 온도 1050도. 네 바퀴." in lap3_texts
+    assert "세이프티 카." in lap3_texts
+    assert "페널티 5초." in lap3_texts
+    for message in lap3:
+        assert queue.push(message)
+
+    # 랩 4: 연료 마이너스.
+    lap4 = rules.evaluate(
+        _snapshot(
+            damage={"tyres_wear": [88.0] * 4},
+            status={"fuel_remaining_laps": 12.0},
+        )
+    )
+    assert [message.text for message in lap4] == ["연료 마이너스 29랩."]
+    for message in lap4:
+        assert queue.push(message)
+
+    # 랩 5: 버추얼 세이프티 카.
+    lap5 = rules.evaluate(
+        _snapshot(
+            damage={"tyres_wear": [88.0] * 4},
+            session={"safety_car_status": 2},
+        )
+    )
+    assert [message.text for message in lap5] == ["버추얼 세이프티 카."]
+    for message in lap5:
+        assert queue.push(message)
+
+    played = _play_all(queue, clock, seconds=3.0)
+
+    assert played == [
+        "앞날개 양쪽 손상 60퍼센트.",
+        "타이어 4개 마모 88퍼센트.",
+        "브레이크 온도 1050도. 네 바퀴.",
+        "세이프티 카.",
+        "페널티 5초.",
+        "연료 마이너스 29랩.",
+        "버추얼 세이프티 카.",
+        "박스, 박스.",
+    ]
+    assert queue.pending_count == 0
+
+
+def test_safety_and_box_ttls_come_from_config_and_are_long_enough() -> None:
+    assert SAFETY_TTL_NS >= 30_000_000_000
+    assert BOX_TTL_NS >= 30_000_000_000
+
+    config = load_config()
+    rules = rules_from_config(clock=lambda: NOW)
+    assert rules.safety_ttl_ns == round(config.radio.safety_ttl_s * 1_000_000_000)
+    assert rules.box_ttl_ns == round(config.radio.box_ttl_s * 1_000_000_000)
+    assert rules.safety_ttl_ns >= 30_000_000_000
+    assert rules.box_ttl_ns >= 30_000_000_000
+
+
+def test_alert_rules_accept_injected_ttls() -> None:
+    rules = AlertRules(
+        clock=lambda: NOW,
+        safety_ttl_ns=45_000_000_000,
+        box_ttl_ns=40_000_000_000,
+    )
+    messages = rules.evaluate(_wear(tyres_wear=[10.0, 10.0, 80.0, 10.0]))
+    assert messages[0].expires_ns == NOW + 45_000_000_000
+    assert messages[1].expires_ns == NOW + 40_000_000_000

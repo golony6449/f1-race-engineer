@@ -75,6 +75,22 @@ def test_statusbar_merges_voice_and_radio_page_into_one_cell() -> None:
     assert "Qwen TTS · 게임 PC /radio" in html
 
 
+def test_statusbar_links_to_radio_page() -> None:
+    """SCRUM-79: 무전 칸에서 무전 페이지(/radio)를 새 탭으로 연다."""
+    html = _dashboard_html()
+    link = re.search(
+        r'<a\b[^>]*href="/radio"[^>]*>\s*무전 페이지 열기\s*</a\s*>', html, re.S
+    )
+    assert link, "무전 페이지로 가는 버튼이 없습니다"
+    assert 'target="_blank"' in link.group(0)
+    assert 'rel="noopener"' in link.group(0)
+
+    # 상태 글자 오른쪽(좁은 화면에서는 아래)에 작게 붙는 버튼 모양이다.
+    css = _client().get("/static/style.css").text
+    assert ".status-line" in css
+    assert ".status-button" in css
+
+
 def test_car_section_static_assets_are_served() -> None:
     client = _client()
 
@@ -108,3 +124,98 @@ def test_car_section_static_assets_are_served() -> None:
     assert ".status-value.warn" in css
     # 좁은 화면에서는 상자를 그림 위/아래로 접어 가로 스크롤을 만들지 않는다.
     assert "@media (max-width: 720px)" in css
+
+
+def _wide_screen_css() -> str:
+    """`style.css`에서 1100px 이상 넓은 화면 규칙 묶음만 꺼낸다."""
+    css = _client().get("/static/style.css").text
+    match = re.search(r"@media \(min-width: 1100px\) \{(.*?)\n\}", css, re.S)
+    assert match, "넓은 화면(1100px 이상)용 규칙이 없습니다"
+    return match.group(1)
+
+
+def test_wide_screen_puts_tyres_and_map_side_by_side() -> None:
+    """SCRUM-79: 넓은 화면에서 타이어·브레이크와 지도를 좌우 반반으로 둔다."""
+    block = _wide_screen_css()
+
+    # 12칼럼 그리드에서 두 섹션이 6칼럼씩(50%) 차지해 한 줄에 선다.
+    assert ".tyres-brakes," in block
+    assert ".map {" in block
+    assert "grid-column: span 6;" in block
+    # 두 섹션 높이를 같게 묶어 화면을 가득 채우지 않는다(약 400~450px).
+    assert "height: clamp(400px, 46vh, 450px);" in block
+    # 반 폭에서도 차 그림과 값 여섯 개가 다 보이게 줄인다.
+    assert ".tyres-brakes .car-svg" in block
+    assert "height: clamp(260px, 32vh, 320px);" in block
+    assert ".tyres-brakes .cell-value" in block
+
+
+def test_pages_and_static_assets_disable_cache() -> None:
+    """SCRUM-79: 업데이트 뒤 예전 JS/CSS를 쓰지 않도록 재검증을 요구한다."""
+    client = _client()
+
+    for path in ("/", "/radio", "/static/dashboard.js", "/static/style.css"):
+        response = client.get(path)
+        assert response.status_code == 200, path
+        assert response.headers.get("cache-control") == "no-cache", path
+
+    # 상태 API는 화면 캐시 정책과 무관하므로 그대로 둔다.
+    api = client.get("/api/state")
+    assert api.status_code == 200
+    assert "no-cache" not in api.headers.get("cache-control", "").lower()
+
+
+def test_dashboard_has_engine_settings_button_and_modal() -> None:
+    """SCRUM-82: 우측 하단 톱니바퀴 버튼 → 레이스 엔지니어 ON/OFF 모달."""
+    client = _client()
+    html = client.get("/").text
+
+    fab = re.search(
+        r'<button\b[^>]*id="engine-settings"[^>]*>.*?</button>', html, re.S
+    )
+    assert fab, "우측 하단 설정 플로팅 버튼이 없습니다"
+    assert 'aria-label="설정"' in fab.group(0)
+    # 아이콘은 외부 이미지가 아니라 인라인 SVG다.
+    assert "<svg" in fab.group(0)
+
+    # 모달: 제목, ON/OFF 토글, 상태 설명, 닫기.
+    assert 'id="engine-modal"' in html
+    assert 'id="engine-modal-title"' in html
+    assert "레이스 엔지니어" in html
+    assert 'id="engine-toggle"' in html
+    assert 'role="switch"' in html
+    assert "꺼짐: UDP 수신·무전·분석이 모두 멈춥니다" in html
+    assert 'id="engine-close"' in html
+    assert "닫기" in html
+
+    # OFF면 본문 대신 안내만 보여 준다.
+    assert "레이스 엔지니어가 꺼져 있습니다." in html
+    assert "우측 아래 설정에서 켜세요." in html
+
+    js = client.get("/static/dashboard.js").text
+    assert '"/api/engine"' in js
+    assert 'payload.type === "engine"' in js
+    # OFF에서는 WebSocket을 열지 않는다.
+    assert 'if (engineState !== "on") return;' in js
+
+    css = client.get("/static/style.css").text
+    assert ".engine-fab" in css
+    assert "position: fixed;" in css
+    assert ".engine-modal" in css
+    assert ".engine-toggle" in css
+    assert ".engine-off" in css
+
+
+def test_radio_page_shows_engine_off_notice() -> None:
+    """SCRUM-82: 무전 페이지도 엔진이 꺼져 있으면 '꺼짐'을 안내한다."""
+    client = _client()
+    html = client.get("/radio").text
+
+    assert 'id="engine-off"' in html
+    assert "레이스 엔지니어가 꺼져 있습니다." in html
+
+    js = client.get("/static/radio.js").text
+    assert '"/api/engine"' in js
+    assert 'case "engine":' in js
+    # OFF에서는 연결 버튼과 자동 재연결을 멈춘다.
+    assert 'if (engineState !== "on") return;' in js

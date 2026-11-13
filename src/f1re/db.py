@@ -20,7 +20,7 @@ from pathlib import Path
 from f1re.tracks.outline import TrackOutline
 
 # 지금 코드가 기대하는 스키마 버전.
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 DEFAULT_DB_RELPATH = Path("data") / "f1re.db"
 
@@ -125,12 +125,22 @@ def _migration_004_reference_sets(conn: sqlite3.Connection) -> None:
     )
 
 
+def _migration_005_radio_dropped_reason(conn: sqlite3.Connection) -> None:
+    """재생되지 않은 무전의 이유(만료 등)를 남긴다(SCRUM-81).
+
+    큐가 유효 시간이 지나 버린 무전도 `played=0`과 이유로 기록해, 세션 뒤
+    화면에서 왜 말하지 못했는지 볼 수 있게 한다.
+    """
+    conn.execute("ALTER TABLE radio_messages ADD COLUMN dropped_reason TEXT")
+
+
 # (버전, 적용 함수). 버전은 1부터 연속이어야 한다.
 MIGRATIONS: tuple[tuple[int, Callable[[sqlite3.Connection], None]], ...] = (
     (1, _migration_001_sessions),
     (2, _migration_002_radio_messages),
     (3, _migration_003_track_outlines),
     (4, _migration_004_reference_sets),
+    (5, _migration_005_radio_dropped_reason),
 )
 
 

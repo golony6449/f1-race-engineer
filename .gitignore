@@ -11,4 +11,5 @@ samples/
 assets/
 recordings/
 *.f1rec
+# 서버가 실행 중에 만드는 파일(SQLite DB와 WAL, 엔진 ON/OFF 상태, 무전 음성 캐시)
 data/

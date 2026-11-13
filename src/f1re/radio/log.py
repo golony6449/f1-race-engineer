@@ -2,7 +2,8 @@
 
 설계 6.7은 무전마다 시각, 랩, 코너, 종류, 문장, 근거 수치, 실제 재생 여부와
 지연을 남기라고 한다. 재생에 실패한 무전도 `played=False`로 남겨, 세션 뒤
-화면(작업 20)에서 왜 말하지 못했는지 볼 수 있게 한다.
+화면(작업 20)에서 왜 말하지 못했는지 볼 수 있게 한다. 큐가 유효 시간이 지나
+버린 무전은 `dropped_reason="expired"`로 남긴다(SCRUM-81).
 """
 
 from __future__ import annotations
@@ -38,11 +39,13 @@ class RadioLog:
         msg: RadioMessage,
         played: bool = False,
         latency_ms: int | None = None,
+        dropped_reason: str | None = None,
     ) -> int:
         """무전 한 줄을 기록하고 행 ID를 돌려준다.
 
         `latency_ms`는 무전 결정부터 실제 재생 시작까지의 지연이다. 재생하지
         못했으면 `played=False`로 두고 `latency_ms=None`으로 남긴다.
+        `dropped_reason`은 재생되지 않은 이유다(예: 큐에서 유효 시간 만료).
         """
         if latency_ms is not None and latency_ms < 0:
             raise ValueError("latency_ms는 0 이상이어야 합니다")
@@ -55,9 +58,9 @@ class RadioLog:
                 """
                 INSERT INTO radio_messages (
                     session_uid, recorded_at_ns, lap, corner, kind, priority,
-                    text, evidence, played, latency_ms
+                    text, evidence, played, latency_ms, dropped_reason
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     self._session_uid,
@@ -70,6 +73,7 @@ class RadioLog:
                     evidence,
                     1 if played else 0,
                     latency_ms,
+                    dropped_reason,
                 ),
             )
         return int(cursor.lastrowid or 0)
@@ -133,4 +137,5 @@ class RadioLog:
             "evidence": evidence,
             "played": bool(row["played"]),
             "latency_ms": row["latency_ms"],
+            "dropped_reason": row["dropped_reason"],
         }
