@@ -108,3 +108,27 @@ def test_car_section_static_assets_are_served() -> None:
     assert ".status-value.warn" in css
     # 좁은 화면에서는 상자를 그림 위/아래로 접어 가로 스크롤을 만들지 않는다.
     assert "@media (max-width: 720px)" in css
+
+
+def _wide_screen_css() -> str:
+    """`style.css`에서 1100px 이상 넓은 화면 규칙 묶음만 꺼낸다."""
+    css = _client().get("/static/style.css").text
+    match = re.search(r"@media \(min-width: 1100px\) \{(.*?)\n\}", css, re.S)
+    assert match, "넓은 화면(1100px 이상)용 규칙이 없습니다"
+    return match.group(1)
+
+
+def test_wide_screen_puts_tyres_and_map_side_by_side() -> None:
+    """SCRUM-79: 넓은 화면에서 타이어·브레이크와 지도를 좌우 반반으로 둔다."""
+    block = _wide_screen_css()
+
+    # 12칼럼 그리드에서 두 섹션이 6칼럼씩(50%) 차지해 한 줄에 선다.
+    assert ".tyres-brakes," in block
+    assert ".map {" in block
+    assert "grid-column: span 6;" in block
+    # 두 섹션 높이를 같게 묶어 화면을 가득 채우지 않는다(약 400~450px).
+    assert "height: clamp(400px, 46vh, 450px);" in block
+    # 반 폭에서도 차 그림과 값 여섯 개가 다 보이게 줄인다.
+    assert ".tyres-brakes .car-svg" in block
+    assert "height: clamp(260px, 32vh, 320px);" in block
+    assert ".tyres-brakes .cell-value" in block

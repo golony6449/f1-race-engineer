@@ -652,3 +652,90 @@ body {
     padding: 6px 7px;
   }
 }
+
+/* ------------------------------------------------------------------ */
+/* 넓은 화면: 타이어·브레이크와 서킷 지도를 좌우 반반으로 */
+
+/*
+  태블릿 가로·옆 모니터(1100px 이상)에서는 두 섹션이 12칼럼 중 6칼럼씩
+  차지해 한 줄에 나란히 선다. 두 섹션 높이를 같게 고정하고(약 400~450px),
+  반 폭에 맞춰 타이어 상자의 글씨·간격을 줄여 값 여섯 개(마모, 표면·내부
+  온도, 압력, 브레이크 온도, 컴파운드·사용 랩)가 모두 보이게 한다.
+*/
+@media (min-width: 1100px) {
+  .tyres-brakes,
+  .map {
+    display: flex;
+    flex-direction: column;
+    grid-column: span 6;
+    height: clamp(400px, 46vh, 450px);
+  }
+
+  .tyres-brakes .car-view {
+    flex: 1 1 auto;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr) minmax(0, 1fr);
+    gap: 6px 8px;
+    min-height: 0;
+  }
+
+  /* 차 그림은 가운데 칸에서 세로로 260~320px만 차지한다. */
+  .tyres-brakes .car-svg {
+    max-width: none;
+    height: clamp(260px, 32vh, 320px);
+  }
+
+  .tyres-brakes .tyre-card {
+    padding: 6px 8px;
+    border-radius: 10px;
+  }
+
+  .tyres-brakes .tyre-head {
+    gap: 6px;
+  }
+
+  .tyres-brakes .tyre-pos {
+    font-size: 12px;
+  }
+
+  .tyres-brakes .tyre-meta {
+    font-size: 10px;
+  }
+
+  .tyres-brakes .cell-grid {
+    gap: 4px;
+    margin-top: 5px;
+  }
+
+  .tyres-brakes .cell {
+    padding: 4px 6px;
+    border-radius: 7px;
+  }
+
+  .tyres-brakes .cell-label,
+  .tyres-brakes .cell-unit {
+    font-size: 9.5px;
+  }
+
+  .tyres-brakes .cell-value {
+    margin-top: 1px;
+    font-size: 0.92rem;
+  }
+
+  .tyres-brakes .brake-cell {
+    margin-top: 4px;
+  }
+
+  /* 지도는 남는 높이를 채우고, 코너 지표가 길어지면 그 안에서만 스크롤한다. */
+  .map .map-wrap {
+    flex: 1 1 auto;
+    height: auto;
+    min-height: 0;
+  }
+
+  .map .map-info {
+    flex: 0 0 auto;
+    max-height: 150px;
+    overflow-y: auto;
+  }
+}
