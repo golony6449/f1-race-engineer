@@ -11,6 +11,9 @@
  * - SC·VSC·적기면 트랙 선 색을 바꾼다.
  * - 깃발 줄(SCRUM-80)은 `/ws/state`의 `flags`만 보고 켜고 끈다. 옐로 구역
  *   (`yellow_zones`, 랩 거리 비율)은 트랙 선 위에 노랗게 덧칠한다.
+ * - 서킷 모양이 캔버스에 가장 크게 들어가도록 윤곽을 0~179도에서 돌려 본
+ *   뒤 각도·배율·이동을 하나의 변환으로 만든다. 윤곽·차 점·코너·옐로 구역·
+ *   클릭 판정이 모두 이 변환을 쓴다(코너 번호 글자는 똑바로 그린다).
  * - 코너를 누르면 최근 지표(나 / 기준)를 보여 준다. 지표는 작업 15·16이
  *   채우며, 아직 없으면 자리 표시 문구를 보여 준다.
  */
@@ -28,6 +31,9 @@ const CORNER_HIT_PX = 16;
 const MAP_PADDING_PX = 28;
 // 옐로 구역을 트랙 선 위에 덧칠하는 색(SCRUM-80).
 const YELLOW_ZONE_COLOR = "#ffd166";
+// 서킷을 가장 크게 넣는 회전 각도 후보(0~179도, 1도 간격).
+const ROTATION_STEP_DEG = 1;
+const ROTATION_LIMIT_DEG = 180;
 
 // 리프트 앤 코스트 추천 구간(SCRUM-71)은 청록 점선 고리로 최소 강조한다.
 // 추천은 서버(`/api/lift-coast`)가 계산하고 화면은 그리기만 한다.
@@ -70,7 +76,8 @@ export class TrackMapView {
     this.yellowZones = [];
     this.stale = false;
     this.teamColors = {};
-    this.bounds = null;
+    // 같은 서킷·같은 캔버스 크기면 회전 각도 계산을 다시 하지 않는다.
+    this.rotationCache = null;
     this.cornerHits = [];
     this.selectedCorner = null;
     // 깃발 상태 줄(SCRUM-80). `.map-wrap` 바깥, 지도 패널 제목 아래에 있다.
@@ -93,7 +100,8 @@ export class TrackMapView {
     this.track = track || null;
     this.teamColors = (track && track.team_colors) || {};
     if (track && track.flag) this.flag = track.flag;
-    this.bounds = outlineBounds(track && track.outline);
+    // 윤곽이 새로 오면 같은 서킷 ID라도 각도를 다시 고른다.
+    this.rotationCache = null;
     this.selectedCorner = null;
     this._renderInfo(null);
     this._updateBadge();
@@ -330,29 +338,46 @@ export class TrackMapView {
     ctx.restore();
   }
 
+  /**
+   * 그리기 변환(회전·배율·이동)을 만든다. 윤곽을 돌려 캔버스에 가장 크게
+   * 들어가는 각도를 고르고, 같은 서킷·같은 캔버스 크기면 캐시를 쓴다.
+   */
   _fit(width, height) {
-    const bounds = this.bounds;
-    if (!bounds) return null;
-    const spanX = Math.max(bounds.maxX - bounds.minX, 1);
-    const spanZ = Math.max(bounds.maxZ - bounds.minZ, 1);
-    const usableWidth = Math.max(width - MAP_PADDING_PX * 2, 1);
-    const usableHeight = Math.max(height - MAP_PADDING_PX * 2, 1);
-    const scale = Math.min(usableWidth / spanX, usableHeight / spanZ);
+    const outline = (this.track && this.track.outline) || [];
+    const trackId = this.track ? this.track.track_id : null;
+    const key = `${trackId}:${outline.length}:${width}x${height}`;
+    if (!this.rotationCache || this.rotationCache.key !== key) {
+      this.rotationCache = {
+        key,
+        rotation: chooseRotation(outline, width, height),
+      };
+    }
+    const rotation = this.rotationCache.rotation;
+    if (!rotation) return null;
+
+    const spanX = Math.max(rotation.maxX - rotation.minX, 1);
+    const spanZ = Math.max(rotation.maxZ - rotation.minZ, 1);
+    const scale = rotation.scale;
     if (!Number.isFinite(scale) || scale <= 0) return null;
     return {
       scale,
+      cos: rotation.cos,
+      sin: rotation.sin,
       offsetX: (width - spanX * scale) / 2,
       offsetY: (height - spanZ * scale) / 2,
-      minX: bounds.minX,
-      maxZ: bounds.maxZ,
+      minX: rotation.minX,
+      maxZ: rotation.maxZ,
     };
   }
 
   _toCanvas(fit, x, z) {
-    // 화면 y는 아래로 증가하므로 z를 뒤집어 지도처럼 보이게 한다.
+    // 회전한 좌표를 캔버스로 옮긴다. 화면 y는 아래로 증가하므로 z를 뒤집어
+    // 지도처럼 보이게 한다.
+    const rotatedX = x * fit.cos - z * fit.sin;
+    const rotatedZ = x * fit.sin + z * fit.cos;
     return [
-      fit.offsetX + (x - fit.minX) * fit.scale,
-      fit.offsetY + (fit.maxZ - z) * fit.scale,
+      fit.offsetX + (rotatedX - fit.minX) * fit.scale,
+      fit.offsetY + (fit.maxZ - rotatedZ) * fit.scale,
     ];
   }
 
@@ -451,23 +476,83 @@ function flagStyle(flag) {
   return FLAG_STYLES[flag] || FLAG_STYLES.none;
 }
 
-function outlineBounds(outline) {
-  const points = Array.isArray(outline) ? outline : [];
-  const xs = [];
-  const zs = [];
-  for (const point of points) {
+/**
+ * 윤곽([dist, x, z] 점 배열)을 0~179도로 1도씩 돌려 보고, 캔버스 그리기
+ * 영역(가장자리 여백 제외)에 `min(W/w, H/h)`가 가장 큰 각도를 고른다.
+ * 캔버스·DOM을 보지 않는 순수 함수다.
+ *
+ * 반환값의 `cos`·`sin`·`minX`·`maxZ`가 `_toCanvas`의 회전·이동 변환이 된다.
+ * 그릴 것이 부족하면 `null`.
+ */
+export function chooseRotation(
+  outline,
+  width,
+  height,
+  padding = MAP_PADDING_PX,
+) {
+  const points = outlinePoints(outline);
+  if (points.length < 2) return null;
+  const usableWidth = Math.max(width - padding * 2, 1);
+  const usableHeight = Math.max(height - padding * 2, 1);
+  if (!(usableWidth > 0) || !(usableHeight > 0)) return null;
+
+  let best = null;
+  for (
+    let angleDeg = 0;
+    angleDeg < ROTATION_LIMIT_DEG;
+    angleDeg += ROTATION_STEP_DEG
+  ) {
+    const radians = (angleDeg * Math.PI) / 180;
+    const cos = Math.cos(radians);
+    const sin = Math.sin(radians);
+    const bounds = rotatedBounds(points, cos, sin);
+    const spanX = Math.max(bounds.maxX - bounds.minX, 1);
+    const spanZ = Math.max(bounds.maxZ - bounds.minZ, 1);
+    const scale = Math.min(usableWidth / spanX, usableHeight / spanZ);
+    if (!Number.isFinite(scale)) continue;
+    if (!best || scale > best.scale) {
+      best = {
+        angleDeg,
+        cos,
+        sin,
+        scale,
+        minX: bounds.minX,
+        maxX: bounds.maxX,
+        minZ: bounds.minZ,
+        maxZ: bounds.maxZ,
+      };
+    }
+  }
+  return best;
+}
+
+/** 점들을 회전한 뒤의 가로·세로 범위. */
+function rotatedBounds(points, cos, sin) {
+  let minX = Infinity;
+  let maxX = -Infinity;
+  let minZ = Infinity;
+  let maxZ = -Infinity;
+  for (const [x, z] of points) {
+    const rotatedX = x * cos - z * sin;
+    const rotatedZ = x * sin + z * cos;
+    if (rotatedX < minX) minX = rotatedX;
+    if (rotatedX > maxX) maxX = rotatedX;
+    if (rotatedZ < minZ) minZ = rotatedZ;
+    if (rotatedZ > maxZ) maxZ = rotatedZ;
+  }
+  return { minX, maxX, minZ, maxZ };
+}
+
+/** 윤곽에서 유한한 `[x, z]` 점만 꺼낸다. */
+function outlinePoints(outline) {
+  const points = [];
+  if (!Array.isArray(outline)) return points;
+  for (const point of outline) {
     if (!Array.isArray(point) || point.length < 3) continue;
     if (!Number.isFinite(point[1]) || !Number.isFinite(point[2])) continue;
-    xs.push(point[1]);
-    zs.push(point[2]);
+    points.push([point[1], point[2]]);
   }
-  if (xs.length < 2) return null;
-  return {
-    minX: Math.min(...xs),
-    maxX: Math.max(...xs),
-    minZ: Math.min(...zs),
-    maxZ: Math.max(...zs),
-  };
+  return points;
 }
 
 /**
