@@ -104,9 +104,8 @@ body {
   color: var(--muted);
 }
 
-.tyres,
+.tyres-brakes,
 .map,
-.brakes,
 .fuel,
 .ers,
 .damage {
@@ -114,16 +113,12 @@ body {
 }
 
 @media (min-width: 1000px) {
-  .brakes {
-    grid-column: span 5;
-  }
-
   .fuel {
-    grid-column: span 4;
+    grid-column: span 7;
   }
 
   .ers {
-    grid-column: span 3;
+    grid-column: span 5;
   }
 }
 
@@ -135,20 +130,99 @@ body {
 }
 
 /* ------------------------------------------------------------------ */
-/* 타이어 */
+/* 타이어·브레이크: 차 그림 하나에 모아 보여 준다 */
 
-.tyre-grid {
+/*
+  태블릿 가로: 그림이 가운데, 앞바퀴 상자는 위쪽 좌우, 뒷바퀴 상자는 아래쪽
+  좌우. 휴대폰 폭에서는 아래 미디어 쿼리에서 상자를 그림 위/아래로 접는다.
+*/
+.car-view {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 10px;
+  grid-template-areas:
+    "front-left car front-right"
+    "rear-left car rear-right";
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.9fr) minmax(0, 1fr);
+  grid-template-rows: 1fr 1fr;
+  gap: 10px 14px;
+  min-height: clamp(420px, 54vh, 620px);
 }
 
-.tyre {
+.tyre-card {
   min-width: 0;
   padding: 10px;
   background: var(--panel-2);
   border: 1px solid var(--line);
   border-radius: 12px;
+}
+
+.tyre-card[data-tyre-box="front_left"] {
+  grid-area: front-left;
+  align-self: start;
+}
+
+.tyre-card[data-tyre-box="front_right"] {
+  grid-area: front-right;
+  align-self: start;
+}
+
+.tyre-card[data-tyre-box="rear_left"] {
+  grid-area: rear-left;
+  align-self: end;
+}
+
+.tyre-card[data-tyre-box="rear_right"] {
+  grid-area: rear-right;
+  align-self: end;
+}
+
+.car-svg {
+  grid-area: car;
+  justify-self: center;
+  align-self: center;
+  width: 100%;
+  max-width: 330px;
+  height: 100%;
+  overflow: visible;
+  transition: opacity 160ms linear;
+}
+
+.car-svg .car-body {
+  fill: #1b2230;
+  stroke: #3a4658;
+  stroke-width: 2;
+}
+
+.car-svg .car-line {
+  fill: none;
+  stroke: #3a4658;
+  stroke-width: 2;
+  stroke-linecap: round;
+}
+
+.car-svg .cockpit {
+  fill: #0a0d12;
+  stroke: #3a4658;
+  stroke-width: 2;
+}
+
+/* 바퀴 색은 carstate.js가 /api/thresholds 색 표로 칠한다(기본값은 NO_DATA 회색). */
+.car-svg .tyre-shape {
+  fill: #6b7280;
+  stroke: #0b0e13;
+  stroke-width: 3;
+  transition: fill 180ms linear;
+}
+
+.car-svg .brake-disc {
+  fill: #6b7280;
+  stroke: #0b0e13;
+  stroke-width: 2;
+  transition: fill 180ms linear;
+}
+
+/* 수신이 끊기면 마지막 값과 그림을 흐리게 둔다(설계 6.9-1). */
+#dashboard.stale .car-svg {
+  opacity: 0.5;
 }
 
 .tyre-head {
@@ -171,6 +245,10 @@ body {
   white-space: nowrap;
 }
 
+.brake-cell {
+  margin-top: 8px;
+}
+
 /* ------------------------------------------------------------------ */
 /* 값 칸 */
 
@@ -179,12 +257,6 @@ body {
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 8px;
   margin-top: 10px;
-}
-
-.brake-grid {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 8px;
 }
 
 .damage-grid {
@@ -499,13 +571,24 @@ body {
   .statusbar {
     grid-template-columns: 1fr;
   }
+}
 
-  .tyre-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+/* 그림 양옆이 좁아지면 상자를 그림 위/아래로 접는다(가로 스크롤 없음). */
+@media (max-width: 720px) {
+  .car-view {
+    grid-template-areas:
+      "front-left front-right"
+      "car car"
+      "rear-left rear-right";
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    grid-template-rows: auto auto auto;
+    min-height: 0;
   }
 
-  .brake-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+  .car-svg {
+    width: 100%;
+    max-width: none;
+    height: clamp(280px, 46vh, 420px);
   }
 }
 
@@ -524,5 +607,37 @@ body {
 
   .cell-value {
     font-size: 1.05rem;
+  }
+
+  .car-view {
+    gap: 8px;
+  }
+
+  .tyre-card {
+    padding: 8px;
+  }
+
+  .car-svg {
+    height: clamp(240px, 42vh, 340px);
+  }
+}
+
+/* 휴대폰 세로(480px 이하)에서도 한 화면 폭에 들어오게 더 조인다. */
+@media (max-width: 480px) {
+  .car-view {
+    gap: 6px;
+  }
+
+  .tyre-card {
+    padding: 7px;
+  }
+
+  .cell-grid {
+    gap: 6px;
+    margin-top: 8px;
+  }
+
+  .cell {
+    padding: 6px 7px;
   }
 }
