@@ -12,18 +12,21 @@
 # 체크아웃 위치나 uv 경로가 다르면 아래 WorkingDirectory·ExecStart를 고친다
 # (uv 경로는 `command -v uv`로 확인). 포트를 바꾸려면 ExecStart 끝에
 # `--port <UDP 포트>`(기본 20777), `--web-port <웹 포트>`(기본 8093)를 붙인다.
+#
+# 웹은 127.0.0.1에서만 받고, 밖에서는 같은 서버의 nginx를 거쳐 들어온다
+# (deploy/README.md 3장). 외부에 여는 포트는 게임 텔레메트리 UDP뿐이다.
 
 [Unit]
 Description=F1 25 한국어 AI 레이스 엔지니어 (f1re serve)
-Documentation=file:///home/golony/dev/repo/f1-race-engineer/f1-race-engineer/deploy/README.md
+Documentation=file:///home/golony/dev/repo/f1-race-engineer/deploy/README.md
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
-WorkingDirectory=/home/golony/dev/repo/f1-race-engineer/f1-race-engineer
+WorkingDirectory=/home/golony/dev/repo/f1-race-engineer
 # `uv run`은 이 체크아웃의 .venv(uv sync로 만든 환경)에서 f1re를 실행한다.
-ExecStart=/home/golony/.local/bin/uv run f1re serve
+ExecStart=/home/golony/.local/bin/uv run f1re serve --web-host 127.0.0.1
 # journalctl에서 파이썬 출력이 바로 보이게 한다.
 Environment=PYTHONUNBUFFERED=1
 # 앱은 SIGINT를 받으면 UDP 수신과 웹 서버를 정리하고 끝난다(main.py).
