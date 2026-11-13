@@ -341,7 +341,7 @@ def test_web_config_defaults() -> None:
     config = load_config()
 
     assert config.web.host == "0.0.0.0"
-    assert config.web.port == 8080
+    assert config.web.port == 8093
 
 
 # ---------------------------------------------------------------------------

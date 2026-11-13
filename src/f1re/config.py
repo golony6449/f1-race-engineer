@@ -42,7 +42,7 @@ class WebConfig:
     """대시보드 웹 서버 설정. 화면(태블릿·옆 모니터)이 접속하는 주소다."""
 
     host: str = "0.0.0.0"
-    port: int = 8080
+    port: int = 8093
 
 
 @dataclass(frozen=True)
