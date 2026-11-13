@@ -132,3 +132,18 @@ def test_wide_screen_puts_tyres_and_map_side_by_side() -> None:
     assert ".tyres-brakes .car-svg" in block
     assert "height: clamp(260px, 32vh, 320px);" in block
     assert ".tyres-brakes .cell-value" in block
+
+
+def test_pages_and_static_assets_disable_cache() -> None:
+    """SCRUM-79: 업데이트 뒤 예전 JS/CSS를 쓰지 않도록 재검증을 요구한다."""
+    client = _client()
+
+    for path in ("/", "/radio", "/static/dashboard.js", "/static/style.css"):
+        response = client.get(path)
+        assert response.status_code == 200, path
+        assert response.headers.get("cache-control") == "no-cache", path
+
+    # 상태 API는 화면 캐시 정책과 무관하므로 그대로 둔다.
+    api = client.get("/api/state")
+    assert api.status_code == 200
+    assert "no-cache" not in api.headers.get("cache-control", "").lower()

@@ -31,7 +31,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -325,6 +325,18 @@ def create_app(
         lifespan=lifespan,
     )
     app.state.radio = service
+
+    # 배포·업데이트 뒤 브라우저가 예전 JS/CSS를 캐시에서 써서 화면이 멈춘 일이
+    # 있었다(SCRUM-79). 화면(/, /radio)과 정적 파일은 매번 서버에 다시 확인하게
+    # 한다. `no-cache`는 저장 금지가 아니라 재검증 요구라, 안 바뀐 파일은
+    # StaticFiles가 304로 가볍게 답한다. API 응답 정책은 그대로 둔다.
+    @app.middleware("http")
+    async def no_cache_for_pages(request: Request, call_next):
+        response = await call_next(request)
+        path = request.url.path
+        if path in {"/", "/radio", "/static"} or path.startswith("/static/"):
+            response.headers["Cache-Control"] = "no-cache"
+        return response
 
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
     app.include_router(radio_router)
