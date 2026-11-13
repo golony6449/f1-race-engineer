@@ -5,7 +5,10 @@
  * - 브라우저 자동 재생 정책 때문에 "무전 연결" 버튼을 한 번 눌러야 한다.
  *   버튼을 누르면 AudioContext를 만들고 WebSocket을 연다.
  * - 서버 → 브라우저 메시지(JSON):
- *   status / caption / audio(base64 PCM) / done
+ *   status / caption / audio(base64 PCM) / interrupt / done
+ * - 서버가 재생 길이에 맞춰 조각을 보내므로 도착한 조각은 앞 조각 뒤에 그대로
+ *   이어 붙인다. 더 높은 우선순위 무전이 와서 서버가 끊으면 `interrupt`를 받아
+ *   재생 중인 조각을 모두 멈춘다.
  * - 서버와의 연결이 끊기면 1초마다 자동으로 다시 연결한다.
  */
 
@@ -29,8 +32,9 @@ let nextStartTime = 0;
 let reconnectTimer = null;
 let started = false;
 // 지금 재생 중인(또는 마지막으로 시작한) 무전의 우선순위. 숫자가 작을수록 높다.
-// 서버는 캐시 음성을 한 번에 보내므로, 더 높은 우선순위가 오면 브라우저가
-// 재생 중인 소리를 끊고 새 무전을 바로 시작한다(설계 6.7).
+// 서버는 재생 길이에 맞춰 음성을 보내고, 더 높은 우선순위가 오면 `interrupt`를
+// 보낸 뒤 새 무전을 보낸다(설계 6.7). 이 값은 그 전에 도착한 caption을 받아
+// 두는 보조 수단으로 남긴다.
 let currentPriority = null;
 const activeSources = new Set();
 
@@ -109,9 +113,10 @@ function playAudio(payload) {
   source.buffer = buffer;
   source.connect(context.destination);
 
-  // 조각을 순서대로 이어 붙인다. 이미 재생이 밀렸으면 지금부터 다시 맞춘다.
+  // 조각을 순서대로 이어 붙인다. 이미 재생이 밀렸을 때만 지금부터 다시 맞추고,
+  // 앞 조각보다 뒤에 있으면 아무리 멀어도 그 뒤에 붙인다(겹쳐 재생 금지).
   const now = context.currentTime + 0.02;
-  if (nextStartTime < now || nextStartTime > now + 2) {
+  if (nextStartTime < now) {
     nextStartTime = now;
   }
   source.start(nextStartTime);
@@ -169,6 +174,12 @@ function handleMessage(payload) {
       break;
     case "audio":
       playAudio(payload);
+      break;
+    case "interrupt":
+      // 서버가 더 높은 우선순위 무전으로 끊었다. 재생 중인 조각을 모두 멈추고
+      // 다음 조각을 지금부터 이어 붙인다.
+      stopAudio();
+      if (audioContext) nextStartTime = audioContext.currentTime;
       break;
     case "done":
       if (payload.interrupted) stopAudio();

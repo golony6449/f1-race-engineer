@@ -8,7 +8,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from typing import Any
 
 from fastapi.testclient import TestClient
@@ -112,6 +112,63 @@ class GatedRules:
             return []
         self.sent = True
         return [self.message]
+
+
+class FakeClock:
+    """테스트용 시계. 주입한 `sleep`이 부를 때만 시간이 흐른다."""
+
+    def __init__(self, start_ns: int | None = None) -> None:
+        self.now_ns = time.time_ns() if start_ns is None else start_ns
+        self.sleeps: list[float] = []
+        self.on_sleep: Callable[[int], None] | None = None
+
+    def __call__(self) -> int:
+        return self.now_ns
+
+    async def sleep(self, delay_s: float) -> None:
+        self.sleeps.append(delay_s)
+        self.now_ns += int(delay_s * 1_000_000_000)
+        if self.on_sleep is not None:
+            self.on_sleep(len(self.sleeps))
+        await asyncio.sleep(0)
+
+
+def _pcm(seconds: float, value: int = 1) -> bytes:
+    """`seconds`초 길이의 24kHz 16bit mono PCM 한 조각."""
+    return bytes([value, 0]) * int(SAMPLE_RATE * seconds)
+
+
+class TimedCache:
+    """문장마다 정해진 재생 길이의 조각을 내는 캐시. 페이싱 시험용."""
+
+    def __init__(self, chunks_by_text: dict[str, list[bytes]]) -> None:
+        self.chunks_by_text = chunks_by_text
+        self.offline = False
+        self.last_error: str | None = None
+
+    async def get_or_synthesize(
+        self, text: str, voice: str | None = None
+    ) -> AudioSource:
+        try:
+            chunks = self.chunks_by_text[text]
+        except KeyError as exc:
+            raise AssertionError(f"준비하지 않은 문장: {text}") from exc
+        return AudioSource(text, _chunk_stream(chunks), cached=True)
+
+
+class RecordingService(RadioService):
+    """브로드캐스트 순서와 시각을 남기는 서비스. 페이싱·끊기 시험용."""
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self.payloads: list[dict[str, Any]] = []
+        self.audio_times: list[tuple[int, int]] = []
+
+    def _broadcast(self, payload: dict[str, Any]) -> None:
+        self.payloads.append(payload)
+        if payload.get("type") == "audio":
+            self.audio_times.append((self._clock(), int(payload["seq"])))
+        super()._broadcast(payload)
 
 
 def _message(
@@ -363,6 +420,136 @@ async def test_higher_priority_interrupts_current_radio() -> None:
         "타이어 앞왼쪽 마모 80퍼센트.",
     ]
     assert service.queue.pending_count == 0
+
+
+async def test_second_radio_starts_after_first_playback_ends() -> None:
+    """둘째 무전 첫 조각은 첫째 재생 길이 뒤에 나간다(설계 6.7 동시 발화 금지)."""
+    clock = FakeClock()
+    store = StateStore()
+    cache = TimedCache(
+        {
+            "첫째": [_pcm(0.5, 1), _pcm(0.5, 2)],
+            "둘째": [_pcm(0.5, 3)],
+        }
+    )
+    log = FakeLog()
+    service = RecordingService(
+        store, cache=cache, log=log, clock=clock, sleep=clock.sleep
+    )
+    service.ensure_started()
+    service.add_client()
+    service.queue.push(_message("첫째"))
+    service.queue.push(_message("둘째"))
+
+    deadline = time.monotonic() + 3.0
+    while len(log.records) < 2 and time.monotonic() < deadline:
+        await asyncio.sleep(0.01)
+    await service.aclose()
+
+    assert [record[0] for record in log.records] == ["첫째", "둘째"]
+    # 첫째 조각 둘(seq 0, 1) 뒤에 둘째 첫 조각(seq 0)이 나간다.
+    assert [seq for _, seq in service.audio_times] == [0, 1, 0]
+    first_ns = service.audio_times[0][0]
+    second_ns = service.audio_times[2][0]
+    # 첫째 재생 길이는 0.5초 조각 두 개 = 1.0초. 둘째는 그 뒤에 시작한다.
+    assert second_ns - first_ns >= 1_000_000_000
+    assert clock.sleeps, "재생 길이만큼 기다리는 페이싱이 없었습니다"
+
+
+async def test_priority_interrupt_sends_interrupt_and_speaks_safety() -> None:
+    """재생 중 SAFETY가 오면 interrupt를 보내고 끊은 뒤 SAFETY를 말한다."""
+    clock = FakeClock()
+    store = StateStore()
+    cache = TimedCache(
+        {
+            "박스, 박스.": [_pcm(0.5, 1), _pcm(0.5, 2)],
+            "타이어 앞왼쪽 마모 80퍼센트.": [_pcm(0.25, 9)],
+        }
+    )
+    log = FakeLog()
+    safety = _message("타이어 앞왼쪽 마모 80퍼센트.", kind=RadioKind.SAFETY)
+    service = RecordingService(
+        store, cache=cache, log=log, clock=clock, sleep=clock.sleep
+    )
+    pushed = False
+
+    def push_safety(call: int) -> None:
+        nonlocal pushed
+        if call == 1 and not pushed:
+            pushed = True
+            service.queue.push(safety)
+
+    clock.on_sleep = push_safety
+    service.ensure_started()
+    service.add_client()
+    service.queue.push(_message("박스, 박스."))
+
+    deadline = time.monotonic() + 3.0
+    while len(log.records) < 2 and time.monotonic() < deadline:
+        await asyncio.sleep(0.01)
+    await service.aclose()
+
+    assert [record[0] for record in log.records] == [
+        "박스, 박스.",
+        "타이어 앞왼쪽 마모 80퍼센트.",
+    ]
+    types = [payload["type"] for payload in service.payloads]
+    interrupted_at = types.index("interrupt")
+    safety_caption_at = next(
+        index
+        for index, payload in enumerate(service.payloads)
+        if payload["type"] == "caption"
+        and payload["text"] == "타이어 앞왼쪽 마모 80퍼센트."
+    )
+    # interrupt가 먼저 가고 그 뒤에 SAFETY 자막·음성이 나간다.
+    assert interrupted_at < safety_caption_at
+
+    # 끊긴 박스 무전은 첫 조각만 나가고 둘째 조각은 보내지 않는다.
+    box_audio = [
+        payload
+        for payload in service.payloads[:interrupted_at]
+        if payload["type"] == "audio"
+    ]
+    assert [payload["seq"] for payload in box_audio] == [0]
+    box_done = next(
+        payload
+        for payload in service.payloads
+        if payload["type"] == "done" and payload["text"] == "박스, 박스."
+    )
+    assert box_done["interrupted"] is True
+
+    # SAFETY 무전은 끊긴 뒤에 실제로 재생된다.
+    safety_audio = [
+        payload
+        for payload in service.payloads[interrupted_at + 1 :]
+        if payload["type"] == "audio"
+    ]
+    assert [payload["seq"] for payload in safety_audio] == [0]
+    assert log.records[1][1] is True
+
+
+async def test_without_page_skips_pacing_and_records_unplayed() -> None:
+    """무전 페이지가 없으면 재생 대기 없이 큐를 비우고 played=False로 남긴다."""
+    clock = FakeClock()
+    log = FakeLog()
+    service = RecordingService(
+        StateStore(),
+        cache=TimedCache({"박스, 박스.": [_pcm(1.0, 1)]}),
+        log=log,
+        clock=clock,
+        sleep=clock.sleep,
+    )
+
+    service.ensure_started()
+    service.queue.push(_message("박스, 박스."))
+    deadline = time.monotonic() + 2.0
+    while not log.records and time.monotonic() < deadline:
+        await asyncio.sleep(0.01)
+    await service.aclose()
+
+    assert service.queue.pending_count == 0
+    assert log.records[0][:2] == ("박스, 박스.", False)
+    assert clock.sleeps == [], "페이지가 없는데 재생 대기를 했습니다"
 
 
 def test_radio_without_page_discards_queue_and_keeps_status() -> None:
