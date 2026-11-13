@@ -22,6 +22,14 @@ const UNIT_DIGITS = {
   kg: 2,
   "kg/랩": 2,
   랩: 1,
+  MJ: 2,
+  kW: 0,
+};
+
+// 서버 API는 게임 원래 단위(J, W)를 준다. 화면에서만 MJ·kW로 바꾼다.
+const DISPLAY_UNITS = {
+  J: { unit: "MJ", scale: 1e-6 },
+  W: { unit: "kW", scale: 1e-3 },
 };
 
 const FUEL_CELLS = [
@@ -32,10 +40,19 @@ const FUEL_CELLS = [
   ["laps_margin", "연료 여유"],
 ];
 
+// ERS 여섯 칸은 2열 격자에서 잔량·모드 / 사용량·출력 / 회수 K·회수 H 순서로
+// 놓인다(SCRUM-86). 좁은 화면에서는 CSS가 한 열로 쌓는다.
 const ERS_CELLS = [
   ["store_pct", "잔량"],
   ["mode", "모드"],
+  ["deployed_this_lap", "이번 랩 사용"],
+  ["mguk_power", "MGU-K 출력"],
+  ["harvested_mguk", "MGU-K 회수"],
+  ["harvested_mguh", "MGU-H 회수"],
 ];
+
+// 기준값(`max`) 대비 막대를 그리는 ERS 칸. 기준값은 서버가 상수 하나로 준다.
+const ERS_BAR_CELLS = new Set(["deployed_this_lap", "mguk_power"]);
 
 // 타이어 그림 색을 고르는 순서다. 값이 없는 칸(no_data)은 초록(ok)보다
 // 나쁘게 본다. 일부 값이 비었는데 초록으로 보이면 상태를 오해하기 쉽다.
@@ -54,6 +71,36 @@ function formatValue(value, unit) {
   const digits = UNIT_DIGITS[unit];
   if (digits !== undefined) return value.toFixed(digits);
   return Number.isInteger(value) ? String(value) : value.toFixed(1);
+}
+
+/** 게임 단위(J·W)를 화면 단위(MJ·kW)로 바꾼다. 숫자가 아니면 그대로 둔다. */
+function displayValue(data) {
+  if (!data) return null;
+  const conversion = DISPLAY_UNITS[data.unit];
+  if (
+    !conversion ||
+    typeof data.value !== "number" ||
+    !Number.isFinite(data.value)
+  ) {
+    return data;
+  }
+  return { value: data.value * conversion.scale, unit: conversion.unit };
+}
+
+/** 기준값(`max`) 대비 비율(%). 값이나 기준이 없으면 0%로 둔다. */
+function barWidth(data) {
+  if (!data || typeof data.value !== "number" || !Number.isFinite(data.value)) {
+    return "0%";
+  }
+  if (
+    typeof data.max !== "number" ||
+    !Number.isFinite(data.max) ||
+    data.max <= 0
+  ) {
+    return "0%";
+  }
+  const ratio = Math.min(1, Math.max(0, data.value / data.max));
+  return `${(ratio * 100).toFixed(1)}%`;
 }
 
 export class CarStateView {
@@ -144,7 +191,7 @@ export class CarStateView {
     const ersRoot = document.getElementById("ers");
     ersRoot.replaceChildren();
     for (const [key, label] of ERS_CELLS) {
-      this._buildCell(ersRoot, `ers.${key}`, label);
+      this._buildCell(ersRoot, `ers.${key}`, label, ERS_BAR_CELLS.has(key));
     }
 
     const damageRoot = document.getElementById("damage");
@@ -154,7 +201,7 @@ export class CarStateView {
     }
   }
 
-  _buildCell(container, key, label) {
+  _buildCell(container, key, label, withBar = false) {
     const box = element("div", "cell");
     box.append(element("span", "cell-label", label));
     const value = element("span", "cell-value");
@@ -162,7 +209,16 @@ export class CarStateView {
     const unit = element("span", "cell-unit", "");
     value.append(number, unit);
     box.append(value);
-    this.cells.set(key, { number, unit, value, severity: null });
+
+    let barFill = null;
+    if (withBar) {
+      const bar = element("div", "cell-bar");
+      barFill = element("div", "cell-bar-fill");
+      bar.append(barFill);
+      box.append(bar);
+    }
+
+    this.cells.set(key, { number, unit, value, barFill, severity: null });
     container.append(box);
     return box;
   }
@@ -209,11 +265,16 @@ export class CarStateView {
   _setCell(key, data) {
     const cell = this.cells.get(key);
     if (!cell) return;
-    cell.number.textContent = formatValue(data ? data.value : null, data ? data.unit : null);
-    cell.unit.textContent = data && data.unit ? ` ${data.unit}` : "";
+    const shown = displayValue(data);
+    cell.number.textContent = formatValue(
+      shown ? shown.value : null,
+      shown ? shown.unit : null,
+    );
+    cell.unit.textContent = shown && shown.unit ? ` ${shown.unit}` : "";
     cell.severity = data && data.severity ? data.severity : null;
     if (data && data.metric) cell.value.title = data.metric;
     else cell.value.removeAttribute("title");
+    if (cell.barFill) cell.barFill.style.width = barWidth(data);
     this._paint(cell);
   }
 

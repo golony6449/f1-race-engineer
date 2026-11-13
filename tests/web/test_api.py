@@ -164,6 +164,10 @@ def _populated_store(*, recv_ns: int | None = None) -> StateStore:
             tyres_age_laps=3,
             ers_store_energy=2_000_000.0,
             ers_deploy_mode=2,
+            ers_deployed_this_lap=3_000_000.0,
+            ers_harvested_this_lap_mguk=500_000.0,
+            ers_harvested_this_lap_mguh=250_000.0,
+            engine_power_mguk=95_000.0,
         ),
         recv_ns=when,
     )
@@ -291,6 +295,93 @@ def test_state_endpoint_shape() -> None:
     assert severities <= set(color_table()["colors"])
 
 
+def test_state_includes_ers_usage_power_and_harvest() -> None:
+    """SCRUM-86: ERS 사용량·MGU-K 출력·회수량을 게임 원래 단위로 내려 준다.
+
+    화면 단위(MJ·kW) 변환은 대시보드 JS가 한다. 단위와 막대 기준(`max`)만
+    API가 함께 준다. 네 값 모두 문턱값 표에 없어 색 단계는 없다.
+    """
+    ers = _client(_populated_store()).get("/api/state").json()["car"]["ers"]
+
+    assert ers["deployed_this_lap"]["value"] == pytest.approx(3_000_000.0)
+    assert ers["deployed_this_lap"]["unit"] == "J"
+    assert ers["deployed_this_lap"]["max"] == pytest.approx(4_000_000.0)
+    assert ers["harvested_mguk"]["value"] == pytest.approx(500_000.0)
+    assert ers["harvested_mguk"]["unit"] == "J"
+    assert ers["harvested_mguh"]["value"] == pytest.approx(250_000.0)
+    assert ers["harvested_mguh"]["unit"] == "J"
+    assert ers["mguk_power"]["value"] == pytest.approx(95_000.0)
+    assert ers["mguk_power"]["unit"] == "W"
+    assert ers["mguk_power"]["max"] == pytest.approx(120_000.0)
+
+    new_keys = (
+        "deployed_this_lap",
+        "harvested_mguk",
+        "harvested_mguh",
+        "mguk_power",
+    )
+    for key in new_keys:
+        assert ers[key]["severity"] is None
+
+    # 패킷이 아직 없어도 네 칸은 남고 값만 비어 있다.
+    empty = _client(StateStore()).get("/api/state").json()["car"]["ers"]
+    for key in new_keys:
+        assert empty[key]["value"] is None
+        assert empty[key]["severity"] is None
+
+
+def test_state_includes_flags_summary() -> None:
+    """SCRUM-80: /api/state의 flags가 패킷 값(SC·VSC·옐로 구역·블루·적기)을 담는다."""
+    store = StateStore()
+    builder = PacketBuilder(store)
+
+    session = _default_body(PacketId.SESSION)
+    entries = list(session["marshal_zones"])
+    entries[0] = {"zone_start": 0.25, "zone_flag": 3}
+    entries[1] = {"zone_start": 0.5, "zone_flag": 0}
+    session.update(
+        num_marshal_zones=2,
+        marshal_zones=entries,
+        safety_car_status=2,
+    )
+    builder.apply(PacketId.SESSION, session)
+    builder.apply(
+        PacketId.CAR_STATUS,
+        _player_body(
+            PacketId.CAR_STATUS, "car_status_data", vehicle_fia_flags=2
+        ),
+    )
+    builder.apply(
+        PacketId.EVENT,
+        {"event_string_code": "RDFL", "event_details": {}},
+    )
+
+    data = _client(store).get("/api/state").json()
+    assert data["flags"] == {
+        "red": True,
+        "blue": True,
+        "yellow": True,
+        "yellow_zones": [{"start": 0.25, "end": 0.5}],
+        "sc": False,
+        "vsc": True,
+    }
+    # 기존 필드는 그대로 있고, 트랙 선 색은 적기를 우선한다.
+    assert data["flag"] == "red_flag"
+    assert data["car"]["has_data"] is True
+
+
+def test_empty_state_flags_are_all_off() -> None:
+    data = _client(StateStore()).get("/api/state").json()
+    assert data["flags"] == {
+        "red": False,
+        "blue": False,
+        "yellow": False,
+        "yellow_zones": [],
+        "sc": False,
+        "vsc": False,
+    }
+
+
 def test_empty_state_keeps_skeleton_and_radio_status() -> None:
     data = _client(StateStore()).get("/api/state").json()
     car = data["car"]
@@ -356,6 +447,9 @@ def test_ws_pushes_updates() -> None:
     with client.websocket_connect("/ws/state") as websocket:
         first = websocket.receive_json()
         assert first["car"]["tyres"][0]["wear"]["value"] is None
+        # 깃발 요약도 같은 상태 묶음에 들어 있다(SCRUM-80).
+        assert first["flags"]["sc"] is False
+        assert first["flags"]["yellow_zones"] == []
 
         builder.apply(
             PacketId.CAR_DAMAGE,

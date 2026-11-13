@@ -334,3 +334,17 @@ def test_flag_state_follows_safety_car_status(status: int, expected: str) -> Non
 
     assert client.get("/api/state").json()["flag"] == expected
     assert client.get("/api/track").json()["flag"] == expected
+
+
+def test_red_flag_event_changes_map_flag() -> None:
+    """SCRUM-80: RDFL 뒤에는 트랙 선 색이 적기(red_flag)가 된다."""
+    store, builder = _with_session(SUZUKA_ID, safety_car_status=0)
+    builder.apply(
+        PacketId.EVENT, {"event_string_code": "RDFL", "event_details": {}}
+    )
+    client = _client(store)
+
+    data = client.get("/api/state").json()
+    assert data["flags"]["red"] is True
+    assert data["flag"] == "red_flag"
+    assert client.get("/api/track").json()["flag"] == "red_flag"

@@ -6,9 +6,9 @@
   목록 자리, 코너 지표 자리, 현재 깃발, 팀 색.
 - ``TrackMap.car_positions``: ``/api/state``·``/ws/state``에 넣는 모든 차의
   위치. Motion 패킷이 없어도 랩 거리로 윤곽 위를 보간해 그린다.
-- ``TrackMap.flag``: Session 패킷의 `safety_car_status`로 SC·VSC를 판정한다.
-  적기(`red_flag`)는 StateStore가 아직 상태로 유지하지 않는다. 화면(색)과
-  API 값 이름은 미리 맞춰 두어, 상태가 생기면 바로 쓸 수 있게 한다.
+- ``TrackMap.flag``: `StateStore`의 깃발 요약(SCRUM-80)으로 적기·SC·VSC를
+  판정한다. 요약이 없으면 Session 패킷의 `safety_car_status`로 SC·VSC만
+  판정한다(예전 스냅샷 호환).
 
 집중 코너(작업 16)와 코너 지표(작업 15)는 `RacePipeline.track_state()`가
 넘긴다(실서버 배선 SCRUM-84). 파이프라인이 없으면 빈 자리를 그대로 둔다.
@@ -212,7 +212,21 @@ class TrackMap:
         return cars
 
     def flag(self, snapshot: dict[str, Any]) -> str:
-        """현재 세션 깃발. `none`·`safety_car`·`vsc`."""
+        """현재 세션 깃발. `none`·`safety_car`·`vsc`·`red_flag`.
+
+        적기는 Event RDFL 뒤 `StateStore`가 유지하는 래치라 스냅샷 요약에만
+        있다. 적기가 SC·VSC보다 우선한다(트랙 선 색).
+        """
+        flags = snapshot.get("flags")
+        if isinstance(flags, dict):
+            if flags.get("red") is True:
+                return "red_flag"
+            if flags.get("sc") is True:
+                return "safety_car"
+            if flags.get("vsc") is True:
+                return "vsc"
+            return "none"
+        # 예전 스냅샷(깃발 요약 없음) 호환.
         packets = snapshot.get("packets") or {}
         session = packets.get("session") or {}
         status = _as_int(session.get("safety_car_status"))

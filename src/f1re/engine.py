@@ -141,7 +141,11 @@ class Engine:
 
         self._managed = runtime is None
         self._runtime = runtime
-        self._state = ENGINE_ON if runtime is not None else initial_state
+        # 소유 엔진은 런타임이 실제로 만들어지기 전까지 OFF다. 시작 상태
+        # (`initial_state`)가 ON이어도 `start()`가 런타임을 만들어야 ON이 된다
+        # (SCRUM-85: 상태만 ON으로 두면 `start()`가 바로 돌아가 UDP가 열리지 않았다).
+        self._state = ENGINE_ON if runtime is not None else ENGINE_OFF
+        self._initial_state = initial_state
         self._transport: asyncio.DatagramTransport | None = None
         self._tasks: list[asyncio.Task[None]] = []
         self._off_event = asyncio.Event()

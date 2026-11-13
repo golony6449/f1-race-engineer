@@ -45,11 +45,14 @@ from f1re.demo_sender.field import (
     car_ahead,
 )
 from f1re.demo_sender.scenarios import (
+    FLAG_KINDS,
+    KIND_DEFAULTS,
     ScenarioEvent,
     ScenarioError,
     corner_effects,
     events_for_lap,
     load_scenarios,
+    validate_flag_params,
 )
 from f1re.tracks.model import Track, load_outline, load_track
 from f1re.tracks.outline import TrackOutline
@@ -208,9 +211,28 @@ class _ScenarioEffects:
     safety_car_until_lap: int = 0
     drs_until_lap: int = 0
     drs_activation_distance: int = 0
+    # 깃발 상태(SCRUM-80). yellow_flag·blue_flag·red_flag가 랩 범위를 정한다.
+    yellow_start: float | None = None
+    yellow_end: float | None = None
+    yellow_until_lap: int = 0
+    blue_until_lap: int = 0
+    red_until_lap: int = 0
 
     def drs_active(self, lap: int) -> bool:
         return self.drs_until_lap >= lap > 0
+
+    def yellow_active(self, lap: int) -> bool:
+        return (
+            self.yellow_until_lap >= lap > 0
+            and self.yellow_start is not None
+            and self.yellow_end is not None
+        )
+
+    def blue_active(self, lap: int) -> bool:
+        return self.blue_until_lap >= lap > 0
+
+    def red_active(self, lap: int) -> bool:
+        return self.red_until_lap >= lap > 0
 
 
 @dataclass(frozen=True)
@@ -324,12 +346,19 @@ class DemoSender:
     # 세션 구성
 
     def _validate_scenarios(self) -> None:
-        """시나리오가 가리키는 코너가 트랙에 있는지 미리 확인한다."""
+        """시나리오가 가리키는 코너·깃발 값이 올바른지 미리 확인한다."""
         corners = {corner.number for corner in self._track.corners}
         for event in self._scenario_events:
             if event.corner is not None and event.corner not in corners:
                 raise ScenarioError(
                     f"{event.lap}랩 {event.kind}: 트랙에 {event.corner}번 코너가 없습니다"
+                )
+            if event.kind in FLAG_KINDS:
+                params = {
+                    name: event.param(name) for name in KIND_DEFAULTS[event.kind]
+                }
+                validate_flag_params(
+                    event.kind, params, f"{event.lap}랩 {event.kind}"
                 )
 
     def _build_lap_effects(self) -> dict[int, dict[int, CornerEffect]]:
@@ -486,6 +515,28 @@ class DemoSender:
                 num_virtual_safety_car_periods=0,
             )
         return body
+
+    def _marshal_zones(self) -> tuple[int, list[dict[str, Any]]]:
+        """현재 랩의 마셜 구역 배열(항상 21칸)과 사용 칸 수.
+
+        `yellow_flag`가 켜져 있으면 지정 구간만 옐로(zone_flag=3)가 되도록
+        경계를 만든다. 구간 밖은 그린/없음(0)이다. 서버는 다음 구역의
+        시작을 현재 구역의 끝으로 보므로, 끝 경계를 하나 더 둔다.
+        """
+        zones = list(self._session_body["marshal_zones"])
+        effects = self._effects
+        if not effects.yellow_active(self._current_lap):
+            return 0, zones
+        assert effects.yellow_start is not None and effects.yellow_end is not None
+        boundaries: list[tuple[float, int]] = []
+        if effects.yellow_start > 0.0:
+            boundaries.append((0.0, 0))
+        boundaries.append((effects.yellow_start, 3))
+        if effects.yellow_end < 1.0:
+            boundaries.append((effects.yellow_end, 0))
+        for index, (start, flag) in enumerate(boundaries):
+            zones[index] = {"zone_start": start, "zone_flag": flag}
+        return len(boundaries), zones
 
     def _participant_entry(
         self,
@@ -687,6 +738,8 @@ class DemoSender:
             else min(255, max(0, run.lap - 1))
         )
         drs_allowed = 1 if self._effects.drs_active(run.lap) else 0
+        # 블루 깃발은 내 차 Car Status의 vehicle_fia_flags=2로 알린다(SCRUM-80).
+        fia_flags = 2 if self._effects.blue_active(run.lap) else 0
         entry.update(
             traction_control=0,
             anti_lock_brakes=0,
@@ -706,7 +759,7 @@ class DemoSender:
             actual_tyre_compound=TYRE_COMPOUND_SOFT,
             visual_tyre_compound=TYRE_COMPOUND_SOFT,
             tyres_age_laps=tyre_age,
-            vehicle_fia_flags=0,
+            vehicle_fia_flags=fia_flags,
             engine_power_ice=700.0,
             engine_power_mguk=120.0,
             ers_store_energy=ERS_STORE_MAX_J * 0.9,
@@ -958,11 +1011,12 @@ class DemoSender:
         time_ms = int(round(tick * 1000.0 / BASE_RATE_HZ))
 
         if packet_id == PacketId.SESSION:
-            if self._mode == "gp":
-                body = dict(self._session_body)
-                body["safety_car_status"] = self._effects.safety_car_status
-            else:
-                body = self._session_body
+            body = dict(self._session_body)
+            # SC·VSC와 마셜 구역(옐로)은 모드와 무관하게 시나리오 값을 싣는다.
+            body["safety_car_status"] = self._effects.safety_car_status
+            num_zones, zones = self._marshal_zones()
+            body["num_marshal_zones"] = num_zones
+            body["marshal_zones"] = zones
         elif packet_id == PacketId.LAP_DATA:
             if self._mode == "gp":
                 body = self._gp_lap_data_body(context)
@@ -1297,12 +1351,26 @@ class DemoSender:
         if effects.drs_until_lap and lap > effects.drs_until_lap:
             effects.drs_until_lap = 0
             effects.drs_activation_distance = 0
+        # 깃발 시나리오가 정한 랩 범위를 벗어나면 값을 되돌린다(SCRUM-80).
+        if effects.yellow_until_lap and lap > effects.yellow_until_lap:
+            effects.yellow_until_lap = 0
+            effects.yellow_start = None
+            effects.yellow_end = None
+        if effects.blue_until_lap and lap > effects.blue_until_lap:
+            effects.blue_until_lap = 0
+        if effects.red_until_lap and lap > effects.red_until_lap:
+            effects.red_until_lap = 0
 
         for index, event in enumerate(self._scenario_events):
             if event.lap != lap or index in self._triggered:
                 continue
             self._triggered.add(index)
             self._apply_scenario(event, lap, tick, context)
+
+        # 적기는 해제 Event가 없어 랩마다 다시 알린다. 수신기는 랩 진행·
+        # SC/VSC·새 세션에서 래치를 푼다(SCRUM-80).
+        if effects.red_active(lap):
+            self._send(self._event_packet("RDFL", None, tick))
 
     def _apply_scenario(
         self,
@@ -1380,6 +1448,15 @@ class DemoSender:
                     tick,
                 )
             )
+        elif kind == "yellow_flag":
+            effects.yellow_start = float(event.param("start"))
+            effects.yellow_end = float(event.param("end"))
+            effects.yellow_until_lap = lap + max(1, int(event.param("laps"))) - 1
+        elif kind == "blue_flag":
+            effects.blue_until_lap = lap + max(1, int(event.param("laps"))) - 1
+        elif kind == "red_flag":
+            # RDFL은 _start_lap이 랩마다 보낸다(범위 안에서 유지).
+            effects.red_until_lap = lap + max(1, int(event.param("laps"))) - 1
         # 주행 종류는 _build_lap_effects가 generate_lap에 이미 주입했다.
 
     def _detect_ai_laps(self, context: _TickContext, tick: int) -> None:

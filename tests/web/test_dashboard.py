@@ -91,6 +91,44 @@ def test_statusbar_links_to_radio_page() -> None:
     assert ".status-button" in css
 
 
+def test_dashboard_ers_section_shows_usage_power_and_harvest() -> None:
+    """SCRUM-86: ERS에 이번 랩 사용량·MGU-K 출력·MGU-K/H 회수량을 더한다.
+
+    칸은 다른 섹션처럼 carstate.js가 만들므로, 대시보드가 서빙하는 스크립트에
+    새 셀 키와 표시 단위 변환(J→MJ, W→kW), 기준값 막대가 있는지 확인한다.
+    """
+    client = _client()
+    html = client.get("/").text
+    assert 'id="ers"' in html
+
+    script = client.get("/static/carstate.js").text
+    for key, label in (
+        ("deployed_this_lap", "이번 랩 사용"),
+        ("mguk_power", "MGU-K 출력"),
+        ("harvested_mguk", "MGU-K 회수"),
+        ("harvested_mguh", "MGU-H 회수"),
+    ):
+        assert f'["{key}", "{label}"]' in script
+
+    # 내부 단위는 게임 값 그대로 두고 화면에서만 MJ·kW로 바꾼다.
+    assert 'J: { unit: "MJ"' in script
+    assert 'W: { unit: "kW"' in script
+    # 사용량·출력은 한도(서버가 준 `max`) 대비 막대를 그린다.
+    assert "cell-bar-fill" in script
+    assert "data.max" in script
+
+    css = client.get("/static/style.css").text
+    assert ".cell-bar" in css
+    assert ".cell-bar-fill" in css
+    assert "#dashboard.stale .cell-bar-fill" in css
+
+    # 좁은 화면에서는 ERS 여섯 칸을 한 열로 쌓는다.
+    phone = re.search(r"@media \(max-width: 480px\) \{(.*?)\n\}", css, re.S)
+    assert phone, "휴대폰 세로(480px 이하)용 규칙이 없습니다"
+    assert ".ers .cell-grid {" in phone.group(1)
+    assert "grid-template-columns: 1fr;" in phone.group(1)
+
+
 def test_car_section_static_assets_are_served() -> None:
     client = _client()
 
@@ -132,6 +170,37 @@ def _wide_screen_css() -> str:
     match = re.search(r"@media \(min-width: 1100px\) \{(.*?)\n\}", css, re.S)
     assert match, "넓은 화면(1100px 이상)용 규칙이 없습니다"
     return match.group(1)
+
+
+def test_map_section_has_flag_status_row() -> None:
+    """SCRUM-80: 서킷 지도 제목 아래 레드·블루·옐로·SC·VSC 다섯 칸."""
+    client = _client()
+    html = client.get("/").text
+
+    row = re.search(
+        r'<div class="flag-row"[^>]*>(.*?)</div>', html, re.S
+    )
+    assert row, "서킷 지도 제목 아래 깃발 상태 줄이 없습니다"
+    chips = re.findall(r'data-flag="([a-z]+)"', row.group(1))
+    assert chips == ["red", "blue", "yellow", "sc", "vsc"]
+    for label in ("레드", "블루", "옐로", "SC", "VSC"):
+        assert f">{label}</span>" in row.group(1)
+
+    # 꺼짐은 회색 테두리, 켜짐은 깃발 색인 클래스가 있다.
+    css = client.get("/static/style.css").text
+    assert ".flag-row" in css
+    assert ".flag-chip" in css
+    assert '.flag-chip.on[data-flag="red"]' in css
+    assert '.flag-chip.on[data-flag="blue"]' in css
+    assert '.flag-chip.on[data-flag="yellow"]' in css
+    assert '.flag-chip.on[data-flag="sc"]' in css
+    assert '.flag-chip.on[data-flag="vsc"]' in css
+
+    # map.js가 서버의 flags로 칸을 켜고, 옐로 구역을 지도 선 위에 칠한다.
+    script = client.get("/static/map.js").text
+    assert 'querySelectorAll("[data-flag]")' in script
+    assert "yellow_zones" in script
+    assert "_drawYellowZones" in script
 
 
 def test_wide_screen_puts_tyres_and_map_side_by_side() -> None:
