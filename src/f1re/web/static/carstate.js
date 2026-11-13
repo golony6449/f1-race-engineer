@@ -1,12 +1,18 @@
 /**
  * 차량 상태 화면 렌더링.
  *
+ * 타이어·브레이크는 위에서 본 F1 차 그림(SVG) 하나와 바퀴 바깥쪽 정보 상자로
+ * 보여 준다(SCRUM-77). 차 그림은 HTML에 있고, 이 파일은 정보 상자를 채우고
+ * 바퀴 색만 바꾼다.
+ *
  * 색은 서버가 `/api/thresholds`로 내려 준 표(colors)만 쓴다. 이 파일은 문턱값을
  * 계산하지 않고, 서버가 값마다 붙여 준 `severity`(ok/warn/danger/no_data)를
- * 색 표의 키로 바꿔 칠할 뿐이다(설계 6.6·6.9).
+ * 색 표의 키로 바꿔 칠할 뿐이다(설계 6.6·6.9). 타이어 사각형은 그 바퀴의 마모·
+ * 표면 온도·내부 온도 중 가장 나쁜 단계, 브레이크 디스크 원은 브레이크 온도
+ * 단계의 색을 쓴다.
  *
  * 값이 끊겨도 칸을 지우지 않는다. 서버가 마지막 값을 계속 내려 주고, 연결이
- * 끊겼다는 표시(`stale`)가 오면 숫자만 흐리게 만든다.
+ * 끊겼다는 표시(`stale`)가 오면 숫자와 그림을 흐리게 만든다.
  */
 
 const UNIT_DIGITS = {
@@ -31,6 +37,10 @@ const ERS_CELLS = [
   ["mode", "모드"],
 ];
 
+// 타이어 그림 색을 고르는 순서다. 값이 없는 칸(no_data)은 초록(ok)보다
+// 나쁘게 본다. 일부 값이 비었는데 초록으로 보이면 상태를 오해하기 쉽다.
+const SEVERITY_RANK = { ok: 0, no_data: 1, warn: 2, danger: 3 };
+
 function element(tag, className, text) {
   const node = document.createElement(tag);
   if (className) node.className = className;
@@ -52,13 +62,19 @@ export class CarStateView {
     this.colors = {};
     this.cells = new Map();
     this.tyreMeta = new Map();
+    // 차 그림의 바퀴 요소와 바퀴별 단계. 색 표가 늦게 와도 다시 칠한다.
+    this.tyreShapes = new Map();
+    this.brakeDiscs = new Map();
+    this.tyreSeverity = new Map();
+    this.brakeSeverity = new Map();
     this.built = false;
   }
 
-  /** `/api/thresholds`가 준 색 표. 늦게 와도 이미 그린 칸을 다시 칠한다. */
+  /** `/api/thresholds`가 준 색 표. 늦게 와도 이미 그린 칸과 그림을 다시 칠한다. */
   setColors(colors) {
     this.colors = colors || {};
     for (const cell of this.cells.values()) this._paint(cell);
+    this._paintWheels();
   }
 
   render(car) {
@@ -70,11 +86,17 @@ export class CarStateView {
   _build(car) {
     this.built = true;
 
-    const tyresRoot = document.getElementById("tyres");
-    tyresRoot.replaceChildren();
+    const waiting = document.getElementById("tyres-waiting");
+    if (waiting) waiting.remove();
+
     this.tyreMeta.clear();
     for (const tyre of car.tyres || []) {
-      const card = element("article", "tyre");
+      const card = document.querySelector(
+        `[data-tyre-box="${tyre.position}"]`,
+      );
+      if (!card) continue;
+      card.replaceChildren();
+
       const head = element("header", "tyre-head");
       head.append(element("span", "tyre-pos", tyre.label || tyre.position));
       const meta = element("span", "tyre-meta", "");
@@ -88,17 +110,29 @@ export class CarStateView {
       this._buildCell(grid, `tyre.${tyre.position}.pressure`, "압력");
 
       card.append(head, grid);
-      tyresRoot.append(card);
     }
 
-    const brakesRoot = document.getElementById("brakes");
-    brakesRoot.replaceChildren();
+    // 브레이크 온도는 같은 바퀴 정보 상자에 붙인다. 셀 id 규칙은 그대로 둔다.
     for (const brake of car.brakes || []) {
-      this._buildCell(
-        brakesRoot,
-        `brake.${brake.position}.temp`,
-        brake.label || brake.position,
+      const card = document.querySelector(
+        `[data-tyre-box="${brake.position}"]`,
       );
+      if (!card) continue;
+      const cell = this._buildCell(
+        card,
+        `brake.${brake.position}.temp`,
+        "브레이크 온도",
+      );
+      cell.classList.add("brake-cell");
+    }
+
+    this.tyreShapes.clear();
+    for (const shape of document.querySelectorAll(".tyre-shape[data-tyre]")) {
+      this.tyreShapes.set(shape.dataset.tyre, shape);
+    }
+    this.brakeDiscs.clear();
+    for (const disc of document.querySelectorAll(".brake-disc[data-brake]")) {
+      this.brakeDiscs.set(disc.dataset.brake, disc);
     }
 
     const fuelRoot = document.getElementById("fuel");
@@ -130,6 +164,7 @@ export class CarStateView {
     box.append(value);
     this.cells.set(key, { number, unit, value, severity: null });
     container.append(box);
+    return box;
   }
 
   _update(car) {
@@ -141,11 +176,22 @@ export class CarStateView {
 
       const meta = this.tyreMeta.get(tyre.position);
       if (meta) meta.textContent = compoundText(tyre);
+
+      this.tyreSeverity.set(
+        tyre.position,
+        this._worstTyreSeverity(tyre.position),
+      );
     }
 
     for (const brake of car.brakes || []) {
       this._setCell(`brake.${brake.position}.temp`, brake.temp);
+      this.brakeSeverity.set(
+        brake.position,
+        brake.temp && brake.temp.severity ? brake.temp.severity : "no_data",
+      );
     }
+
+    this._paintWheels();
 
     for (const item of car.damage || []) {
       this._setCell(`damage.${item.key}`, item.value);
@@ -175,6 +221,33 @@ export class CarStateView {
     const color = cell.severity ? this.colors[cell.severity] : null;
     if (color) cell.value.style.color = color;
     else cell.value.style.removeProperty("color");
+  }
+
+  /** 마모·표면 온도·내부 온도 중 가장 나쁜 단계. 그림 사각형 색에 쓴다. */
+  _worstTyreSeverity(position) {
+    let worst = "ok";
+    for (const metric of ["wear", "surface_temp", "inner_temp"]) {
+      const cell = this.cells.get(`tyre.${position}.${metric}`);
+      const level = cell && cell.severity ? cell.severity : "no_data";
+      if (SEVERITY_RANK[level] > SEVERITY_RANK[worst]) worst = level;
+    }
+    return worst;
+  }
+
+  /** 바퀴 색은 서버가 준 단계(severity)를 색 표의 키로 바꿔 칠할 뿐이다. */
+  _paintWheels() {
+    for (const [position, shape] of this.tyreShapes) {
+      this._paintShape(shape, this.tyreSeverity.get(position));
+    }
+    for (const [position, disc] of this.brakeDiscs) {
+      this._paintShape(disc, this.brakeSeverity.get(position));
+    }
+  }
+
+  _paintShape(node, level) {
+    const color = this.colors[level || "no_data"];
+    if (color) node.style.fill = color;
+    else node.style.removeProperty("fill");
   }
 }
 
@@ -221,14 +294,33 @@ export function renderStatusBar(payload) {
     detail2.textContent = `미지원 ${unsupported} · 오류 ${errors} · 세션 ${session}`;
   }
 
-  setStatusText("voice", status.voice);
-  setStatusText("radio_page", status.radio_page);
+  renderRadioStatus(status.voice, status.radio_page);
 }
 
-function setStatusText(field, state) {
-  const node = document.querySelector(`[data-field="${field}"]`);
+/**
+ * 무전 칸: 음성과 무전 페이지 상태를 한 줄로 합친다.
+ *
+ * 둘 다 정상일 때만 정상 색(ok), 하나라도 문제면 경고 색(warn)이다.
+ * 색은 상태줄 클래스(.status-value.ok / .status-value.warn)가 칠한다.
+ */
+function renderRadioStatus(voice, radioPage) {
+  const node = document.querySelector('[data-field="radio"]');
   if (!node) return;
-  node.textContent = (state && state.label) || "알 수 없음";
+
+  const online = Boolean(voice && voice.state === "online");
+  const connected = Boolean(radioPage && radioPage.connected);
+  const clients =
+    radioPage && Number.isFinite(radioPage.clients) ? radioPage.clients : 0;
+
+  const voiceText = online ? "음성 온라인" : "음성 오프라인";
+  const radioText = connected
+    ? `무전 페이지 연결 ${clients}`
+    : "무전 페이지 미연결";
+  node.textContent = `${voiceText} · ${radioText}`;
+
+  const healthy = online && connected;
+  node.classList.toggle("ok", healthy);
+  node.classList.toggle("warn", !healthy);
 }
 
 /** 값이 끊겼을 때 칸은 그대로 두고 숫자만 흐리게 한다. */

@@ -8,8 +8,9 @@
   </head>
   <body>
     <!--
-      상단 상태줄(설계 6.9-5). 음성·무전 페이지 상태는 서버가 실제 값으로
-      내려 준다(음성 온라인/오프라인, 무전 페이지 연결/미연결).
+      상단 상태줄(설계 6.9-5). 음성·무전 페이지 상태는 한 칸에 모아 서버가
+      실제 값으로 내려 준다(음성 온라인/오프라인, 무전 페이지 연결 수/미연결).
+      둘 다 정상이면 정상 색, 하나라도 문제면 경고 색이다.
     -->
     <header class="statusbar">
       <section class="status" id="status-connection">
@@ -18,27 +19,121 @@
         <span class="status-detail" id="connection-detail"></span>
         <span class="status-detail" id="connection-detail-2"></span>
       </section>
-      <section class="status" id="status-voice">
-        <span class="status-label">음성</span>
-        <span class="status-value" data-field="voice">음성 오프라인</span>
-        <span class="status-detail">Qwen TTS</span>
-      </section>
-      <section class="status" id="status-radio-page">
-        <span class="status-label">무전 페이지</span>
-        <span class="status-value" data-field="radio_page">무전 페이지 미연결</span>
-        <span class="status-detail">게임 PC 브라우저 /radio</span>
+      <section class="status" id="status-radio">
+        <span class="status-label">무전</span>
+        <span class="status-value warn" data-field="radio"
+          >음성 오프라인 · 무전 페이지 미연결</span
+        >
+        <span class="status-detail">Qwen TTS · 게임 PC /radio</span>
       </section>
     </header>
 
     <!--
-      차량 상태(설계 6.9-1). 값이 끊기면 마지막 값을 흐리게 유지한다.
-      무전 기록·종류별 끄기·세션 리포트는 작업 20(report.js)이 그린다.
+      차량 상태(설계 6.9-1). 타이어와 브레이크를 위에서 본 F1 차 그림 하나에
+      모아 보여 준다(SCRUM-77). 바퀴 색은 타이어 상태, 바퀴 안쪽 원은 브레이크
+      온도이며, 색은 `/api/thresholds`의 표만 쓴다. 값이 끊기면 마지막 값을
+      흐리게 유지한다. 무전 기록·종류별 끄기·세션 리포트는 작업 20(report.js)이
+      그린다.
     -->
     <main id="dashboard" class="stale">
-      <section class="panel tyres">
-        <h2>타이어</h2>
-        <div class="tyre-grid" id="tyres">
-          <p class="waiting">데이터를 기다리는 중…</p>
+      <section class="panel tyres-brakes" id="tyres-brakes">
+        <h2>타이어·브레이크</h2>
+        <p class="waiting" id="tyres-waiting">데이터를 기다리는 중…</p>
+        <div class="car-view">
+          <!--
+            정보 상자는 바퀴 바깥쪽에 둔다. 앞바퀴 상자는 위쪽 좌우, 뒷바퀴
+            상자는 아래쪽 좌우이며, 좁은 화면에서는 그림 위/아래로 접힌다.
+            carstate.js가 이 상자에 값을 채운다.
+          -->
+          <article class="tyre-card" data-tyre-box="front_left"></article>
+          <article class="tyre-card" data-tyre-box="front_right"></article>
+          <article class="tyre-card" data-tyre-box="rear_left"></article>
+          <article class="tyre-card" data-tyre-box="rear_right"></article>
+
+          <!--
+            위에서 본 F1 차. 외부 이미지 없이 선과 면으로 직접 그린다.
+            타이어 사각형의 채우기는 그 바퀴의 가장 나쁜 타이어 severity,
+            안쪽 작은 원(브레이크 디스크)의 채우기는 브레이크 온도 severity다.
+          -->
+          <svg
+            class="car-svg"
+            viewBox="0 0 400 690"
+            role="img"
+            aria-label="위에서 본 F1 차. 바퀴 색은 타이어 상태, 바퀴 안쪽 원은 브레이크 온도."
+          >
+            <!-- 앞날개 -->
+            <rect class="car-body" x="44" y="14" width="12" height="44" rx="4" />
+            <rect class="car-body" x="344" y="14" width="12" height="44" rx="4" />
+            <rect class="car-body" x="56" y="22" width="288" height="14" rx="5" />
+            <rect class="car-body" x="68" y="40" width="264" height="10" rx="4" />
+            <!-- 노즈 -->
+            <path class="car-body" d="M184 46 L216 46 L207 196 L193 196 Z" />
+            <!-- 앞 서스펜션 -->
+            <path class="car-line" d="M182 150 L88 158 M218 150 L312 158" />
+            <path class="car-line" d="M184 172 L92 184 M216 172 L308 184" />
+            <!-- 앞 타이어·브레이크 디스크 -->
+            <rect
+              class="tyre-shape"
+              data-tyre="front_left"
+              x="22"
+              y="120"
+              width="66"
+              height="92"
+              rx="10"
+            />
+            <rect
+              class="tyre-shape"
+              data-tyre="front_right"
+              x="312"
+              y="120"
+              width="66"
+              height="92"
+              rx="10"
+            />
+            <circle class="brake-disc" data-brake="front_left" cx="55" cy="166" r="15" />
+            <circle class="brake-disc" data-brake="front_right" cx="345" cy="166" r="15" />
+            <!-- 모노코크·콕핏 -->
+            <rect class="car-body" x="182" y="188" width="36" height="336" rx="18" />
+            <path class="car-line" d="M168 236 Q200 212 232 236" />
+            <rect class="cockpit" x="174" y="238" width="52" height="86" rx="26" />
+            <!-- 사이드포드 -->
+            <path class="car-body" d="M176 326 L136 352 L126 464 L152 508 L181 494 Z" />
+            <path class="car-body" d="M224 326 L264 352 L274 464 L248 508 L219 494 Z" />
+            <rect class="cockpit" x="140" y="360" width="18" height="26" rx="5" />
+            <rect class="cockpit" x="242" y="360" width="18" height="26" rx="5" />
+            <!-- 엔진 커버 -->
+            <path class="car-body" d="M182 486 L218 486 L230 606 L170 606 Z" />
+            <!-- 뒷 서스펜션 -->
+            <path class="car-line" d="M180 498 L90 490 M220 498 L310 490" />
+            <path class="car-line" d="M178 520 L88 512 M222 520 L312 512" />
+            <!-- 뒷 타이어·브레이크 디스크 -->
+            <rect
+              class="tyre-shape"
+              data-tyre="rear_left"
+              x="18"
+              y="446"
+              width="70"
+              height="96"
+              rx="10"
+            />
+            <rect
+              class="tyre-shape"
+              data-tyre="rear_right"
+              x="312"
+              y="446"
+              width="70"
+              height="96"
+              rx="10"
+            />
+            <circle class="brake-disc" data-brake="rear_left" cx="53" cy="494" r="16" />
+            <circle class="brake-disc" data-brake="rear_right" cx="347" cy="494" r="16" />
+            <!-- 디퓨저·뒷날개 -->
+            <path class="car-body" d="M174 600 L226 600 L236 624 L164 624 Z" />
+            <rect class="car-body" x="56" y="598" width="12" height="54" rx="4" />
+            <rect class="car-body" x="332" y="598" width="12" height="54" rx="4" />
+            <rect class="car-body" x="84" y="608" width="232" height="10" rx="4" />
+            <rect class="car-body" x="68" y="628" width="264" height="16" rx="5" />
+          </svg>
         </div>
       </section>
 
@@ -54,13 +149,6 @@
           <span class="map-flag" hidden></span>
         </div>
         <div class="map-info" id="map-info"></div>
-      </section>
-
-      <section class="panel brakes">
-        <h2>브레이크 온도</h2>
-        <div class="brake-grid" id="brakes">
-          <p class="waiting">데이터를 기다리는 중…</p>
-        </div>
       </section>
 
       <section class="panel fuel">
