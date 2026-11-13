@@ -11,4 +11,4 @@ samples/
 assets/
 recordings/
 *.f1rec
-data/*.db
+data/

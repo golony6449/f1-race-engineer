@@ -1,7 +1,7 @@
 """SQLite 스키마와 순차 마이그레이션.
 
 표준 `sqlite3`만 쓴다. 데이터베이스 파일 기본 위치는 `data/f1re.db`이고,
-`data/*.db`는 `.gitignore`에 있다.
+`data/` 폴더 전체(DB와 `-wal`·`-shm`)가 `.gitignore`에 있다.
 
 스키마 버전은 `schema_version` 표에 적용한 마이그레이션 번호로 남긴다.
 `MIGRATIONS`는 번호가 1부터 연속인 목록이며, `open_db`가 아직 적용되지 않은
