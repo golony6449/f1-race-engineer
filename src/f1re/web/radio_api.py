@@ -15,12 +15,20 @@
 - 무전 페이지가 연결되지 않았으면 음성을 만들지 않고 큐를 비우며
   `played=False`로 기록한다(상태 "무전 페이지 미연결"). 큐가 막히지 않는다.
 
+음성은 조각을 보낸 대로 브라우저가 이어 붙인다. 서버는 보낸 PCM의 재생
+길이(바이트 / 2 / sample_rate)를 누적해 실제 경과가 재생 위치보다 앞서지
+않도록 조각 사이에서 기다린다(페이싱, `PACE_MARGIN_S`). 마지막 조각 뒤에도
+남은 재생 시간만큼 기다린 뒤 `complete()`·`done`을 보내므로, 다음 무전은
+앞 무전이 끝난 뒤에야 나간다(설계 6.7 동시 발화 금지).
+
 WebSocket 메시지(JSON, 서버 → 브라우저):
 
 - ``{"type": "status", "status": {...}, "last": {...}|null}``
 - ``{"type": "caption", "text": ..., "kind": ..., "priority": ..., "evidence": {...}}``
 - ``{"type": "audio", "pcm": "<base64>", "sample_rate": 24000, "channels": 1,
   "format": "s16le", "seq": 0}``
+- ``{"type": "interrupt"}``: 지금 재생 중인 무전을 즉시 멈춘다(더 높은
+  우선순위 무전이 와서 끊을 때). 브라우저는 재생 중인 조각을 모두 멈춘다.
 - ``{"type": "done", "text": ..., "played": true, "interrupted": false,
   "latency_ms": 12}``
 
@@ -36,7 +44,7 @@ import contextlib
 import logging
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -62,6 +70,13 @@ IDLE_S = 0.02
 
 # 무전 페이지가 없을 때 큐를 비우는 주기(초).
 NO_PAGE_S = 0.05
+
+# 재생 위치보다 최대 이만큼(초)까지 미리 보낸다. 브라우저가 조각을 이어 붙일
+# 여유이자, 서버가 실제 시계보다 앞서 나가지 않게 잡는 최대 선행 폭이다.
+PACE_MARGIN_S = 0.3
+
+# 재생을 기다리는 동안 끊김(더 높은 우선순위·페이지 이탈)을 확인하는 주기(초).
+PACE_SLICE_S = 0.05
 
 # 클라이언트 한 명에게 쌓아 둘 메시지 수. 느린 브라우저가 서버를 막지 않게 한다.
 CLIENT_QUEUE_SIZE = 256
@@ -100,6 +115,7 @@ class RadioService:
         log_conn: Any | None = None,
         tts: Any | None = None,
         clock: Callable[[], int] = time.time_ns,
+        sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
         alert_poll_s: float = ALERT_POLL_S,
         idle_s: float = IDLE_S,
     ) -> None:
@@ -111,6 +127,7 @@ class RadioService:
         self._log_conn = log_conn
         self._tts = tts
         self._clock = clock
+        self._sleep = sleep
         self._alert_poll_s = alert_poll_s
         self._idle_s = idle_s
 
@@ -272,6 +289,8 @@ class RadioService:
         interrupted = False
         latency_ms: int | None = None
         source: Any | None = None
+        started_ns: int | None = None
+        played_s = 0.0
         caption = {
             "type": "caption",
             "text": message.text,
@@ -287,18 +306,24 @@ class RadioService:
             if self._cache is None:
                 raise TTSUnavailable("음성 캐시가 설정되지 않았습니다")
             source = await self._cache.get_or_synthesize(message.text)
+            sample_rate = int(getattr(source, "sample_rate", SAMPLE_RATE) or SAMPLE_RATE)
             seq = 0
             async for chunk in source.iter_pcm():
                 if not chunk:
                     continue
-                if not self._has_clients():
+                reason = self._stop_reason(message)
+                if reason is None and started_ns is not None:
+                    # 조각 사이 페이싱. 재생 위치보다 PACE_MARGIN_S 이상
+                    # 앞서 보내지 않아 브라우저에 소리가 쌓이지 않게 한다.
+                    reason = await self._pace(
+                        started_ns, played_s - PACE_MARGIN_S, message
+                    )
+                if reason is not None:
                     interrupted = True
+                    self._broadcast_interrupt(reason)
                     break
-                pending = self._queue.pending()
-                if pending and pending[0].priority < message.priority:
-                    # 말하는 중에 더 높은 우선순위가 왔다. 끊고 다음으로 넘어간다.
-                    interrupted = True
-                    break
+                if started_ns is None:
+                    started_ns = self._clock()
                 if latency_ms is None:
                     latency_ms = max(
                         0,
@@ -310,12 +335,20 @@ class RadioService:
                         "type": "audio",
                         "seq": seq,
                         "pcm": base64.b64encode(chunk).decode("ascii"),
-                        "sample_rate": getattr(source, "sample_rate", SAMPLE_RATE),
+                        "sample_rate": sample_rate,
                         "channels": CHANNELS,
                         "format": SAMPLE_FORMAT,
                     }
                 )
+                played_s += len(chunk) / 2 / sample_rate
                 seq += 1
+            if not interrupted and started_ns is not None:
+                # 마지막 조각의 남은 재생 시간만큼 기다린 뒤 끝났다고 알린다.
+                # 다음 무전은 그 뒤에야 큐에서 나가므로 소리가 겹치지 않는다.
+                reason = await self._pace(started_ns, played_s, message)
+                if reason is not None:
+                    interrupted = True
+                    self._broadcast_interrupt(reason)
         except TTSUnavailable as exc:
             # 음성 API 실패·타임아웃이면 그 문장만 건너뛰고 큐는 계속 돈다.
             logger.warning(
@@ -339,6 +372,47 @@ class RadioService:
                 }
             )
             self._broadcast_status()
+
+    def _stop_reason(self, message: RadioMessage) -> str | None:
+        """지금 재생을 끊어야 하는 이유. 없으면 None.
+
+        ``"priority"``는 더 높은 우선순위 무전이 대기 중이라는 뜻이고,
+        ``"detached"``는 무전 페이지가 사라졌다는 뜻이다.
+        """
+        if not self._has_clients():
+            return "detached"
+        pending = self._queue.pending()
+        if pending and pending[0].priority < message.priority:
+            # 말하는 중에 더 높은 우선순위가 왔다. 끊고 다음으로 넘어간다.
+            return "priority"
+        return None
+
+    def _broadcast_interrupt(self, reason: str) -> None:
+        """브라우저가 재생 중인 조각을 즉시 멈추게 한다.
+
+        페이지가 사라졌으면 받을 곳이 없으므로 보내지 않는다.
+        """
+        if reason == "priority":
+            self._broadcast({"type": "interrupt"})
+
+    async def _pace(
+        self, started_ns: int, target_s: float, message: RadioMessage
+    ) -> str | None:
+        """보낸 PCM의 재생 위치 ``target_s``초까지 실제 시계를 맞춘다.
+
+        ``PACE_SLICE_S``씩 나눠 기다리며 그 사이에 더 높은 우선순위 무전이
+        오거나 페이지가 사라지면 :meth:`_stop_reason`의 이유를 돌려준다.
+        기다릴 필요가 없으면 바로 None을 돌려준다.
+        """
+        while True:
+            elapsed_s = (self._clock() - started_ns) / 1_000_000_000
+            remaining_s = target_s - elapsed_s
+            if remaining_s <= 0:
+                return None
+            reason = self._stop_reason(message)
+            if reason is not None:
+                return reason
+            await self._sleep(min(remaining_s, PACE_SLICE_S))
 
     # ------------------------------------------------------------------
     # 기록
