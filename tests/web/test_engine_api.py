@@ -180,3 +180,26 @@ def test_turning_off_notifies_open_radio_websocket(tmp_path: Path) -> None:
                 "type": "engine",
                 "state": "off",
             } in received
+
+
+def test_engine_created_with_on_start_state_actually_starts(tmp_path: Path) -> None:
+    """SCRUM-85: 시작 상태가 ON이어도 `start()`가 런타임·UDP를 실제로 만든다."""
+    engine = Engine(
+        host="127.0.0.1",
+        port=0,
+        db_path=tmp_path / "f1re.db",
+        state_path=tmp_path / "engine-state.json",
+        initial_state=ENGINE_ON,
+    )
+    # 런타임을 만들기 전에는 OFF로 보여야 한다(화면·API가 거짓 ON을 보지 않게).
+    assert engine.state == ENGINE_OFF
+    with _client(engine) as client:
+        client.portal.call(engine.start)
+        assert engine.state == ENGINE_ON
+        assert engine.runtime is not None
+        assert engine.udp_port is not None
+        assert client.get("/api/state").status_code == 200
+        with client.websocket_connect("/ws/state") as websocket:
+            payload = websocket.receive_json()
+            assert payload.get("type") != "engine"
+            assert "car" in payload
