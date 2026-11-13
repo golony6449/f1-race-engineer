@@ -47,7 +47,7 @@ from f1re.engine import (
     Runtime,
 )
 from f1re.state.store import StateStore
-from f1re.web.lift_coast_api import router as lift_coast_router
+from f1re.web.lift_coast_api import create_lift_coast_router
 from f1re.web.map_api import TrackMap, create_map_router
 from f1re.web.radio_api import RadioService, router as radio_router
 from f1re.web.report_api import create_report_router
@@ -413,7 +413,7 @@ def create_app(
     app.include_router(radio_router)
     app.include_router(create_map_router(lambda: engine.runtime))
     app.include_router(create_report_router(lambda: engine.runtime))
-    app.include_router(lift_coast_router)
+    app.include_router(create_lift_coast_router(_lift_state_source(engine)))
 
     def _runtime() -> Runtime:
         runtime = engine.runtime
@@ -495,6 +495,23 @@ def create_app(
         await _send_engine_off(websocket)
 
     return app
+
+
+def _lift_state_source(engine: Engine):
+    """`/api/lift-coast`가 읽을 상태를 엔진 런타임의 파이프라인에서 꺼낸다.
+
+    엔진 OFF이거나 세션 전이면 `None`이고 라우터가 빈 기본 상태를 쓴다
+    (실서버 배선 SCRUM-84).
+    """
+
+    def source():
+        runtime = engine.runtime
+        if runtime is None:
+            return None
+        pipeline = getattr(runtime, "pipeline", None)
+        return None if pipeline is None else pipeline.lift_state()
+
+    return source
 
 
 def _lifespan(engine: Engine):

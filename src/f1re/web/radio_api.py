@@ -197,6 +197,11 @@ class RadioService:
         return self._queue
 
     @property
+    def cache(self) -> Any | None:
+        """음성 캐시(`VoiceCache`). 세션 시작 프리페치가 쓴다(SCRUM-84)."""
+        return self._cache
+
+    @property
     def last_caption(self) -> dict[str, Any] | None:
         return self._last_caption
 

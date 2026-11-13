@@ -10,7 +10,8 @@
   판정한다. 요약이 없으면 Session 패킷의 `safety_car_status`로 SC·VSC만
   판정한다(예전 스냅샷 호환).
 
-집중 코너(작업 16)와 코너 지표(작업 15)는 아직 없다. API에는 빈 자리만 둔다.
+집중 코너(작업 16)와 코너 지표(작업 15)는 `RacePipeline.track_state()`가
+넘긴다(실서버 배선 SCRUM-84). 파이프라인이 없으면 빈 자리를 그대로 둔다.
 """
 
 from __future__ import annotations
@@ -73,8 +74,17 @@ class TrackMap:
     # ------------------------------------------------------------------
     # API
 
-    def track_payload(self, snapshot: dict[str, Any]) -> dict[str, Any]:
-        """`GET /api/track` 응답."""
+    def track_payload(
+        self,
+        snapshot: dict[str, Any],
+        pipeline_state: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """`GET /api/track` 응답.
+
+        `pipeline_state`는 실서버 파이프라인(`RacePipeline.track_state()`)이
+        넘기는 현재 세션의 코너·집중 코너·코너 지표다(SCRUM-84). 없으면(고정
+        엔진·엔진 OFF) 빈 자리를 그대로 둔다.
+        """
         self._refresh(snapshot)
         with self._lock:
             track_id = self._track_id
@@ -82,8 +92,16 @@ class TrackMap:
             source = self._source
             track = self._track
 
+        pipeline_corners = _pipeline_corners(pipeline_state)
         corners: list[dict[str, Any]] = []
-        if track is not None:
+        if pipeline_corners:
+            for corner in pipeline_corners:
+                x: float | None = None
+                z: float | None = None
+                if outline is not None:
+                    x, z = outline.position_at(float(corner["apex_m"]))
+                corners.append({**corner, "x": x, "z": z})
+        elif track is not None:
             for corner in track.corners:
                 x: float | None = None
                 z: float | None = None
@@ -104,6 +122,9 @@ class TrackMap:
         if track is not None:
             name: str | None = track.name
             length_m: float | None = track.length_m
+        elif pipeline_state is not None and pipeline_state.get("track_id") is not None:
+            name = pipeline_state.get("name")
+            length_m = pipeline_state.get("length_m")
         elif outline is not None:
             name = None
             length_m = outline.lap_length_m
@@ -120,9 +141,11 @@ class TrackMap:
             if outline is None
             else [[dist, x, z] for dist, x, z in outline.points],
             "corners": corners,
-            # 집중 코너(작업 16)와 코너 지표(작업 15) 자리.
-            "focus_corners": [],
-            "corner_metrics": {},
+            # 집중 코너·코너 지표(작업 15·16, 실서버 배선 SCRUM-84).
+            "focus_corners": _pipeline_list(pipeline_state, "focus_corners"),
+            "focus_losses": _pipeline_mapping(pipeline_state, "focus_losses"),
+            "corner_metrics": _pipeline_mapping(pipeline_state, "corner_metrics"),
+            "reference": _pipeline_mapping(pipeline_state, "reference"),
             "flag": self.flag(snapshot),
             "team_colors": dict(_TEAM_COLORS_JSON),
         }
@@ -265,7 +288,11 @@ def create_map_router(runtime: Callable[[], Any | None]) -> APIRouter:
             raise HTTPException(
                 status_code=503, detail={"engine": "off"}
             )
-        return current.map.track_payload(current.store.snapshot())
+        pipeline = getattr(current, "pipeline", None)
+        pipeline_state = None if pipeline is None else pipeline.track_state()
+        return current.map.track_payload(
+            current.store.snapshot(), pipeline_state
+        )
 
     return router
 
@@ -284,6 +311,55 @@ def _track_id(snapshot: dict[str, Any]) -> int | None:
         # 공식 m_trackId는 int8이고 -1이 "알 수 없음"이다.
         return None
     return track_id
+
+
+def _pipeline_corners(
+    pipeline_state: dict[str, Any] | None,
+) -> list[dict[str, Any]]:
+    """파이프라인이 넘긴 코너 목록(자동 탐지 코너 포함). 형식이 다르면 빈 목록."""
+    if not pipeline_state:
+        return []
+    raw = pipeline_state.get("corners")
+    if not isinstance(raw, list):
+        return []
+    corners: list[dict[str, Any]] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        number = _as_int(item.get("number"))
+        apex_m = _as_float(item.get("apex_m"))
+        entry_m = _as_float(item.get("entry_m"))
+        exit_m = _as_float(item.get("exit_m"))
+        if None in (number, apex_m, entry_m, exit_m):
+            continue
+        corners.append(
+            {
+                "number": number,
+                "official": bool(item.get("official", True)),
+                "entry_m": entry_m,
+                "apex_m": apex_m,
+                "exit_m": exit_m,
+            }
+        )
+    return corners
+
+
+def _pipeline_list(
+    pipeline_state: dict[str, Any] | None, key: str
+) -> list[Any]:
+    if not pipeline_state:
+        return []
+    value = pipeline_state.get(key)
+    return list(value) if isinstance(value, (list, tuple)) else []
+
+
+def _pipeline_mapping(
+    pipeline_state: dict[str, Any] | None, key: str
+) -> dict[str, Any]:
+    if not pipeline_state:
+        return {}
+    value = pipeline_state.get(key)
+    return dict(value) if isinstance(value, dict) else {}
 
 
 def _mark_target(

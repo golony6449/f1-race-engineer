@@ -578,6 +578,17 @@ class Coach:
                 self._emit(message, messages)
         return messages
 
+    def add_reference_lap(self, trace: LapTrace) -> None:
+        """다른 차의 완료 랩을 기준 랩 후보에만 넣는다(실서버 파이프라인, SCRUM-84).
+
+        AI 상대의 최고 랩(설계 6.3)을 기준으로 쓰기 위한 경로다. 집중 코너
+        산정·미뤄 둔 무전·개선 알림은 내 차 랩에만 걸리므로 건드리지 않는다.
+        """
+        self._references.update(trace)
+        self._ref_cache.clear()
+        self._ref_metrics_cache.clear()
+        self._ref_path_cache.clear()
+
     # --- 세션 시작 prefetch -----------------------------------------------
 
     def prefetch_phrases(self) -> list[str]:
@@ -981,6 +992,15 @@ def _metric_values(metrics: CornerMetrics) -> dict[str, Any]:
     }
 
 
+def metric_values(metrics: CornerMetrics) -> dict[str, Any]:
+    """코너 지표를 지도·리포트 API가 쓰는 dict로 만든다(SCRUM-84).
+
+    무전 근거(`evidence["metrics"]`)와 같은 모양이라 화면이 두 곳을 같은 코드로
+    그린다. 화면(`map.js`)은 `player`·`reference`의 키만 읽는다.
+    """
+    return _metric_values(metrics)
+
+
 def _rounded(value: float | None) -> float | None:
     return None if value is None else round(value, 1)
 
@@ -1024,5 +1044,6 @@ __all__ = [
     "DeferDecision",
     "Prefetchable",
     "defer_until_straight",
+    "metric_values",
     "pick_cause",
 ]

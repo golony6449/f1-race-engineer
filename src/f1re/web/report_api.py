@@ -11,10 +11,12 @@
 - ``GET /api/report?session=``: 코너별 손실 순위, 집중 코너 변화, 무전이 나간
   코너와 그 뒤 개선 여부.
 
-리포트의 데이터 출처는 무전 기록의 근거 수치(``evidence.loss_ms``)다. 이
-마일스톤에는 완료 랩의 샘플을 DB에 저장하지 않으므로, 코치가 무전을 낸 코너의
-손실만 알 수 있다. 응답의 ``data_source``에 그 사실을 밝히고, DB가 없을 때도
-``available``·``reason``으로 화면이 깨지지 않게 한다.
+리포트의 데이터 출처는 두 곳이다. 무전 기록의 근거 수치(``evidence.loss_ms``)와,
+실서버 파이프라인(`RacePipeline.report_state()`)이 계산한 이번 세션의 코너별
+손실·집중 코너·기준 랩이다(SCRUM-84). 완료 랩 샘플은 DB에 저장하지 않으므로,
+파이프라인이 없으면(고정 엔진) 무전 기록에서 코너 손실을 복원한다. 응답의
+``data_source``에 그 사실을 밝히고, DB가 없을 때도 ``available``·``reason``으로
+화면이 깨지지 않게 한다.
 
 세션 선택 규칙: ``session`` 쿼리가 있으면 그 세션, 없으면 지금 수신 중인 세션,
 그것도 없으면 DB에 마지막으로 기록된 세션이다. 세션이 하나도 없으면
@@ -158,8 +160,13 @@ def create_report_router(runtime: Callable[[], Any | None]) -> APIRouter:
         session: int | None = Query(default=None, description="세션 UID"),
     ) -> dict[str, Any]:
         current = _current()
+        pipeline = getattr(current, "pipeline", None)
+        pipeline_state = None if pipeline is None else pipeline.report_state()
         return report_payload(
-            current.store, current.conn, session_uid=session
+            current.store,
+            current.conn,
+            session_uid=session,
+            pipeline_state=pipeline_state,
         )
 
     return router
@@ -237,14 +244,19 @@ def report_payload(
     conn: sqlite3.Connection | None,
     *,
     session_uid: int | None = None,
+    pipeline_state: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """`GET /api/report` 응답.
 
     무전 기록에서 코너 손실 근거가 있는 줄만 모아 순위를 만들고, 개선 알림과
     코칭 무전의 다음 근거를 비교해 "무전이 나간 코너의 그 뒤 개선 여부"를 낸다.
+    `pipeline_state`(실서버 배선 SCRUM-84)에는 `RacePipeline`이 계산한 이번
+    세션의 코너별 손실·집중 코너·기준 랩이 들어간다. 무전이 없어도 이 값으로
+    리포트를 채울 수 있다.
     """
     resolved = _resolve_session(store, conn, session_uid)
     rows = _query_rows(conn, resolved, REPORT_MESSAGE_LIMIT)
+    pipeline = _pipeline_section(pipeline_state)
     if rows is None:
         return {
             "available": False,
@@ -255,6 +267,7 @@ def report_payload(
             "corner_losses": [],
             "focus_changes": [],
             "message_improvements": [],
+            "pipeline": pipeline,
             "summary": _summary([], [], [], []),
         }
 
@@ -271,9 +284,36 @@ def report_payload(
         "corner_losses": corner_losses,
         "focus_changes": focus_changes,
         "message_improvements": message_improvements,
+        "pipeline": pipeline,
         "summary": _summary(
             rows, corner_losses, focus_changes, message_improvements
         ),
+    }
+
+
+def _pipeline_section(
+    pipeline_state: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """파이프라인 리포트 묶음. 없으면 빈 모양을 돌려준다."""
+    if not pipeline_state:
+        return {
+            "track_id": None,
+            "track_name": None,
+            "focus_corners": [],
+            "focus_losses": {},
+            "corner_losses": [],
+            "reference": {},
+            "overtake_active": False,
+        }
+    corner_losses = pipeline_state.get("corner_losses")
+    return {
+        "track_id": pipeline_state.get("track_id"),
+        "track_name": pipeline_state.get("track_name"),
+        "focus_corners": list(pipeline_state.get("focus_corners") or []),
+        "focus_losses": dict(pipeline_state.get("focus_losses") or {}),
+        "corner_losses": list(corner_losses or []),
+        "reference": dict(pipeline_state.get("reference") or {}),
+        "overtake_active": bool(pipeline_state.get("overtake_active")),
     }
 
 

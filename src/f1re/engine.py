@@ -60,12 +60,15 @@ class Runtime:
 
     OFF가 되면 :class:`Engine`이 이 객체의 참조를 끊는다. 웹 라우터는 요청마다
     `Engine.runtime`을 읽으므로, 꺼진 뒤에는 이 객체에 닿을 수 없다.
+    `pipeline`은 랩 기록·코칭·추월·리프트 앤 코스트를 잇는 실서버 파이프라인
+    (SCRUM-84)이다. 고정 런타임(테스트·단독 앱)에서는 `None`일 수 있다.
     """
 
     store: StateStore
     radio: Any
     conn: sqlite3.Connection | None
     map: Any
+    pipeline: Any | None = None
 
 
 def default_engine_state_path() -> Path:
@@ -188,6 +191,12 @@ class Engine:
         return None if runtime is None else runtime.map
 
     @property
+    def pipeline(self) -> Any | None:
+        """엔진 ON일 때만 사는 실서버 파이프라인(SCRUM-84). OFF면 `None`."""
+        runtime = self.runtime
+        return None if runtime is None else runtime.pipeline
+
+    @property
     def off_event(self) -> asyncio.Event:
         """다음 OFF 전환 때 설정되는 이벤트. WebSocket들이 이걸 기다린다."""
         with self._state_lock:
@@ -271,6 +280,10 @@ class Engine:
                     transport.close()
                 await asyncio.sleep(0)
             if runtime is not None:
+                # 파이프라인이 마지막 기준 랩을 저장·정리한 뒤 DB를 닫는다.
+                if runtime.pipeline is not None:
+                    with contextlib.suppress(Exception):
+                        await runtime.pipeline.aclose()
                 # 마지막 세션 진행·종료를 DB에 남긴 뒤 연결을 닫는다.
                 _safe_persist(runtime, self._recorded_file)
                 _safe_finalize(runtime, self._recorded_file)
@@ -315,6 +328,7 @@ class Engine:
         conn: sqlite3.Connection | None = None
         radio: Any | None = None
         transport: asyncio.DatagramTransport | None = None
+        pipeline: Any | None = None
         tasks: list[asyncio.Task[None]] = []
         try:
             store = StateStore()
@@ -322,7 +336,11 @@ class Engine:
             radio = self._build_radio(store, conn)
             radio.ensure_started()
 
-            transport, _protocol = await self._start_receiver(store)
+            # 실서버 파이프라인(SCRUM-84): 랩 기록·코칭·추월·리프트 앤 코스트.
+            pipeline = await self._build_pipeline(store, radio, conn)
+            transport, _protocol = await self._start_receiver(
+                store, on_packet=pipeline.on_packet
+            )
             from f1re.web.map_api import TrackMap
 
             runtime = Runtime(
@@ -330,6 +348,7 @@ class Engine:
                 radio=radio,
                 conn=conn,
                 map=TrackMap(conn),
+                pipeline=pipeline,
             )
             tasks.append(
                 asyncio.create_task(
@@ -345,6 +364,9 @@ class Engine:
             if transport is not None:
                 with contextlib.suppress(Exception):
                     transport.close()
+            if pipeline is not None:
+                with contextlib.suppress(Exception):
+                    await pipeline.aclose()
             if radio is not None:
                 with contextlib.suppress(Exception):
                     await radio.aclose()
@@ -362,6 +384,18 @@ class Engine:
         if self._persist_state:
             write_engine_state(ENGINE_ON, self._state_path)
 
+    async def _build_pipeline(
+        self, store: StateStore, radio: Any, conn: sqlite3.Connection
+    ) -> Any:
+        """실서버 파이프라인을 만들어 시작한다. numpy 없는 모듈만 import한다."""
+        from f1re.pipeline import RacePipeline
+
+        pipeline = RacePipeline(
+            store, radio, conn, config=self._config or AppConfig()
+        )
+        await pipeline.start()
+        return pipeline
+
     def _build_radio(self, store: StateStore, conn: sqlite3.Connection) -> Any:
         if self._radio_factory is not None:
             return self._radio_factory(store, conn)
@@ -371,12 +405,19 @@ class Engine:
         return build_radio_service(store, log_conn=conn)
 
     async def _start_receiver(
-        self, store: StateStore
+        self,
+        store: StateStore,
+        *,
+        on_packet: Callable[[Any, int], None] | None = None,
     ) -> tuple[asyncio.DatagramTransport, Any]:
         from f1re.udp.receiver import start_receiver
 
         return await start_receiver(
-            store, host=self._host, port=self._port, recorder=self._recorder
+            store,
+            host=self._host,
+            port=self._port,
+            recorder=self._recorder,
+            on_packet=on_packet,
         )
 
     async def _persist_loop(self, runtime: Runtime) -> None:
