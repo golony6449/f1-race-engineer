@@ -14,6 +14,7 @@
  * - 서킷 모양이 캔버스에 가장 크게 들어가도록 윤곽을 0~179도에서 돌려 본
  *   뒤 각도·배율·이동을 하나의 변환으로 만든다. 윤곽·차 점·코너·옐로 구역·
  *   클릭 판정이 모두 이 변환을 쓴다(코너 번호 글자는 똑바로 그린다).
+ *   캔버스 크기가 바뀌면(창·패널 높이 변화) 회전·맞춤을 다시 계산한다.
  * - 코너를 누르면 최근 지표(나 / 기준)를 보여 준다. 지표는 작업 15·16이
  *   채우며, 아직 없으면 자리 표시 문구를 보여 준다.
  */
@@ -92,6 +93,12 @@ export class TrackMapView {
       this.canvas.addEventListener("click", (event) => this._onClick(event));
     }
     window.addEventListener("resize", () => this._draw());
+    // 창 크기뿐 아니라 패널 높이·코너 지표 길이가 바뀌어도 캔버스 크기가
+    // 바뀐다. 크기가 바뀔 때마다 회전·맞춤(`_fit`)을 다시 계산한다.
+    if (this.root && typeof ResizeObserver === "function") {
+      this.resizeObserver = new ResizeObserver(() => this._draw());
+      this.resizeObserver.observe(this.root);
+    }
     this._renderInfo(null);
   }
 
