@@ -24,6 +24,7 @@ from f1re.demo_sender.driving import (
     gear_and_rpm,
     pedals_for_acceleration,
     profile_state,
+    profile_state_at_distance,
 )
 from f1re.tracks.model import Track
 from f1re.tracks.outline import TrackOutline
@@ -309,12 +310,16 @@ class RaceField:
         progress_s = race_time_s * car.pace
         completed = int(progress_s // self._base_lap_s)
         remainder_s = progress_s - completed * self._base_lap_s
-        distance_in_lap, speed_mps, curvature, acceleration = profile_state(
-            self._profile, remainder_s
-        )
+        distance_in_lap = profile_state(self._profile, remainder_s)[0]
         total = car.start_offset_m + completed * length + distance_in_lap
         lap = 1 + int(total // length)
         lap_distance = total - (lap - 1) * length
+        # 속도·페달·기어·조향은 차가 실제로 있는 랩 위치의 프로필 값이어야 한다.
+        # 진행 거리는 그리드 출발 오프셋만큼 시간 기준 위치와 다르므로, 시간
+        # 기준으로 조회한 거리 대신 차의 랩 위치(lap_distance)로 프로필 값을 얻는다.
+        _, speed_mps, curvature, acceleration = profile_state_at_distance(
+            self._profile, lap_distance
+        )
         speed_kmh = speed_mps * car.pace * 3.6
         gear, rpm = gear_and_rpm(speed_kmh)
         throttle, brake = pedals_for_acceleration(acceleration * car.pace)

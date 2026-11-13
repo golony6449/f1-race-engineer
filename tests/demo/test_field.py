@@ -2,6 +2,11 @@
 
 from __future__ import annotations
 
+import random
+
+import pytest
+
+from f1re.demo_sender.driving import DriverProfile, build_speed_profile
 from f1re.demo_sender.field import (
     PLAYER_CAR_INDEX,
     CarState,
@@ -124,6 +129,67 @@ def test_gap_override_under_1s() -> None:
             * 1000.0
         )
         assert abs(me.delta_ahead_ms - expected) <= 2.0
+
+
+def test_ai_corner_speed_matches_profile_at_same_lap_distance() -> None:
+    """AI 차 헤어핀 최저 속도가 같은 위치의 플레이어 프로필 최저 속도 × pace다.
+
+    출발 그리드 오프셋을 속도 조회에 반영하지 않으면 AI 차가 헤어핀 위치에
+    있으면서 직선 속도를 보고한다(가장 빠른 차 기준 코너 지표가 비현실적이 된다).
+    """
+    field = _field()
+    track = load_track(SUZUKA_ID)
+    outline = load_outline(SUZUKA_ID)
+    assert track is not None and outline is not None
+    # 필드의 AI 주행 곡선과 같은 기준 프로필이다.
+    profile = build_speed_profile(
+        track, outline, DriverProfile(consistency=1.0), random.Random(0)
+    )
+    corner = next(item for item in track.corners if item.number == 11)
+    car = field.cars[1]
+    assert car.ai_controlled
+    profile_min_kmh = (
+        min(
+            speed
+            for distance, speed in zip(profile.dists, profile.speeds)
+            if corner.entry_m <= distance <= corner.exit_m
+        )
+        * 3.6
+    )
+
+    # AI 차가 헤어핀에 들어서는 대략 시각: 프로필에서 그 거리(출발 오프셋을
+    # 뺀)에 도달하는 시간을 차의 pace로 나눈다. 두 번째 랩은 랩 위치가
+    # 한 바퀴 감긴 뒤에도 같은 값을 내는지 확인한다.
+    target_m = (corner.entry_m - car.start_offset_m) % track.length_m
+    index = min(
+        range(len(profile.dists)),
+        key=lambda item: abs(profile.dists[item] - target_m),
+    )
+    enter_time_s = profile.times[index] / car.pace
+    for lap_offset_s in (0.0, profile.lap_time_s / car.pace):
+        slowest: CarState | None = None
+        for step in range(600):
+            state = _by_index(
+                _states(
+                    field,
+                    race_time_s=enter_time_s + lap_offset_s - 1.0 + step * 0.01,
+                    player_distance_m=0.0,
+                ),
+                car.car_index,
+            )
+            if (
+                corner.entry_m <= state.lap_distance_m <= corner.exit_m
+                and (slowest is None or state.speed_kmh < slowest.speed_kmh)
+            ):
+                slowest = state
+        assert slowest is not None
+        # 100Hz로 훑어 apex 근처 값을 잡는다. 곡선 보간 오차만 허용한다.
+        assert slowest.speed_kmh == pytest.approx(
+            profile_min_kmh * car.pace, abs=2.0
+        )
+        # 속도가 위치와 맞으면 헤어핀답게 낮은 기어·큰 조향이 나온다.
+        assert slowest.gear <= 3
+        assert abs(slowest.steer) > 0.2
 
 
 def test_slow_exit_lowers_car_speed_at_corner() -> None:
