@@ -21,9 +21,19 @@
       </section>
       <section class="status" id="status-radio">
         <span class="status-label">무전</span>
-        <span class="status-value warn" data-field="radio"
-          >음성 오프라인 · 무전 페이지 미연결</span
-        >
+        <div class="status-line">
+          <span class="status-value warn" data-field="radio"
+            >음성 오프라인 · 무전 페이지 미연결</span
+          >
+          <!-- 게임 PC에서 여는 소리 전용 페이지(설계 6.10). 새 탭으로 연다. -->
+          <a
+            class="status-button"
+            href="/radio"
+            target="_blank"
+            rel="noopener"
+            >무전 페이지 열기</a
+          >
+        </div>
         <span class="status-detail">Qwen TTS · 게임 PC /radio</span>
       </section>
     </header>

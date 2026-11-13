@@ -75,6 +75,22 @@ def test_statusbar_merges_voice_and_radio_page_into_one_cell() -> None:
     assert "Qwen TTS · 게임 PC /radio" in html
 
 
+def test_statusbar_links_to_radio_page() -> None:
+    """SCRUM-79: 무전 칸에서 무전 페이지(/radio)를 새 탭으로 연다."""
+    html = _dashboard_html()
+    link = re.search(
+        r'<a\b[^>]*href="/radio"[^>]*>\s*무전 페이지 열기\s*</a\s*>', html, re.S
+    )
+    assert link, "무전 페이지로 가는 버튼이 없습니다"
+    assert 'target="_blank"' in link.group(0)
+    assert 'rel="noopener"' in link.group(0)
+
+    # 상태 글자 오른쪽(좁은 화면에서는 아래)에 작게 붙는 버튼 모양이다.
+    css = _client().get("/static/style.css").text
+    assert ".status-line" in css
+    assert ".status-button" in css
+
+
 def test_car_section_static_assets_are_served() -> None:
     client = _client()
 
