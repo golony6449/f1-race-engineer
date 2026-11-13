@@ -4,7 +4,8 @@
 무전 끄기 버튼만 POST로 상태를 바꾼다.
 
 - ``GET /api/radio/log?session=``: 최근 무전 목록. 시각, 랩, 코너, 종류, 문장,
-  근거 수치, 실제 재생 여부·지연, 종류별 끄기 상태를 내려 준다.
+  근거 수치, 실제 재생 여부·지연, 재생되지 못한 이유(`dropped_reason`),
+  종류별 끄기 상태를 내려 준다.
 - ``POST /api/radio/mute``: ``{kind, muted}``로 무전 종류를 끄거나 켠다.
   안전 경고는 `RadioQueue.set_muted`가 거부하므로 409로 답한다.
 - ``GET /api/report?session=``: 코너별 손실 순위, 집중 코너 변화, 무전이 나간
@@ -191,6 +192,8 @@ def _message_payload(row: dict[str, Any]) -> dict[str, Any]:
         "evidence": evidence,
         "played": bool(row["played"]),
         "latency_ms": row["latency_ms"],
+        # 유효 시간 만료 등으로 재생되지 못한 이유(SCRUM-81).
+        "dropped_reason": row.get("dropped_reason"),
     }
 
 

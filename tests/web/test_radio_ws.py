@@ -65,15 +65,18 @@ class FakeLog:
     """RadioLog 대역. 어떤 무전이 재생됐는지 순서대로 남긴다."""
 
     def __init__(self) -> None:
-        self.records: list[tuple[str, bool, int | None]] = []
+        self.records: list[tuple[str, bool, int | None, str | None]] = []
 
     def record(
         self,
         message: RadioMessage,
         played: bool = False,
         latency_ms: int | None = None,
+        dropped_reason: str | None = None,
     ) -> int:
-        self.records.append((message.text, played, latency_ms))
+        self.records.append(
+            (message.text, played, latency_ms, dropped_reason)
+        )
         return len(self.records)
 
 
@@ -550,6 +553,31 @@ async def test_without_page_skips_pacing_and_records_unplayed() -> None:
     assert service.queue.pending_count == 0
     assert log.records[0][:2] == ("박스, 박스.", False)
     assert clock.sleeps == [], "페이지가 없는데 재생 대기를 했습니다"
+
+
+async def test_expired_radio_is_recorded_with_reason() -> None:
+    """재생 대기 중 만료된 무전도 이유와 함께 기록된다(SCRUM-81)."""
+    clock = FakeClock()
+    log = FakeLog()
+    service = RecordingService(
+        StateStore(),
+        cache=FakeCache(),
+        log=log,
+        clock=clock,
+        sleep=clock.sleep,
+    )
+    service.ensure_started()
+    service.queue.push(
+        _message("곧 만료", kind=RadioKind.COACHING, ttl_ns=1_000_000_000)
+    )
+    clock.now_ns += 2_000_000_000
+
+    deadline = time.monotonic() + 2.0
+    while not log.records and time.monotonic() < deadline:
+        await asyncio.sleep(0.01)
+    await service.aclose()
+
+    assert log.records == [("곧 만료", False, None, "expired")]
 
 
 def test_radio_without_page_discards_queue_and_keeps_status() -> None:

@@ -51,15 +51,35 @@ _TEMPLATES: tuple[Template, ...] = (
         RadioKind.SAFETY,
         "타이어 {tyre} 마모 {percent}퍼센트.",
     ),
+    # 같은 지표의 바퀴들이 한 평가 주기에 함께 위험해지면 한 무전으로 묶는다
+    # (SCRUM-81). 값은 위험한 바퀴 중 가장 나쁜 값이다.
+    Template(
+        "safety.tyre_wear_bundle",
+        RadioKind.SAFETY,
+        "타이어 {tyres} 마모 {percent}퍼센트.",
+        note="바퀴 여러 개가 함께 위험할 때(값은 가장 나쁜 값)",
+    ),
     Template(
         "safety.tyre_temp",
         RadioKind.SAFETY,
         "타이어 {tyre} 온도 {celsius}도.",
     ),
     Template(
+        "safety.tyre_temp_bundle",
+        RadioKind.SAFETY,
+        "타이어 {tyres} 온도 {celsius}도.",
+        note="바퀴 여러 개가 함께 위험할 때(값은 가장 나쁜 값)",
+    ),
+    Template(
         "safety.brake_temp",
         RadioKind.SAFETY,
         "브레이크 {tyre} 온도 {celsius}도.",
+    ),
+    Template(
+        "safety.brake_temp_bundle",
+        RadioKind.SAFETY,
+        "브레이크 온도 {celsius}도. {tyres}.",
+        note="바퀴 여러 개가 함께 위험할 때(값은 가장 나쁜 값)",
     ),
     Template(
         "safety.fuel_short",
@@ -70,6 +90,13 @@ _TEMPLATES: tuple[Template, ...] = (
         "safety.damage",
         RadioKind.SAFETY,
         "{part} 손상 {percent}퍼센트.",
+    ),
+    # 앞날개는 좌우가 함께 위험해질 때 한 무전으로 묶는다(SCRUM-81).
+    Template(
+        "safety.front_wing_both",
+        RadioKind.SAFETY,
+        "앞날개 양쪽 손상 {percent}퍼센트.",
+        note="앞날개 좌우가 함께 위험할 때(값은 가장 나쁜 값)",
     ),
     Template(
         "safety.penalty",

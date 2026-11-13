@@ -31,6 +31,7 @@ SAMPLE_VALUES: dict[str, object] = {
     "wait_laps": 2,
     "kmh": 7,
     "tyre": "왼쪽 앞",
+    "tyres": "4개",
     "percent": 82,
     "celsius": 110,
     "part": "앞날개",
@@ -100,6 +101,36 @@ def test_coaching_examples_match_radio_wording() -> None:
     )
     assert render("overtake.drs", gap="0.6") == "앞차 0.6. 다음 직선 DRS."
     assert render("box.box_box") == "박스, 박스."
+
+
+def test_bundled_warning_templates_match_radio_wording() -> None:
+    """바퀴별 경고를 묶을 때의 문장(SCRUM-81)."""
+    assert (
+        render("safety.tyre_wear_bundle", tyres="4개", percent=88)
+        == "타이어 4개 마모 88퍼센트."
+    )
+    assert (
+        render("safety.tyre_wear_bundle", tyres="앞 두 개", percent=88)
+        == "타이어 앞 두 개 마모 88퍼센트."
+    )
+    assert (
+        render(
+            "safety.tyre_wear_bundle", tyres="뒤왼쪽·앞오른쪽", percent=88
+        )
+        == "타이어 뒤왼쪽·앞오른쪽 마모 88퍼센트."
+    )
+    assert (
+        render("safety.tyre_temp_bundle", tyres="4개", celsius=121)
+        == "타이어 4개 온도 121도."
+    )
+    assert (
+        render("safety.brake_temp_bundle", celsius=1050, tyres="네 바퀴")
+        == "브레이크 온도 1050도. 네 바퀴."
+    )
+    assert (
+        render("safety.front_wing_both", percent=60)
+        == "앞날개 양쪽 손상 60퍼센트."
+    )
 
 
 def test_render_unknown_key_raises() -> None:
