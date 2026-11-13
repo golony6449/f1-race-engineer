@@ -163,7 +163,13 @@ def _brake_start(samples: list[Sample], start_m: float, end_m: float) -> float |
 
 def test_scenario_yaml_files_load() -> None:
     """레포에 둔 시나리오 파일이 모두 형식에 맞고 두 서킷의 코너만 가리킨다."""
-    names = ["coaching.yaml", "overtake.yaml", "alerts.yaml", "lift_and_coast.yaml"]
+    names = [
+        "coaching.yaml",
+        "overtake.yaml",
+        "alerts.yaml",
+        "lift_and_coast.yaml",
+        "flags.yaml",
+    ]
     events: list[ScenarioEvent] = []
     for name in names:
         loaded = load_scenarios(SCENARIO_DIR / name)
@@ -189,6 +195,9 @@ def test_scenario_yaml_files_load() -> None:
         "penalty",
         "safety_car",
         "vsc",
+        "yellow_flag",
+        "blue_flag",
+        "red_flag",
     }
     assert {event.kind for event in events} <= KINDS
     for track_id in (SUZUKA_ID, MONACO_ID):
@@ -215,6 +224,23 @@ def test_parse_rejects_bad_scenarios() -> None:
         parse_scenarios([{"lap": 1, "kind": "ahead_slow_exit"}])
     with pytest.raises(ScenarioError):
         parse_scenarios([{"lap": 1, "kind": "late_brake", "extra": 1}])
+    # 깃발 시나리오는 구역(0~1)과 랩 수를 검증한다(SCRUM-80).
+    with pytest.raises(ScenarioError):
+        parse_scenarios(
+            [{"lap": 1, "kind": "yellow_flag", "params": {"start": 0.6, "end": 0.2}}]
+        )
+    with pytest.raises(ScenarioError):
+        parse_scenarios(
+            [{"lap": 1, "kind": "yellow_flag", "params": {"start": -0.1}}]
+        )
+    with pytest.raises(ScenarioError):
+        parse_scenarios(
+            [{"lap": 1, "kind": "yellow_flag", "params": {"end": 1.5}}]
+        )
+    with pytest.raises(ScenarioError):
+        parse_scenarios([{"lap": 1, "kind": "blue_flag", "params": {"laps": 0}}])
+    with pytest.raises(ScenarioError):
+        parse_scenarios([{"lap": 1, "kind": "red_flag", "params": {"laps": 1.5}}])
 
 
 def test_parse_fills_default_params() -> None:
@@ -568,6 +594,70 @@ def test_vsc_sets_virtual_safety_car() -> None:
     assert scar[0]["event_details"]["safety_car_type"] == 1
     statuses = [packet.body["safety_car_status"] for packet in _of(packets, PacketId.SESSION)]
     assert 2 in statuses
+
+
+def test_yellow_flag_scenario_sets_marshal_zone() -> None:
+    """SCRUM-80: yellow_flag가 지정 구간을 옐로 마셜 구역으로 보낸다."""
+    packets = _run_tiny(
+        [_event(1, "yellow_flag", start=0.25, end=0.5, laps=1)], laps=2
+    )
+    sessions = _of(packets, PacketId.SESSION)
+    yellow = []
+    for packet in sessions:
+        body = packet.body
+        count = body["num_marshal_zones"]
+        entries = body["marshal_zones"][:count]
+        if any(entry["zone_flag"] == 3 for entry in entries):
+            yellow.append((body, entries))
+    assert yellow, "옐로 마셜 구역이 있는 Session 패킷이 없습니다"
+
+    body, entries = yellow[0]
+    assert [(entry["zone_start"], entry["zone_flag"]) for entry in entries] == [
+        (0.0, 0),
+        (0.25, 3),
+        (0.5, 0),
+    ]
+    assert body["safety_car_status"] == 0
+
+    # 1랩만 유지하고 다음 랩에는 구역을 지운다.
+    last = sessions[-1].body
+    assert last["num_marshal_zones"] == 0
+
+
+def test_blue_flag_scenario_sets_player_fia_flag() -> None:
+    """SCRUM-80: blue_flag가 내 차 Car Status의 vehicle_fia_flags를 2로 만든다."""
+    packets = _run_tiny([_event(1, "blue_flag", laps=1)], laps=2)
+    statuses = _of(packets, PacketId.CAR_STATUS)
+    flags = [
+        packet.body["car_status_data"][0]["vehicle_fia_flags"]
+        for packet in statuses
+    ]
+    assert 2 in flags
+    assert flags[-1] == 0, "1랩이 끝나면 블루 깃발이 꺼져야 합니다"
+
+
+def test_red_flag_scenario_emits_rdfl() -> None:
+    """SCRUM-80: red_flag가 Event RDFL을 보내고, 랩 범위를 넘으면 더 보내지 않는다."""
+    packets = _run_tiny([_event(1, "red_flag", laps=1)], laps=2)
+    assert _event_codes(packets).count("RDFL") == 1
+
+
+def test_flag_scenarios_are_reproducible() -> None:
+    """깃발 시나리오도 같은 시드면 패킷 열이 바이트까지 같다."""
+    scenarios = [
+        _event(1, "yellow_flag", start=0.1, end=0.3, laps=1),
+        _event(1, "blue_flag", laps=1),
+        _event(1, "red_flag", laps=1),
+    ]
+
+    def capture(seed: int) -> list[bytes]:
+        sender, collector = _sender(laps=2, scenarios=scenarios, seed=seed)
+        sender.run(duration_s=5.0)
+        return collector.packets
+
+    first = capture(0)
+    assert first == capture(0)
+    assert first != capture(1)
 
 
 def test_front_wing_damage_value_in_car_damage() -> None:

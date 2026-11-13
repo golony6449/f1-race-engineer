@@ -12,8 +12,9 @@ YAML이며 최상위는 다음 항목의 목록이다.
 
 종류는 `KINDS`에 모아 두었다. 주행 종류(`DRIVING_KINDS`)는 속도 곡선·샘플
 생성에 주입하고, 상태 종류는 송신기가 Car Status·Damage·Telemetry·Session에
-값을 덮어쓴다. 같은 파일을 여러 번 읽어도 결과가 같고, 시드가 같으면 송신
-패킷 열도 같다.
+값을 덮어쓴다. 깃발 종류(`FLAG_KINDS`, SCRUM-80)는 Session의 마셜 구역·
+`safety_car_status`, Car Status의 `vehicle_fia_flags`, Event `RDFL`을 만든다.
+같은 파일을 여러 번 읽어도 결과가 같고, 시드가 같으면 송신 패킷 열도 같다.
 """
 
 from __future__ import annotations
@@ -60,7 +61,9 @@ ALERT_KINDS = frozenset(
         "vsc",
     }
 )
-KINDS = DRIVING_KINDS | FIELD_KINDS | ALERT_KINDS
+# 깃발 상태 표시 시험용(SCRUM-80). SC·VSC는 기존 경고 종류를 그대로 쓴다.
+FLAG_KINDS = frozenset({"yellow_flag", "blue_flag", "red_flag"})
+KINDS = DRIVING_KINDS | FIELD_KINDS | ALERT_KINDS | FLAG_KINDS
 
 # 종류별 기본 params. 생략한 값은 여기서 채우고, 표에 없는 이름은 오타로 본다.
 KIND_DEFAULTS: dict[str, dict[str, float | int]] = {
@@ -82,6 +85,10 @@ KIND_DEFAULTS: dict[str, dict[str, float | int]] = {
     "penalty": {"seconds": 5, "type": 1, "infringement": 1},
     "safety_car": {"laps": 2},
     "vsc": {"laps": 1},
+    # yellow_flag의 start·end는 랩 거리 비율(0~1)이다. 그 구간이 옐로가 된다.
+    "yellow_flag": {"start": 0.0, "end": 0.25, "laps": 1},
+    "blue_flag": {"laps": 1},
+    "red_flag": {"laps": 1},
 }
 
 # 코너 번호가 반드시 있어야 하는 종류. 나머지 주행 종류는 없으면 모든 코너에 건다.
@@ -127,6 +134,26 @@ def _positive_int(value: Any, what: str) -> int:
     return int(number)
 
 
+def validate_flag_params(
+    kind: str, params: Mapping[str, float | int], where: str = "시나리오"
+) -> None:
+    """깃발 시나리오 params를 검증한다. 다른 종류는 그대로 통과한다."""
+    if kind == "yellow_flag":
+        start = float(params["start"])
+        end = float(params["end"])
+        if not (0.0 <= start < end <= 1.0):
+            raise ScenarioError(
+                f"{where}: yellow_flag의 start/end는 0 이상 1 이하이고 "
+                f"start < end여야 합니다: {start!r}, {end!r}"
+            )
+    if kind in FLAG_KINDS:
+        laps = params["laps"]
+        if int(laps) != laps or laps < 1:
+            raise ScenarioError(
+                f"{where}: {kind}의 laps는 1 이상의 정수여야 합니다: {laps!r}"
+            )
+
+
 def parse_scenarios(raw: Any) -> list[ScenarioEvent]:
     """YAML로 읽은 값을 `ScenarioEvent` 목록으로 바꾸고 검증한다."""
     if not isinstance(raw, list):
@@ -163,6 +190,7 @@ def parse_scenarios(raw: Any) -> list[ScenarioEvent]:
         params: dict[str, float | int] = dict(defaults)
         for name, value in raw_params.items():
             params[name] = _number(value, f"{where} params.{name}")
+        validate_flag_params(kind, params, where)
         events.append(ScenarioEvent(lap=lap, kind=kind, corner=corner, params=params))
     return events
 
