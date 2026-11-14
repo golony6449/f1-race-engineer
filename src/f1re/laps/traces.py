@@ -457,8 +457,7 @@ def _surface_tuple(value: Any) -> tuple[int, ...] | None:
         return None
     surfaces: list[int] = []
     for item in value:
-        surface = _as_int(item)
-        if surface is None:
+        if isinstance(item, bool) or not isinstance(item, int):
             return None
-        surfaces.append(surface)
+        surfaces.append(int(item))
     return tuple(surfaces)

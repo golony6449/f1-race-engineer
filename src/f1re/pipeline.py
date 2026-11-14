@@ -1136,10 +1136,9 @@ def _surface_types(value: Any) -> list[int] | None:
         return None
     surfaces: list[int] = []
     for item in value:
-        number = _int(item)
-        if number is None:
+        if isinstance(item, bool) or not isinstance(item, int):
             return None
-        surfaces.append(number)
+        surfaces.append(int(item))
     return surfaces
 
 

@@ -1012,10 +1012,9 @@ def _surface(value: Any) -> tuple[int, ...] | None:
         return None
     surfaces: list[int] = []
     for item in value:
-        number = _number(item)
-        if number is None:
+        if isinstance(item, bool) or not isinstance(item, int):
             return None
-        surfaces.append(int(number))
+        surfaces.append(int(item))
     return tuple(surfaces)
 
 
