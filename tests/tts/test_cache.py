@@ -112,7 +112,7 @@ def _expected_intro_pcm(intro: IntroSoundConfig) -> bytes:
 async def test_cache_hit_no_api_call(tmp_path: Path) -> None:
     tts = FakeTTS(stream_error=AssertionError("캐시 적중인데 API를 불렀습니다"))
     cache, _, _ = _make_cache(tmp_path, tts)
-    text = "3번, 브레이크 늦음. 5미터."
+    text = "3번에서 브레이크가 늦었어. 5미터 더 일찍 밟아."
     cached_pcm = _tone_pcm(frequency=500.0, seconds=0.2)
     path = cache.cache_path(text)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -134,7 +134,7 @@ async def test_cache_miss_streams_intro_first_and_stores_rendered_voice(
     second = _tone_pcm(frequency=660.0, seconds=0.1)
     tts = FakeTTS(chunks=[first, second])
     cache, config, intro = _make_cache(tmp_path, tts)
-    text = "7번 탈출, 스로틀 늦음. 10미터."
+    text = "7번 탈출에서 가속이 늦었어. 10미터 더 일찍 밟아."
 
     source = await cache.get_or_synthesize(text)
 
@@ -167,7 +167,7 @@ async def test_api_failure_falls_back_to_cache_only_and_flags_offline(
         stream_error=TTSUnavailable("Qwen TTS 요청이 2초 안에 끝나지 않았습니다")
     )
     cache, _, _ = _make_cache(tmp_path, tts)
-    cached_text = "박스, 박스."
+    cached_text = "박스, 박스. 들어와."
     cached_pcm = _tone_pcm(frequency=300.0, seconds=0.1)
     path = cache.cache_path(cached_text)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -208,8 +208,8 @@ async def test_prefetch_track_phrases(tmp_path: Path) -> None:
     assert track is not None
 
     phrases = prefetch_phrases([corner.number for corner in track.corners])
-    assert "1번, 브레이크 늦음. 5미터." in phrases
-    assert "18번, 브레이크 늦음. 5미터." in phrases
+    assert "1번에서 브레이크가 늦었어. 5미터 더 일찍 밟아." in phrases
+    assert "18번에서 브레이크가 늦었어. 5미터 더 일찍 밟아." in phrases
 
     result = await cache.prefetch(phrases)
 
@@ -269,7 +269,7 @@ async def test_cache_key_uses_text_voice_and_effect_version(tmp_path: Path) -> N
 async def test_corrupt_cache_file_is_regenerated(tmp_path: Path) -> None:
     tts = FakeTTS(chunks=[_tone_pcm(frequency=440.0, seconds=0.1)])
     cache, _, _ = _make_cache(tmp_path, tts)
-    text = "3번, 브레이크 늦음. 5미터."
+    text = "3번에서 브레이크가 늦었어. 5미터 더 일찍 밟아."
     path = cache.cache_path(text)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(b"not a wav")

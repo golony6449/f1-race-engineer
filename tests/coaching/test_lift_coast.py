@@ -369,18 +369,18 @@ def test_demo_scenario_instruction_lift_feedback_order() -> None:
     assert len(lap3) == 1
     instruction = lap3[0]
     assert instruction.kind == RadioKind.COACHING
-    assert instruction.text.startswith("연료 마이너스 2랩.")
-    assert "리프트" in instruction.text and "미터" in instruction.text
+    assert instruction.text.startswith("연료가 2랩 모자라.")
+    assert "발 떼" in instruction.text and "미터" in instruction.text
     assert instruction.lap == 3
     assert instruction.evidence["reason"] == "fuel_laps_margin"
     assert {zone.corner for zone in zones} <= set(
         instruction.evidence["corners"]
     )
 
-    # 4랩: 지시받은 구간마다 리프트 → 탈출 직후 "리프트 좋음" 피드백.
+    # 4랩: 지시받은 구간마다 리프트 → 탈출 직후 "리프트 좋아" 피드백.
     lap4_events = _run_lap(coach, _suzuka(4), 4, lift_zones=zones)
     lap4 = _messages(lap4_events)
-    feedback = [message for message in lap4 if "리프트 좋음" in message.text]
+    feedback = [message for message in lap4 if "리프트 좋아" in message.text]
     assert len(feedback) == len(zones)
     for message in feedback:
         assert message.kind == RadioKind.IMPROVEMENT
@@ -388,9 +388,13 @@ def test_demo_scenario_instruction_lift_feedback_order() -> None:
         assert message.evidence["status"] == "good"
         assert message.evidence["measured_m"] >= message.evidence["target_m"]
 
-    # 5랩: 여유 회복 → "연료 회복. 리프트 그만." 한 번.
+    # 5랩: 여유 회복 → "연료 회복됐어. 이제 리프트 안 해도 돼." 한 번.
     lap5 = _messages(_run_lap(coach, _suzuka(5), 5, active=False))
-    stops = [message for message in lap5 if message.text == "연료 회복. 리프트 그만."]
+    stops = [
+        message
+        for message in lap5
+        if message.text == "연료 회복됐어. 이제 리프트 안 해도 돼."
+    ]
     assert len(stops) == 1
     assert stops[0].kind == RadioKind.IMPROVEMENT
     assert stops[0].lap == 5
@@ -422,7 +426,7 @@ def test_short_lift_feedback_says_how_much_more() -> None:
     short = [message for message in lap4 if message.corner == first.corner]
     assert len(short) == 1
     message = short[0]
-    assert "리프트 짧음" in message.text
+    assert "리프트가 짧았어" in message.text
     assert message.evidence["status"] == "short"
     assert message.evidence["short_m"] == pytest.approx(
         first.target_m - message.evidence["measured_m"], abs=1.0
@@ -505,7 +509,7 @@ def test_no_lift_messages_outside_race_session() -> None:
                 "brake_temp": BRAKE_TEMP_C,
                 "tyre_temps": [90.0, 90.0, 95.0, 95.0],
             },
-            f"브레이크 {int(BRAKE_TEMP_C)}도.",
+            f"브레이크가 {int(BRAKE_TEMP_C)}도야.",
         ),
         (
             {
@@ -513,7 +517,7 @@ def test_no_lift_messages_outside_race_session() -> None:
                 "brake_temp": 400.0,
                 "tyre_temps": [90.0, 90.0, FRONT_TYRE_TEMP_C, FRONT_TYRE_TEMP_C],
             },
-            f"타이어 {int(FRONT_TYRE_TEMP_C)}도.",
+            f"앞 타이어가 {int(FRONT_TYRE_TEMP_C)}도야.",
         ),
     ],
 )
@@ -533,7 +537,7 @@ def test_temperature_only_reason_uses_temperature_template(
     assert len(messages) == 1
     assert messages[0].kind == RadioKind.COACHING
     assert expected in messages[0].text
-    assert "리프트" in messages[0].text and "미터" in messages[0].text
+    assert "발 떼" in messages[0].text and "미터" in messages[0].text
 
 
 def test_invalid_lap_is_not_instructed() -> None:
@@ -576,9 +580,11 @@ def test_ordinal_wording_for_unofficial_corners() -> None:
     lap4 = _messages(_feed(coach, trace, 4, overrides=_alert_overrides(4)))
     _complete(coach, trace)
 
-    good = [message for message in lap4 if "리프트 좋음" in message.text]
+    good = [message for message in lap4 if "리프트 좋아" in message.text]
     assert good
-    assert any("번째 코너 리프트 좋음." in message.text for message in good)
+    assert any(
+        "번째 코너 리프트 좋아. 그대로 해." in message.text for message in good
+    )
 
 
 # ---------------------------------------------------------------------------

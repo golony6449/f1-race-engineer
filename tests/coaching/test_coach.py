@@ -230,7 +230,7 @@ def test_message_only_after_focus_corner_exit() -> None:
     assert len(corner_messages) == 1
     dist, message = corner_messages[0]
     assert dist >= corner.exit_m
-    assert message.text == "9번, 브레이크 일찍. 5미터."
+    assert message.text == "9번에서 브레이크를 너무 일찍 밟았어. 5미터 더 참아도 돼."
     assert message.kind == RadioKind.COACHING
 
 
@@ -244,7 +244,7 @@ def test_big_loss_non_focus_corner_speaks() -> None:
     assert len(messages) == 1
     message = messages[0]
     assert message.corner == 7
-    assert "7번" in message.text and "정점 속도" in message.text
+    assert "7번" in message.text and "코너 속도" in message.text
     assert message.evidence["cause"] == CAUSE_MIN_SPEED_LOW
     assert message.evidence["loss_ms"] >= 300
 
@@ -269,7 +269,7 @@ def test_off_track_non_focus_corner_speaks_immediately() -> None:
 
     assert len(messages) == 1
     assert messages[0].corner == 5
-    assert messages[0].text == "5번, 트랙 이탈. 라인 7미터 밖."
+    assert messages[0].text == "5번에서 트랙 벗어났어. 라인이 7미터 밖이었어."
     assert messages[0].evidence["cause"] == CAUSE_OFF_TRACK
 
 
@@ -348,7 +348,7 @@ def test_defer_when_next_brake_within_3s() -> None:
     assert events, "미뤄 둔 무전이 긴 직선에서 나와야 한다"
     dist, message = events[0]
     assert message.corner == 10
-    assert "10번, 브레이크 늦음." in message.text
+    assert "10번에서 브레이크가 늦었어." in message.text
     # 10번 탈출 직후(11번 진입 전)에는 말하지 않고, 11번을 빠져나온 뒤에 말한다.
     assert dist >= corner11.exit_m
     assert dist > corner10.exit_m
@@ -442,7 +442,7 @@ def test_single_cause_message_has_where_what_howmuch() -> None:
 
     assert len(messages) == 1
     message = messages[0]
-    assert message.text == "9번, 브레이크 일찍. 5미터."
+    assert message.text == "9번에서 브레이크를 너무 일찍 밟았어. 5미터 더 참아도 돼."
     evidence = message.evidence
     assert evidence["cause"] == CAUSE_BRAKE_EARLY
     assert evidence["amount"] == 5
@@ -461,7 +461,7 @@ def test_late_brake_is_the_cause_when_line_also_wide() -> None:
 
     assert len(messages) == 1
     assert messages[0].evidence["cause"] == CAUSE_BRAKE_LATE
-    assert "브레이크 늦음" in messages[0].text
+    assert "브레이크가 늦었어" in messages[0].text
 
 
 def test_pick_cause_returns_none_when_all_differences_are_small() -> None:
@@ -486,7 +486,9 @@ def test_ordinal_wording_for_unofficial_corners() -> None:
     messages = _messages(_feed(coach, lap))
 
     assert len(messages) == 1
-    assert messages[0].text == "9번째 코너, 브레이크 일찍. 5미터."
+    assert messages[0].text == (
+        "9번째 코너에서 브레이크를 너무 일찍 밟았어. 5미터 더 참아도 돼."
+    )
     assert messages[0].evidence["corner_official"] is False
 
 
@@ -560,7 +562,7 @@ def test_queue_receives_messages_and_muting_filters_them() -> None:
 
 
 def test_focus_improved_message_announces_next_corner() -> None:
-    """집중 코너를 고치면 "N번 좋아짐. 다음 M번."으로 한 번 알린다."""
+    """집중 코너를 고치면 "N번 좋아졌어. 다음은 M번 보자."로 한 번 알린다."""
     coach = _coach(SUZUKA)
     affected = (6, 5, 11, 3, 1, 10)
     for lap in (1, 2, 3):
@@ -599,7 +601,7 @@ def test_focus_improved_message_announces_next_corner() -> None:
     message = messages[0]
     assert message.kind == RadioKind.IMPROVEMENT
     assert message.corner == 6
-    assert message.text == "6번 좋아짐. 다음 10번."
+    assert message.text == "6번 좋아졌어. 다음은 10번 보자."
     assert 6 not in coach.focus_corners
     assert 10 in coach.focus_corners
 
@@ -611,7 +613,7 @@ def test_focus_improved_without_replacement_uses_short_message() -> None:
     messages = coach.on_lap_completed(_suzuka(2))
 
     assert len(messages) == 1
-    assert messages[0].text == "3번 좋아짐."
+    assert messages[0].text == "3번 좋아졌어."
 
 
 def test_improvement_uses_ordinal_wording_for_unofficial_corners() -> None:
@@ -626,7 +628,7 @@ def test_improvement_uses_ordinal_wording_for_unofficial_corners() -> None:
     messages = coach.on_lap_completed(_suzuka(2))
 
     assert len(messages) == 1
-    assert messages[0].text == "3번째 코너 좋아짐."
+    assert messages[0].text == "3번째 코너 좋아졌어."
 
 
 # ---------------------------------------------------------------------------
@@ -676,9 +678,9 @@ async def test_prefetch_covers_track_phrases() -> None:
     assert len(cache.calls) == 1
     texts, voice = cache.calls[0]
     assert voice == "Katerina"
-    assert "3번, 브레이크 늦음. 5미터." in texts
-    assert "9번, 정점 속도 5킬로 낮음." in texts
-    assert "3번 좋아짐." in texts
+    assert "3번에서 브레이크가 늦었어. 5미터 더 일찍 밟아." in texts
+    assert "9번 코너 속도가 기준보다 5킬로 느려. 더 빠르게 돌 수 있어." in texts
+    assert "3번 좋아졌어." in texts
     assert render("safety.safety_car") in texts
     assert len(texts) == len(set(texts))
 
@@ -694,7 +696,7 @@ async def test_prefetch_uses_ordinal_phrases_for_unofficial_corners() -> None:
 
     texts, voice = cache.calls[0]
     assert voice is None
-    assert "3번째 코너, 브레이크 늦음. 5미터." in texts
+    assert "3번째 코너에서 브레이크가 늦었어. 5미터 더 일찍 밟아." in texts
 
 
 # ---------------------------------------------------------------------------
@@ -735,6 +737,6 @@ def test_demo_coaching_scenario_emits_readable_messages(track: Track, outline) -
         assert message.kind in {RadioKind.COACHING, RadioKind.IMPROVEMENT}
         assert message.text.endswith(".")
         assert message.text.strip()
-        # 무전은 짧고 건조하다. 길면 말이 늦게 끝나 운전을 방해한다.
+        # 무전은 짧은 반말 문장이다. 길면 말이 늦게 끝나 운전을 방해한다.
         assert len(message.text) <= 60
         assert message.evidence

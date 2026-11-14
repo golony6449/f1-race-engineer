@@ -116,7 +116,7 @@ def test_alert_fires_once_on_transition_to_danger() -> None:
     danger = rules.evaluate(_wear(tyres_wear=[10.0, 10.0, 80.0, 10.0]))
     # 레이스에서는 위험 경고와 함께 박스 지시가 한 번 나간다.
     assert _kinds(danger) == ["safety", "box"]
-    assert danger[0].text == "타이어 앞왼쪽 마모 80퍼센트."
+    assert danger[0].text == "앞왼쪽 타이어 마모가 80퍼센트야."
     assert danger[0].priority is Priority.SAFETY
 
     # 계속 위험이면 반복하지 않는다.
@@ -126,8 +126,8 @@ def test_alert_fires_once_on_transition_to_danger() -> None:
     assert rules.evaluate(_wear(tyres_wear=[10.0, 10.0, 40.0, 10.0])) == []
     again = rules.evaluate(_wear(tyres_wear=[10.0, 10.0, 90.0, 10.0]))
     assert [message.text for message in again] == [
-        "타이어 앞왼쪽 마모 90퍼센트.",
-        "박스, 박스.",
+        "앞왼쪽 타이어 마모가 90퍼센트야.",
+        "박스, 박스. 들어와.",
     ]
 
 
@@ -166,9 +166,9 @@ def test_temperature_and_brake_alerts() -> None:
         )
     )
     texts = [message.text for message in messages]
-    assert "타이어 앞왼쪽 온도 121도." in texts
-    assert "타이어 앞왼쪽 온도 131도." in texts
-    assert "브레이크 앞왼쪽 온도 1001도." in texts
+    assert "앞왼쪽 타이어 온도가 121도야. 관리해." in texts
+    assert "앞왼쪽 타이어 온도가 131도야. 관리해." in texts
+    assert "앞왼쪽 브레이크 온도가 1001도까지 올라갔어." in texts
     metrics = {message.evidence["metric"] for message in messages}
     assert metrics == {"tyre_temp", "tyre_inner_temp", "brake_temp"}
 
@@ -185,10 +185,10 @@ def test_damage_alerts() -> None:
         )
     )
     texts = [message.text for message in messages]
-    assert "앞날개 오른쪽 손상 60퍼센트." in texts
-    assert "바닥 손상 80퍼센트." in texts
+    assert "앞날개 오른쪽 손상이 60퍼센트야." in texts
+    assert "바닥 손상이 80퍼센트야." in texts
     # 화면에서 빨개지는 파워유닛 마모도 같은 기준으로 경고한다.
-    assert "터보차저 손상 91퍼센트." in texts
+    assert "터보차저 손상이 91퍼센트야." in texts
     assert all(message.priority is Priority.SAFETY for message in messages)
 
 
@@ -196,7 +196,7 @@ def test_fuel_short_alert() -> None:
     rules = _rules()
     # 남은 레이스 랩 = 50 - 10 + 1 = 41, 남은 연료 랩 = 12 → 여유 -29랩
     messages = rules.evaluate(_snapshot(status={"fuel_remaining_laps": 12.0}))
-    assert [message.text for message in messages] == ["연료 마이너스 29랩."]
+    assert [message.text for message in messages] == ["연료가 29랩 모자라."]
     assert messages[0].evidence["metric"] == "fuel_laps_margin"
     assert messages[0].evidence["value"] == pytest.approx(-29.0)
 
@@ -231,26 +231,26 @@ def test_safety_car_vsc_and_red_flag() -> None:
     assert rules.evaluate(_snapshot(session={"safety_car_status": 0})) == []
 
     sc = rules.evaluate(_snapshot(session={"safety_car_status": 1}))
-    assert [message.text for message in sc] == ["세이프티 카."]
+    assert [message.text for message in sc] == ["세이프티 카 나왔어. 속도 줄여."]
     assert rules.evaluate(_snapshot(session={"safety_car_status": 1})) == []
 
     assert rules.evaluate(_snapshot(session={"safety_car_status": 0})) == []
     vsc = rules.evaluate(_snapshot(session={"safety_car_status": 2}))
-    assert [message.text for message in vsc] == ["버추얼 세이프티 카."]
+    assert [message.text for message in vsc] == ["버추얼 세이프티 카야. 델타 지켜."]
 
     # 적기는 상태 필드가 없어 사건으로 받는다.
     red = rules.evaluate(
         _snapshot(session={"safety_car_status": 0}),
         [Event(EventKind.RED_FLAG)],
     )
-    assert [message.text for message in red] == ["적기. 적기."]
+    assert [message.text for message in red] == ["적기야, 적기. 속도 줄이고 피트로 와."]
 
 
 def test_red_flag_period_count_detected_from_snapshot() -> None:
     rules = _rules()
     assert rules.evaluate(_snapshot(session={"num_red_flag_periods": 0})) == []
     messages = rules.evaluate(_snapshot(session={"num_red_flag_periods": 1}))
-    assert [message.text for message in messages] == ["적기. 적기."]
+    assert [message.text for message in messages] == ["적기야, 적기. 속도 줄이고 피트로 와."]
     assert rules.evaluate(_snapshot(session={"num_red_flag_periods": 1})) == []
 
 
@@ -259,12 +259,12 @@ def test_penalty_messages() -> None:
     assert rules.evaluate(_snapshot(lap={"penalties": 0})) == []
 
     first = rules.evaluate(_snapshot(lap={"penalties": 5}))
-    assert [message.text for message in first] == ["페널티 5초."]
+    assert [message.text for message in first] == ["5초 페널티 받았어."]
     assert first[0].evidence["penalty_seconds"] == 5
     assert rules.evaluate(_snapshot(lap={"penalties": 5})) == []
 
     second = rules.evaluate(_snapshot(lap={"penalties": 10}))
-    assert [message.text for message in second] == ["페널티 10초."]
+    assert [message.text for message in second] == ["10초 페널티 받았어."]
 
 
 def test_penalty_event_does_not_repeat_from_snapshot() -> None:
@@ -275,7 +275,7 @@ def test_penalty_event_does_not_repeat_from_snapshot() -> None:
         _snapshot(lap={"penalties": 0}),
         [Event(EventKind.PENALTY, car_index=PLAYER, data={"time": 5})],
     )
-    assert [message.text for message in from_event] == ["페널티 5초."]
+    assert [message.text for message in from_event] == ["5초 페널티 받았어."]
     # 같은 페널티가 Lap Data에 반영돼도 두 번 말하지 않는다.
     assert rules.evaluate(_snapshot(lap={"penalties": 5})) == []
 
@@ -291,7 +291,7 @@ def test_box_message() -> None:
     messages = rules.evaluate(_wear(tyres_wear=danger))
     assert _kinds(messages) == ["safety", "box"]
     box = messages[1]
-    assert box.text == "박스, 박스."
+    assert box.text == "박스, 박스. 들어와."
     assert box.priority is Priority.BOX
     assert box.evidence["reason"] == "tyre_wear"
 
@@ -308,7 +308,7 @@ def test_box_for_unserved_pit_penalty() -> None:
     messages = rules.evaluate(
         _snapshot(lap={"num_unserved_stop_go_pens": 1})
     )
-    assert [message.text for message in messages] == ["박스, 박스."]
+    assert [message.text for message in messages] == ["박스, 박스. 들어와."]
     assert messages[0].evidence["reason"] == "pit_penalty"
     assert rules.evaluate(_snapshot(lap={"num_unserved_stop_go_pens": 1})) == []
 
@@ -378,8 +378,8 @@ def test_wheel_danger_merged_into_one_message() -> None:
     messages = rules.evaluate(_wear(tyres_wear=[88.0, 88.0, 88.0, 88.0]))
 
     assert [message.text for message in messages] == [
-        "타이어 4개 마모 88퍼센트.",
-        "박스, 박스.",
+        "4개 타이어 마모가 88퍼센트야.",
+        "박스, 박스. 들어와.",
     ]
     safety = messages[0]
     assert safety.evidence["tyres"] == "4개"
@@ -405,7 +405,7 @@ def test_front_wing_both_sides_merged_into_one_message() -> None:
         )
     )
     safety = [message for message in messages if message.kind == "safety"]
-    assert [message.text for message in safety] == ["앞날개 양쪽 손상 60퍼센트."]
+    assert [message.text for message in safety] == ["앞날개 양쪽 손상이 60퍼센트야."]
     assert safety[0].evidence["value"] == pytest.approx(60.0)
     assert [side["value"] for side in safety[0].evidence["sides"]] == [55.0, 60.0]
     assert safety[0].evidence["new_sides"] == ["왼쪽", "오른쪽"]
@@ -423,22 +423,22 @@ def test_temperature_and_brake_bundles_use_worst_value() -> None:
         )
     )
     texts = [message.text for message in messages]
-    assert "타이어 뒤 두 개 온도 122도." in texts
-    assert "브레이크 온도 1050도. 뒤 두 바퀴." in texts
+    assert "뒤 두 개 타이어 온도가 122도야. 관리해." in texts
+    assert "브레이크 온도가 1050도까지 올라갔어. 뒤 두 바퀴." in texts
 
 
 def test_partial_wheel_danger_speaks_only_new_wheels() -> None:
     rules = _rules()
     rear = rules.evaluate(_wear(tyres_wear=[88.0, 88.0, 10.0, 10.0]))
     assert [message.text for message in rear] == [
-        "타이어 뒤 두 개 마모 88퍼센트.",
-        "박스, 박스.",
+        "뒤 두 개 타이어 마모가 88퍼센트야.",
+        "박스, 박스. 들어와.",
     ]
 
     # 뒤 두 바퀴는 이미 DANGER다. 새로 위험해진 앞 두 바퀴만 알린다.
     front = rules.evaluate(_wear(tyres_wear=[88.0, 88.0, 90.0, 90.0]))
     assert [message.text for message in front] == [
-        "타이어 앞 두 개 마모 90퍼센트."
+        "앞 두 개 타이어 마모가 90퍼센트야."
     ]
     assert [item["value"] for item in front[0].evidence["values"]] == [
         88,
@@ -452,7 +452,7 @@ def test_partial_wheel_danger_speaks_only_new_wheels() -> None:
     diagonal = diagonal_rules.evaluate(
         _wear(tyres_wear=[88.0, 10.0, 10.0, 88.0])
     )
-    assert diagonal[0].text == "타이어 뒤왼쪽·앞오른쪽 마모 88퍼센트."
+    assert diagonal[0].text == "뒤왼쪽·앞오른쪽 타이어 마모가 88퍼센트야."
 
 
 def test_wheel_bundle_keeps_transition_once_rule() -> None:
@@ -466,7 +466,7 @@ def test_wheel_bundle_keeps_transition_once_rule() -> None:
     # 한 바퀴가 풀렸다가 다시 위험이 되면 그 바퀴만 말한다.
     assert rules.evaluate(_wear(tyres_wear=[10.0, 88.0, 88.0, 88.0])) == []
     again = rules.evaluate(_wear(tyres_wear=[90.0, 88.0, 88.0, 88.0]))
-    assert [message.text for message in again] == ["타이어 뒤왼쪽 마모 90퍼센트."]
+    assert [message.text for message in again] == ["뒤왼쪽 타이어 마모가 90퍼센트야."]
 
 
 def test_followup_radio_survives_playback_and_priority() -> None:
@@ -489,15 +489,15 @@ def test_followup_radio_survives_playback_and_priority() -> None:
             }
         )
     )
-    assert [message.text for message in lap1] == ["앞날개 양쪽 손상 60퍼센트."]
+    assert [message.text for message in lap1] == ["앞날개 양쪽 손상이 60퍼센트야."]
     for message in lap1:
         assert queue.push(message)
 
     # 랩 2: 네 바퀴 타이어 마모 88% → 한 무전 + 박스.
     lap2 = rules.evaluate(_wear(tyres_wear=[88.0, 88.0, 88.0, 88.0]))
     assert [message.text for message in lap2] == [
-        "타이어 4개 마모 88퍼센트.",
-        "박스, 박스.",
+        "4개 타이어 마모가 88퍼센트야.",
+        "박스, 박스. 들어와.",
     ]
     for message in lap2:
         assert queue.push(message)
@@ -512,9 +512,9 @@ def test_followup_radio_survives_playback_and_priority() -> None:
         )
     )
     lap3_texts = [message.text for message in lap3]
-    assert "브레이크 온도 1050도. 네 바퀴." in lap3_texts
-    assert "세이프티 카." in lap3_texts
-    assert "페널티 5초." in lap3_texts
+    assert "브레이크 온도가 1050도까지 올라갔어. 네 바퀴." in lap3_texts
+    assert "세이프티 카 나왔어. 속도 줄여." in lap3_texts
+    assert "5초 페널티 받았어." in lap3_texts
     for message in lap3:
         assert queue.push(message)
 
@@ -525,7 +525,7 @@ def test_followup_radio_survives_playback_and_priority() -> None:
             status={"fuel_remaining_laps": 12.0},
         )
     )
-    assert [message.text for message in lap4] == ["연료 마이너스 29랩."]
+    assert [message.text for message in lap4] == ["연료가 29랩 모자라."]
     for message in lap4:
         assert queue.push(message)
 
@@ -536,21 +536,21 @@ def test_followup_radio_survives_playback_and_priority() -> None:
             session={"safety_car_status": 2},
         )
     )
-    assert [message.text for message in lap5] == ["버추얼 세이프티 카."]
+    assert [message.text for message in lap5] == ["버추얼 세이프티 카야. 델타 지켜."]
     for message in lap5:
         assert queue.push(message)
 
     played = _play_all(queue, clock, seconds=3.0)
 
     assert played == [
-        "앞날개 양쪽 손상 60퍼센트.",
-        "타이어 4개 마모 88퍼센트.",
-        "브레이크 온도 1050도. 네 바퀴.",
-        "세이프티 카.",
-        "페널티 5초.",
-        "연료 마이너스 29랩.",
-        "버추얼 세이프티 카.",
-        "박스, 박스.",
+        "앞날개 양쪽 손상이 60퍼센트야.",
+        "4개 타이어 마모가 88퍼센트야.",
+        "브레이크 온도가 1050도까지 올라갔어. 네 바퀴.",
+        "세이프티 카 나왔어. 속도 줄여.",
+        "5초 페널티 받았어.",
+        "연료가 29랩 모자라.",
+        "버추얼 세이프티 카야. 델타 지켜.",
+        "박스, 박스. 들어와.",
     ]
     assert queue.pending_count == 0
 

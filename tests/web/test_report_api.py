@@ -86,12 +86,12 @@ def test_log_includes_evidence_and_latency(tmp_path: Path) -> None:
     conn = _open(tmp_path)
     try:
         coaching = _message(
-            "3번, 브레이크 늦음. 5미터.",
+            "3번에서 브레이크가 늦었어. 5미터 더 일찍 밟아.",
             created_ns=1_000,
             evidence={"loss_ms": 120, "cause": "brake_late"},
         )
         box = _message(
-            "박스, 박스.",
+            "박스, 박스. 들어와.",
             kind=RadioKind.BOX,
             created_ns=2_000,
             evidence={"reason": "test"},
@@ -117,8 +117,8 @@ def test_log_includes_evidence_and_latency(tmp_path: Path) -> None:
         assert data["reason"] is None
         assert data["session_uid"] == SESSION_UID
         assert [message["text"] for message in data["messages"]] == [
-            "박스, 박스.",
-            "3번, 브레이크 늦음. 5미터.",
+            "박스, 박스. 들어와.",
+            "3번에서 브레이크가 늦었어. 5미터 더 일찍 밟아.",
         ]
 
         newest, oldest = data["messages"]
@@ -157,7 +157,7 @@ def test_log_includes_dropped_reason(tmp_path: Path) -> None:
     conn = _open(tmp_path)
     try:
         expired = _message(
-            "타이어 4개 마모 88퍼센트.",
+            "4개 타이어 마모가 88퍼센트야.",
             kind=RadioKind.SAFETY,
             created_ns=1_000,
         )
@@ -243,7 +243,7 @@ def test_report_marks_improvement_after_message(tmp_path: Path) -> None:
         _record(
             conn,
             _message(
-                "3번, 브레이크 늦음. 5미터.",
+                "3번에서 브레이크가 늦었어. 5미터 더 일찍 밟아.",
                 created_ns=1_000,
                 evidence={"loss_ms": 180, "cause": "brake_late"},
                 lap=5,
@@ -254,7 +254,7 @@ def test_report_marks_improvement_after_message(tmp_path: Path) -> None:
         _record(
             conn,
             _message(
-                "3번, 턴인 늦음. 4미터.",
+                "3번에서 턴인이 늦었어. 4미터 더 일찍 꺾어.",
                 created_ns=2_000,
                 evidence={"loss_ms": 120, "cause": "turn_in_late"},
                 lap=6,
@@ -265,7 +265,7 @@ def test_report_marks_improvement_after_message(tmp_path: Path) -> None:
         _record(
             conn,
             _message(
-                "3번 좋아짐. 다음 7번.",
+                "3번 좋아졌어. 다음은 7번 보자.",
                 kind=RadioKind.IMPROVEMENT,
                 created_ns=2_100,
                 evidence={"corner": 3, "loss_ms": 40, "next_corner": 7},
@@ -277,7 +277,7 @@ def test_report_marks_improvement_after_message(tmp_path: Path) -> None:
         _record(
             conn,
             _message(
-                "7번 탈출, 스로틀 늦음. 8미터.",
+                "7번 탈출에서 가속이 늦었어. 8미터 더 일찍 밟아.",
                 created_ns=3_000,
                 evidence={"loss_ms": 200, "cause": "late_throttle"},
                 lap=7,
@@ -320,7 +320,7 @@ def test_report_marks_improvement_after_message(tmp_path: Path) -> None:
         assert change["corner"] == 3
         assert change["next_corner"] == 7
         assert change["loss_ms"] == 40
-        assert change["text"] == "3번 좋아짐. 다음 7번."
+        assert change["text"] == "3번 좋아졌어. 다음은 7번 보자."
 
         # 무전이 나간 코너와 그 뒤 근거 비교.
         improvements = report["message_improvements"]
@@ -369,7 +369,7 @@ def test_report_marks_worsened_and_steady_after_message(tmp_path: Path) -> None:
         _record(
             conn,
             _message(
-                "5번, 브레이크 늦음. 3미터.",
+                "5번에서 브레이크가 늦었어. 3미터 더 일찍 밟아.",
                 created_ns=1_000,
                 evidence={"loss_ms": 100, "cause": "brake_late"},
                 lap=2,
@@ -379,7 +379,7 @@ def test_report_marks_worsened_and_steady_after_message(tmp_path: Path) -> None:
         _record(
             conn,
             _message(
-                "5번, 브레이크 늦음. 9미터.",
+                "5번에서 브레이크가 늦었어. 9미터 더 일찍 밟아.",
                 created_ns=2_000,
                 evidence={"loss_ms": 180, "cause": "brake_late"},
                 lap=3,
@@ -389,7 +389,7 @@ def test_report_marks_worsened_and_steady_after_message(tmp_path: Path) -> None:
         _record(
             conn,
             _message(
-                "6번, 스로틀 늦음. 4미터.",
+                "6번 탈출에서 가속이 늦었어. 4미터 더 일찍 밟아.",
                 created_ns=1_100,
                 evidence={"loss_ms": 100, "cause": "late_throttle"},
                 lap=2,
@@ -399,7 +399,7 @@ def test_report_marks_worsened_and_steady_after_message(tmp_path: Path) -> None:
         _record(
             conn,
             _message(
-                "6번, 스로틀 늦음. 3미터.",
+                "6번 탈출에서 가속이 늦었어. 3미터 더 일찍 밟아.",
                 created_ns=2_100,
                 evidence={"loss_ms": 90, "cause": "late_throttle"},
                 lap=3,
