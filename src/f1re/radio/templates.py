@@ -1,7 +1,8 @@
 """무전 문장 틀.
 
-말투는 실제 F1 팀 무전처럼 짧고 건조한 명사형이다. 예:
-"3번, 브레이크 늦음. 5미터." / "7번 탈출, 스로틀 늦음." / "박스, 박스."
+말투는 짧은 반말 문장이다. 무엇이 어땠는지 말하고 어떻게 하라고 이어 준다
+(사용자 결정 2026-11-14). 예:
+"3번에서 브레이크가 늦었어. 5미터 더 일찍 밟아." / "박스, 박스. 들어와."
 
 - 문장은 전부 이 파일의 틀에서 만든다(`render`).
 - 코칭·추월처럼 판단이 필요한 틀은 "어디서 + 무엇을 + 얼마나"를 모두 갖춘다
@@ -49,189 +50,196 @@ _TEMPLATES: tuple[Template, ...] = (
     Template(
         "safety.tyre_wear",
         RadioKind.SAFETY,
-        "타이어 {tyre} 마모 {percent}퍼센트.",
+        "{tyre} 타이어 마모가 {percent}퍼센트야.",
     ),
     # 같은 지표의 바퀴들이 한 평가 주기에 함께 위험해지면 한 무전으로 묶는다
     # (SCRUM-81). 값은 위험한 바퀴 중 가장 나쁜 값이다.
     Template(
         "safety.tyre_wear_bundle",
         RadioKind.SAFETY,
-        "타이어 {tyres} 마모 {percent}퍼센트.",
+        "{tyres} 타이어 마모가 {percent}퍼센트야.",
         note="바퀴 여러 개가 함께 위험할 때(값은 가장 나쁜 값)",
     ),
     Template(
         "safety.tyre_temp",
         RadioKind.SAFETY,
-        "타이어 {tyre} 온도 {celsius}도.",
+        "{tyre} 타이어 온도가 {celsius}도야. 관리해.",
     ),
     Template(
         "safety.tyre_temp_bundle",
         RadioKind.SAFETY,
-        "타이어 {tyres} 온도 {celsius}도.",
+        "{tyres} 타이어 온도가 {celsius}도야. 관리해.",
         note="바퀴 여러 개가 함께 위험할 때(값은 가장 나쁜 값)",
     ),
     Template(
         "safety.brake_temp",
         RadioKind.SAFETY,
-        "브레이크 {tyre} 온도 {celsius}도.",
+        "{tyre} 브레이크 온도가 {celsius}도까지 올라갔어.",
     ),
     Template(
         "safety.brake_temp_bundle",
         RadioKind.SAFETY,
-        "브레이크 온도 {celsius}도. {tyres}.",
+        "브레이크 온도가 {celsius}도까지 올라갔어. {tyres}.",
         note="바퀴 여러 개가 함께 위험할 때(값은 가장 나쁜 값)",
     ),
     Template(
         "safety.fuel_short",
         RadioKind.SAFETY,
-        "연료 마이너스 {laps}랩.",
+        "연료가 {laps}랩 모자라.",
     ),
     Template(
         "safety.damage",
         RadioKind.SAFETY,
-        "{part} 손상 {percent}퍼센트.",
+        "{part} 손상이 {percent}퍼센트야.",
     ),
     # 앞날개는 좌우가 함께 위험해질 때 한 무전으로 묶는다(SCRUM-81).
     Template(
         "safety.front_wing_both",
         RadioKind.SAFETY,
-        "앞날개 양쪽 손상 {percent}퍼센트.",
+        "앞날개 양쪽 손상이 {percent}퍼센트야.",
         note="앞날개 좌우가 함께 위험할 때(값은 가장 나쁜 값)",
     ),
     Template(
         "safety.penalty",
         RadioKind.SAFETY,
-        "페널티 {seconds}초.",
+        "{seconds}초 페널티 받았어.",
     ),
-    Template("safety.safety_car", RadioKind.SAFETY, "세이프티 카."),
-    Template("safety.vsc", RadioKind.SAFETY, "버추얼 세이프티 카."),
-    Template("safety.red_flag", RadioKind.SAFETY, "적기. 적기."),
+    Template(
+        "safety.safety_car", RadioKind.SAFETY, "세이프티 카 나왔어. 속도 줄여."
+    ),
+    Template("safety.vsc", RadioKind.SAFETY, "버추얼 세이프티 카야. 델타 지켜."),
+    Template(
+        "safety.red_flag",
+        RadioKind.SAFETY,
+        "적기야, 적기. 속도 줄이고 피트로 와.",
+    ),
     # --- 박스 지시 --------------------------------------------------------
-    Template("box.box_box", RadioKind.BOX, "박스, 박스."),
-    Template("box.this_lap", RadioKind.BOX, "박스, 박스. 이번 랩."),
-    Template("box.next_lap", RadioKind.BOX, "박스. 다음 랩."),
+    Template("box.box_box", RadioKind.BOX, "박스, 박스. 들어와."),
+    Template("box.this_lap", RadioKind.BOX, "박스, 박스. 이번 랩에 들어와."),
+    Template("box.next_lap", RadioKind.BOX, "다음 랩에 박스야."),
     # --- 코너 코칭 --------------------------------------------------------
     Template(
         "coaching.brake_late",
         RadioKind.COACHING,
-        "{corner}번, 브레이크 늦음. {meters}미터.",
+        "{corner}번에서 브레이크가 늦었어. {meters}미터 더 일찍 밟아.",
         needs_evidence=True,
     ),
     Template(
         "coaching.brake_early",
         RadioKind.COACHING,
-        "{corner}번, 브레이크 일찍. {meters}미터.",
+        "{corner}번에서 브레이크를 너무 일찍 밟았어. {meters}미터 더 참아도 돼.",
         needs_evidence=True,
     ),
     Template(
         "coaching.turn_in_early",
         RadioKind.COACHING,
-        "{corner}번, 턴인 일찍. {meters}미터.",
+        "{corner}번에서 턴인이 빨랐어. {meters}미터 더 기다렸다 꺾어.",
         needs_evidence=True,
     ),
     Template(
         "coaching.turn_in_late",
         RadioKind.COACHING,
-        "{corner}번, 턴인 늦음. {meters}미터.",
+        "{corner}번에서 턴인이 늦었어. {meters}미터 더 일찍 꺾어.",
         needs_evidence=True,
     ),
     Template(
         "coaching.steer_corrections",
         RadioKind.COACHING,
-        "{corner}번, 조향 수정 {count}회.",
+        "{corner}번에서 핸들을 {count}번 고쳐 잡았어. 한 번에 부드럽게 꺾어.",
         needs_evidence=True,
     ),
     Template(
         "coaching.late_throttle",
         RadioKind.COACHING,
-        "{corner}번 탈출, 스로틀 늦음. {meters}미터.",
+        "{corner}번 탈출에서 가속이 늦었어. {meters}미터 더 일찍 밟아.",
         needs_evidence=True,
     ),
     Template(
         "coaching.line_wide",
         RadioKind.COACHING,
-        "{corner}번, 라인 밖. {meters}미터.",
+        "{corner}번에서 라인이 {meters}미터 바깥으로 밀렸어.",
         needs_evidence=True,
     ),
     Template(
         "coaching.off_track",
         RadioKind.COACHING,
-        "{corner}번, 트랙 이탈. 라인 {meters}미터 밖.",
+        "{corner}번에서 트랙 벗어났어. 라인이 {meters}미터 밖이었어.",
         needs_evidence=True,
     ),
     Template(
         "coaching.min_speed_low",
         RadioKind.COACHING,
-        "{corner}번, 정점 속도 {kmh}킬로 낮음.",
+        "{corner}번 코너 속도가 기준보다 {kmh}킬로 느려. 더 빠르게 돌 수 있어.",
         needs_evidence=True,
     ),
     # --- 코너 데이터가 없는 서킷: 공식 번호가 아니라 "N번째 코너"로 말한다 ---
     Template(
         "coaching.brake_late_ordinal",
         RadioKind.COACHING,
-        "{corner_label}, 브레이크 늦음. {meters}미터.",
+        "{corner_label}에서 브레이크가 늦었어. {meters}미터 더 일찍 밟아.",
         needs_evidence=True,
     ),
     Template(
         "coaching.brake_early_ordinal",
         RadioKind.COACHING,
-        "{corner_label}, 브레이크 일찍. {meters}미터.",
+        "{corner_label}에서 브레이크를 너무 일찍 밟았어. {meters}미터 더 참아도 돼.",
         needs_evidence=True,
     ),
     Template(
         "coaching.turn_in_early_ordinal",
         RadioKind.COACHING,
-        "{corner_label}, 턴인 일찍. {meters}미터.",
+        "{corner_label}에서 턴인이 빨랐어. {meters}미터 더 기다렸다 꺾어.",
         needs_evidence=True,
     ),
     Template(
         "coaching.turn_in_late_ordinal",
         RadioKind.COACHING,
-        "{corner_label}, 턴인 늦음. {meters}미터.",
+        "{corner_label}에서 턴인이 늦었어. {meters}미터 더 일찍 꺾어.",
         needs_evidence=True,
     ),
     Template(
         "coaching.steer_corrections_ordinal",
         RadioKind.COACHING,
-        "{corner_label}, 조향 수정 {count}회.",
+        "{corner_label}에서 핸들을 {count}번 고쳐 잡았어. 한 번에 부드럽게 꺾어.",
         needs_evidence=True,
     ),
     Template(
         "coaching.late_throttle_ordinal",
         RadioKind.COACHING,
-        "{corner_label} 탈출, 스로틀 늦음. {meters}미터.",
+        "{corner_label} 탈출에서 가속이 늦었어. {meters}미터 더 일찍 밟아.",
         needs_evidence=True,
     ),
     Template(
         "coaching.line_wide_ordinal",
         RadioKind.COACHING,
-        "{corner_label}, 라인 밖. {meters}미터.",
+        "{corner_label}에서 라인이 {meters}미터 바깥으로 밀렸어.",
         needs_evidence=True,
     ),
     Template(
         "coaching.off_track_ordinal",
         RadioKind.COACHING,
-        "{corner_label}, 트랙 이탈. 라인 {meters}미터 밖.",
+        "{corner_label}에서 트랙 벗어났어. 라인이 {meters}미터 밖이었어.",
         needs_evidence=True,
     ),
     Template(
         "coaching.min_speed_low_ordinal",
         RadioKind.COACHING,
-        "{corner_label}, 정점 속도 {kmh}킬로 낮음.",
+        # `corner_label`이 이미 "3번째 코너"이므로 "코너"를 두 번 말하지 않는다.
+        "{corner_label} 속도가 기준보다 {kmh}킬로 느려. 더 빠르게 돌 수 있어.",
         needs_evidence=True,
     ),
     # 리프트 앤 코스트: 연료 부족 때 코너 몇 곳에서 액셀을 짧게 뗀다.
     Template(
         "coaching.fuel_lift",
         RadioKind.COACHING,
-        "연료 마이너스 {laps}랩. {corners} 리프트. {meters}미터.",
+        "연료가 {laps}랩 모자라. {corners}에서 {meters}미터 일찍 발 떼.",
         needs_evidence=True,
         note="리프트 앤 코스트 지시",
     ),
     Template(
         "coaching.fuel_lift_short",
         RadioKind.COACHING,
-        "{corner}번 리프트 짧음. {meters}미터 더.",
+        "{corner}번 리프트가 짧았어. {meters}미터 더 일찍 떼.",
         needs_evidence=True,
         note="리프트 앤 코스트: 리프트가 짧았다",
     ),
@@ -240,14 +248,14 @@ _TEMPLATES: tuple[Template, ...] = (
     Template(
         "coaching.brake_temp_lift",
         RadioKind.COACHING,
-        "{corners} 리프트. {meters}미터. 브레이크 {celsius}도.",
+        "브레이크가 {celsius}도야. {corners}에서 {meters}미터 일찍 발 떼서 식혀.",
         needs_evidence=True,
         note="리프트 앤 코스트: 브레이크 냉각",
     ),
     Template(
         "coaching.tyre_temp_lift",
         RadioKind.COACHING,
-        "{corners} 리프트. {meters}미터. 타이어 {celsius}도.",
+        "앞 타이어가 {celsius}도야. {corners}에서 {meters}미터 일찍 발 떼서 식혀.",
         needs_evidence=True,
         note="리프트 앤 코스트: 앞 타이어 냉각",
     ),
@@ -255,79 +263,82 @@ _TEMPLATES: tuple[Template, ...] = (
     Template(
         "overtake.drs",
         RadioKind.OVERTAKE,
-        "앞차 {gap}. 다음 직선 DRS.",
+        "앞차랑 {gap}초야. 다음 직선에서 DRS 써.",
         needs_evidence=True,
     ),
     Template(
         "overtake.drs_ers",
         RadioKind.OVERTAKE,
-        "앞차 {gap}. 다음 직선 DRS. ERS 전부.",
+        "앞차랑 {gap}초야. 다음 직선에서 DRS랑 ERS 다 써.",
         needs_evidence=True,
     ),
     Template(
         "overtake.slow_exit",
         RadioKind.OVERTAKE,
-        "앞차 {gap}. {corner}번 탈출 느림. {corner}번 붙고 직선에서.",
+        "앞차랑 {gap}초야. 앞차가 {corner}번 탈출이 느려. "
+        "{corner}번에서 바짝 붙어서 직선에서 넘어.",
         needs_evidence=True,
     ),
     # 코너 데이터가 없는 서킷: 공식 번호 대신 "N번째 코너"로 말한다.
     Template(
         "overtake.slow_exit_ordinal",
         RadioKind.OVERTAKE,
-        "앞차 {gap}. {corner_label} 탈출 느림. {corner_label} 붙고 직선에서.",
+        "앞차랑 {gap}초야. 앞차가 {corner_label} 탈출이 느려. "
+        "{corner_label}에서 바짝 붙어서 직선에서 넘어.",
         needs_evidence=True,
     ),
     Template(
         "overtake.tyre_wait",
         RadioKind.OVERTAKE,
-        "앞차 {gap}. 타이어 {laps}랩 새거. {wait_laps}랩 기다림.",
+        "앞차랑 {gap}초야. 우리 타이어가 {laps}랩 더 새거야. "
+        "{wait_laps}랩만 기다렸다가 공격해.",
         needs_evidence=True,
     ),
     # --- 개선 알림 --------------------------------------------------------
     Template(
         "improvement.corner_improved",
         RadioKind.IMPROVEMENT,
-        "{corner}번 좋아짐. 다음 {next_corner}번.",
+        "{corner}번 좋아졌어. 다음은 {next_corner}번 보자.",
     ),
     Template(
         "improvement.corner_improved_short",
         RadioKind.IMPROVEMENT,
-        "{corner}번 좋아짐.",
+        "{corner}번 좋아졌어.",
     ),
     Template(
         "improvement.corner_improved_ordinal",
         RadioKind.IMPROVEMENT,
-        "{corner_label} 좋아짐. 다음 {next_label}.",
+        "{corner_label} 좋아졌어. 다음은 {next_label} 보자.",
     ),
     Template(
         "improvement.corner_improved_short_ordinal",
         RadioKind.IMPROVEMENT,
-        "{corner_label} 좋아짐.",
+        "{corner_label} 좋아졌어.",
     ),
     Template(
         "improvement.fuel_lift_good",
         RadioKind.IMPROVEMENT,
-        "{corner}번 리프트 좋음.",
+        "{corner}번 리프트 좋아. 그대로 해.",
         note="리프트 앤 코스트: 리프트가 좋았다",
     ),
     # 자동 탐지 코너(official=False)는 "3번째 코너"로 말한다(리뷰 포커스 5).
     Template(
         "coaching.fuel_lift_short_ordinal",
         RadioKind.COACHING,
-        "{corner_label} 리프트 짧음. {meters}미터 더.",
+        "{corner_label} 리프트가 짧았어. {meters}미터 더 일찍 떼.",
         needs_evidence=True,
         note="리프트 앤 코스트: 리프트가 짧았다(비공식 코너)",
     ),
     Template(
         "improvement.fuel_lift_good_ordinal",
         RadioKind.IMPROVEMENT,
-        "{corner_label} 리프트 좋음.",
+        "{corner_label} 리프트 좋아. 그대로 해.",
         note="리프트 앤 코스트: 리프트가 좋았다(비공식 코너)",
     ),
     Template(
         "improvement.fuel_lift_stop",
         RadioKind.IMPROVEMENT,
-        "연료 회복. 리프트 그만.",
+        "연료 회복됐어. 이제 리프트 안 해도 돼.",
         note="리프트 앤 코스트: 그만해도 된다",
     ),
 )

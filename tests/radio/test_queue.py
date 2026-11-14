@@ -156,7 +156,7 @@ def test_set_muted_rejects_unknown_kind() -> None:
 def test_create_fills_priority_expiry_and_evidence() -> None:
     message = RadioMessage.create(
         RadioKind.COACHING,
-        "3번, 브레이크 늦음. 5미터.",
+        "3번에서 브레이크가 늦었어. 5미터 더 일찍 밟아.",
         now_ns=1_000,
         ttl_ns=2_000_000_000,
         evidence={"meters": 5.2},

@@ -80,56 +80,56 @@ def test_templates_have_where_what_howmuch() -> None:
 def test_lift_and_coast_templates_present() -> None:
     assert (
         render("coaching.fuel_lift", laps=2, corners="3·7", meters=40)
-        == "연료 마이너스 2랩. 3·7 리프트. 40미터."
+        == "연료가 2랩 모자라. 3·7에서 40미터 일찍 발 떼."
     )
-    assert render("improvement.fuel_lift_good", corner=7) == "7번 리프트 좋음."
+    assert render("improvement.fuel_lift_good", corner=7) == "7번 리프트 좋아. 그대로 해."
     assert (
         render("coaching.fuel_lift_short", corner=7, meters=10)
-        == "7번 리프트 짧음. 10미터 더."
+        == "7번 리프트가 짧았어. 10미터 더 일찍 떼."
     )
-    assert render("improvement.fuel_lift_stop") == "연료 회복. 리프트 그만."
+    assert render("improvement.fuel_lift_stop") == "연료 회복됐어. 이제 리프트 안 해도 돼."
 
 
 def test_coaching_examples_match_radio_wording() -> None:
     assert (
         render("coaching.brake_late", corner=3, meters=5)
-        == "3번, 브레이크 늦음. 5미터."
+        == "3번에서 브레이크가 늦었어. 5미터 더 일찍 밟아."
     )
     assert (
         render("coaching.late_throttle", corner=7, meters=10)
-        == "7번 탈출, 스로틀 늦음. 10미터."
+        == "7번 탈출에서 가속이 늦었어. 10미터 더 일찍 밟아."
     )
-    assert render("overtake.drs", gap="0.6") == "앞차 0.6. 다음 직선 DRS."
-    assert render("box.box_box") == "박스, 박스."
+    assert render("overtake.drs", gap="0.6") == "앞차랑 0.6초야. 다음 직선에서 DRS 써."
+    assert render("box.box_box") == "박스, 박스. 들어와."
 
 
 def test_bundled_warning_templates_match_radio_wording() -> None:
     """바퀴별 경고를 묶을 때의 문장(SCRUM-81)."""
     assert (
         render("safety.tyre_wear_bundle", tyres="4개", percent=88)
-        == "타이어 4개 마모 88퍼센트."
+        == "4개 타이어 마모가 88퍼센트야."
     )
     assert (
         render("safety.tyre_wear_bundle", tyres="앞 두 개", percent=88)
-        == "타이어 앞 두 개 마모 88퍼센트."
+        == "앞 두 개 타이어 마모가 88퍼센트야."
     )
     assert (
         render(
             "safety.tyre_wear_bundle", tyres="뒤왼쪽·앞오른쪽", percent=88
         )
-        == "타이어 뒤왼쪽·앞오른쪽 마모 88퍼센트."
+        == "뒤왼쪽·앞오른쪽 타이어 마모가 88퍼센트야."
     )
     assert (
         render("safety.tyre_temp_bundle", tyres="4개", celsius=121)
-        == "타이어 4개 온도 121도."
+        == "4개 타이어 온도가 121도야. 관리해."
     )
     assert (
         render("safety.brake_temp_bundle", celsius=1050, tyres="네 바퀴")
-        == "브레이크 온도 1050도. 네 바퀴."
+        == "브레이크 온도가 1050도까지 올라갔어. 네 바퀴."
     )
     assert (
         render("safety.front_wing_both", percent=60)
-        == "앞날개 양쪽 손상 60퍼센트."
+        == "앞날개 양쪽 손상이 60퍼센트야."
     )
 
 
@@ -148,7 +148,7 @@ def test_render_missing_slot_raises() -> None:
 def test_render_ignores_extra_slots() -> None:
     assert (
         render("safety.safety_car", unrelated="값")
-        == "세이프티 카."
+        == "세이프티 카 나왔어. 속도 줄여."
     )
 
 
@@ -156,9 +156,9 @@ def test_corner_phrases_cover_every_corner_number() -> None:
     phrases = corner_phrases([1, 2, 18], meters=5)
 
     assert phrases == [
-        "1번, 브레이크 늦음. 5미터.",
-        "2번, 브레이크 늦음. 5미터.",
-        "18번, 브레이크 늦음. 5미터.",
+        "1번에서 브레이크가 늦었어. 5미터 더 일찍 밟아.",
+        "2번에서 브레이크가 늦었어. 5미터 더 일찍 밟아.",
+        "18번에서 브레이크가 늦었어. 5미터 더 일찍 밟아.",
     ]
     assert len(set(phrases)) == 3
 
@@ -166,7 +166,7 @@ def test_corner_phrases_cover_every_corner_number() -> None:
 def test_prefetch_phrases_include_corners_and_fixed_warnings() -> None:
     phrases = prefetch_phrases([1, 2, 3])
 
-    assert "2번, 브레이크 늦음. 5미터." in phrases
+    assert "2번에서 브레이크가 늦었어. 5미터 더 일찍 밟아." in phrases
     for key in PRELOAD_KEYS:
         assert render(key, **_sample_for(key)) in phrases
     assert len(phrases) == len(set(phrases)) == 3 + len(PRELOAD_KEYS)

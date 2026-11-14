@@ -43,11 +43,11 @@ class FakeTTS:
 
 def test_sentences_follow_plan() -> None:
     assert SENTENCES == (
-        "3번, 브레이크 늦음. 5미터.",
-        "7번 탈출, 스트로틀 늦음.",
-        "앞차 0.6. 다음 직선 DRS.",
-        "박스, 박스.",
-        "3번 좋아짐. 다음 7번.",
+        "3번에서 브레이크가 늦었어. 5미터 더 일찍 밟아.",
+        "7번 탈출에서 가속이 늦었어. 10미터 더 일찍 밟아.",
+        "앞차랑 0.6초야. 다음 직선에서 DRS 써.",
+        "박스, 박스. 들어와.",
+        "3번 좋아졌어. 다음은 7번 보자.",
     )
     assert KOREAN_VOICES[0] == "Katerina"
     assert "Sohee" in KOREAN_VOICES
@@ -94,7 +94,7 @@ async def test_synth_failure_still_measures_stream(tmp_path: Path) -> None:
     assert result.stream_error is None
     # 합성이 실패해도 스트림 측정은 따로 시도한다.
     assert result.stream_first_ms is not None
-    assert ("박스, 박스.", "Sohee") in tts.stream_calls
+    assert ("박스, 박스. 들어와.", "Sohee") in tts.stream_calls
     assert result.status == "합성 오류: 가짜 실패 / 스트림 정상"
     table = render_table(results)
     assert "합성 오류: 가짜 실패 / 스트림 정상" in table
@@ -128,11 +128,11 @@ async def test_generate_samples_uses_requested_voice(tmp_path: Path) -> None:
         tts,
         tmp_path,
         voices=("Cherry",),
-        sentences=("박스, 박스.",),
+        sentences=("박스, 박스. 들어와.",),
     )
 
-    assert tts.synth_calls == [("박스, 박스.", "Cherry")]
-    assert tts.stream_calls == [("박스, 박스.", "Cherry")]
+    assert tts.synth_calls == [("박스, 박스. 들어와.", "Cherry")]
+    assert tts.stream_calls == [("박스, 박스. 들어와.", "Cherry")]
     assert (tmp_path / "Cherry" / "1-radio.wav").is_file()
 
 

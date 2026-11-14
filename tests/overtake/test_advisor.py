@@ -313,7 +313,7 @@ def test_no_overtake_under_safety_car() -> None:
 
 
 def test_drs_and_ers_option() -> None:
-    """DRS가 허용되고 ERS가 충분하면 "다음 직선 DRS. ERS 전부."라고 말한다."""
+    """DRS가 허용되고 ERS가 충분하면 "다음 직선에서 DRS랑 ERS 다 써."라고 말한다."""
     advisor = _advisor()
     messages = advisor.evaluate(
         _snapshot(
@@ -331,7 +331,7 @@ def test_drs_and_ers_option() -> None:
 
     assert len(messages) == 1
     message = messages[0]
-    assert message.text == "앞차 0.6. 다음 직선 DRS. ERS 전부."
+    assert message.text == "앞차랑 0.6초야. 다음 직선에서 DRS랑 ERS 다 써."
     assert message.priority.name == "OVERTAKE"
     assert message.evidence["drs_activation_distance_m"] == 150
     assert message.evidence["ers_store_pct"] == pytest.approx(90.0)
@@ -351,7 +351,7 @@ def test_drs_and_ers_option() -> None:
         None,
         NOW_NS,
     )
-    assert _message_texts(messages) == ["앞차 0.6. 다음 직선 DRS."]
+    assert _message_texts(messages) == ["앞차랑 0.6초야. 다음 직선에서 DRS 써."]
 
     # DRS 활성 지점이 너무 멀면(기본 600m 초과) 아직 "다음 직선"이라고 말하지 않는다.
     far_drs = _advisor()
@@ -406,7 +406,10 @@ def test_ahead_slow_exit_option_names_corner() -> None:
 
     assert len(messages) == 1
     message = messages[0]
-    assert message.text == "앞차 0.6. 9번 탈출 느림. 9번 붙고 직선에서."
+    assert message.text == (
+        "앞차랑 0.6초야. 앞차가 9번 탈출이 느려. "
+        "9번에서 바짝 붙어서 직선에서 넘어."
+    )
     assert message.corner == 9
     assert message.evidence["corner"] == 9
     assert message.evidence["ahead_exit_speed_kmh"] == pytest.approx(
@@ -432,7 +435,9 @@ def test_tyre_age_wait_option() -> None:
 
     assert len(messages) == 1
     message = messages[0]
-    assert message.text == "앞차 0.6. 타이어 7랩 새거. 2랩 기다림."
+    assert message.text == (
+        "앞차랑 0.6초야. 우리 타이어가 7랩 더 새거야. 2랩만 기다렸다가 공격해."
+    )
     assert message.evidence["tyre_advantage_laps"] == 7
     assert message.evidence["player_tyre_age_laps"] == 6
     assert message.evidence["ahead_tyre_age_laps"] == 13
@@ -483,8 +488,11 @@ def test_max_two_options_and_once_per_lap() -> None:
     twice = _advisor(per_lap=2)
     pair = twice.evaluate(snapshot, traces, NOW_NS)
     assert len(pair) == 2
-    assert pair[0].text == "앞차 0.6. 다음 직선 DRS. ERS 전부."
-    assert pair[1].text == "앞차 0.6. 9번 탈출 느림. 9번 붙고 직선에서."
+    assert pair[0].text == "앞차랑 0.6초야. 다음 직선에서 DRS랑 ERS 다 써."
+    assert pair[1].text == (
+        "앞차랑 0.6초야. 앞차가 9번 탈출이 느려. "
+        "9번에서 바짝 붙어서 직선에서 넘어."
+    )
     assert twice.evaluate(snapshot, traces, NOW_NS + 10**8) == []
 
 
@@ -559,6 +567,7 @@ def test_unofficial_corners_use_ordinal_wording() -> None:
 
     assert len(messages) == 1
     assert messages[0].text == (
-        "앞차 0.6. 9번째 코너 탈출 느림. 9번째 코너 붙고 직선에서."
+        "앞차랑 0.6초야. 앞차가 9번째 코너 탈출이 느려. "
+        "9번째 코너에서 바짝 붙어서 직선에서 넘어."
     )
     assert messages[0].evidence["corner_official"] is False

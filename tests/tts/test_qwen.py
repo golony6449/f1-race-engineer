@@ -77,7 +77,7 @@ async def test_qwen_synthesize_sends_text_and_voice(make_wav: Any) -> None:
         return httpx.Response(200, content=audio)
 
     tts = _tts(handler)
-    result = await tts.synthesize("3번, 브레이크 늦음. 5미터.")
+    result = await tts.synthesize("3번에서 브레이크가 늦었어. 5미터 더 일찍 밟아.")
 
     assert result == audio
     assert len(seen) == 2
@@ -86,7 +86,7 @@ async def test_qwen_synthesize_sends_text_and_voice(make_wav: Any) -> None:
     assert json.loads(post.content) == {
         "model": "qwen3-tts-flash",
         "input": {
-            "text": "3번, 브레이크 늦음. 5미터.",
+            "text": "3번에서 브레이크가 늦었어. 5미터 더 일찍 밟아.",
             "voice": "Katerina",
             "language_type": "Korean",
         },
@@ -116,7 +116,7 @@ async def test_qwen_synthesize_uses_request_voice(make_wav: Any) -> None:
         return httpx.Response(200, content=audio)
 
     tts = _tts(handler)
-    await tts.synthesize("박스, 박스.", voice="Cherry")
+    await tts.synthesize("박스, 박스. 들어와.", voice="Cherry")
 
     assert bodies[0]["input"]["voice"] == "Cherry"
 
@@ -217,7 +217,7 @@ async def test_http_audio_url_is_downloaded_as_is(make_wav: Any) -> None:
         return httpx.Response(200, content=audio)
 
     tts = _tts(handler)
-    result = await tts.synthesize("박스, 박스.")
+    result = await tts.synthesize("박스, 박스. 들어와.")
 
     assert result == audio
     # https를 먼저 시도하지 않고 API가 준 http URL을 그대로 받는다.
@@ -244,7 +244,7 @@ async def test_http_audio_url_succeeds_when_https_would_hang(make_wav: Any) -> N
     # 전체 2초 마감은 그대로 두고, http URL로 그 안에 끝나야 한다.
     tts = _tts(handler, config=_config(timeout_s=2.0))
     started = time.perf_counter()
-    result = await tts.synthesize("박스, 박스.")
+    result = await tts.synthesize("박스, 박스. 들어와.")
     elapsed = time.perf_counter() - started
 
     assert result == audio
@@ -360,12 +360,12 @@ async def test_stream_parses_sse_pcm_chunks() -> None:
         )
 
     tts = _tts(handler)
-    received = [chunk async for chunk in tts.stream("앞차 0.6. 다음 직선 DRS.", "Cherry")]
+    received = [chunk async for chunk in tts.stream("앞차랑 0.6초야. 다음 직선에서 DRS 써.", "Cherry")]
 
     assert received == chunks
     request = seen[0]
     assert json.loads(request.content)["input"] == {
-        "text": "앞차 0.6. 다음 직선 DRS.",
+        "text": "앞차랑 0.6초야. 다음 직선에서 DRS 써.",
         "voice": "Cherry",
         "language_type": "Korean",
     }

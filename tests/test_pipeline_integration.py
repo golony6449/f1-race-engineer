@@ -199,8 +199,10 @@ def _corner_coaching(messages: list[RadioMessage]) -> list[RadioMessage]:
         for msg in messages
         if msg.kind == "coaching"
         and re.search(r"\d+번", msg.text)
-        and re.search(r"(브레이크|턴인|정점 속도|조향|스로틀|트랙 이탈|라인)", msg.text)
-        and re.search(r"\d+\s*(미터|킬로|회)", msg.text)
+        and re.search(
+            r"(브레이크|턴인|코너 속도|조향|가속|트랙 벗어났|라인|핸들)", msg.text
+        )
+        and re.search(r"\d+\s*(미터|킬로|번 고쳐)", msg.text)
     ]
 
 
@@ -230,9 +232,9 @@ async def test_coaching_radio_and_report_map_lift_state(tmp_path: Path) -> None:
         coaching = _corner_coaching(_messages(radio, "coaching"))
         assert coaching, [msg.text for msg in radio.queue.pushed]
         text = coaching[0].text
-        # "7번, 턴인 늦음. 6미터."처럼 코너·동작·수치를 갖춘다.
+        # "7번에서 턴인이 늦었어. 6미터 더 일찍 꺾어."처럼 코너·동작·수치를 갖춘다.
         assert re.search(r"\d+번", text)
-        assert re.search(r"(미터|킬로|회)", text)
+        assert re.search(r"(미터|킬로|번 고쳐)", text)
 
         client = TestClient(create_app(engine=engine))
 
@@ -286,10 +288,10 @@ async def test_overtake_and_lift_coast_radio(tmp_path: Path) -> None:
         overtake = [
             msg
             for msg in _messages(radio, "overtake")
-            if "앞차" in msg.text and ("DRS" in msg.text or "기다림" in msg.text)
+            if "앞차랑" in msg.text and ("DRS" in msg.text or "기다렸다가" in msg.text)
         ]
         assert overtake, [msg.text for msg in radio.queue.pushed]
-        assert re.search(r"앞차 \d+\.\d", overtake[0].text)
+        assert re.search(r"앞차랑 \d+\.\d초", overtake[0].text)
 
         lift = [
             msg

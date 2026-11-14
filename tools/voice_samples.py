@@ -26,11 +26,11 @@ from f1re.tts.qwen import QwenTTS, TTSError
 from f1re.tts.radiofx import RadioFxConfig, apply_radio_fx_wav
 
 SENTENCES: tuple[str, ...] = (
-    "3번, 브레이크 늦음. 5미터.",
-    "7번 탈출, 스트로틀 늦음.",
-    "앞차 0.6. 다음 직선 DRS.",
-    "박스, 박스.",
-    "3번 좋아짐. 다음 7번.",
+    "3번에서 브레이크가 늦었어. 5미터 더 일찍 밟아.",
+    "7번 탈출에서 가속이 늦었어. 10미터 더 일찍 밟아.",
+    "앞차랑 0.6초야. 다음 직선에서 DRS 써.",
+    "박스, 박스. 들어와.",
+    "3번 좋아졌어. 다음은 7번 보자.",
 )
 
 # 문서상 모든 보이스가 한국어를 지원한다. 사용자가 고른 Katerina(2026-11-13)를

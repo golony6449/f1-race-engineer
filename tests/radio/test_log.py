@@ -13,7 +13,7 @@ from f1re.radio.queue import Priority, RadioKind, RadioMessage
 
 
 def _message(
-    text: str = "3번, 브레이크 늦음. 5미터.",
+    text: str = "3번에서 브레이크가 늦었어. 5미터 더 일찍 밟아.",
     *,
     kind: str = RadioKind.COACHING,
     created_ns: int = 1_000,
@@ -105,7 +105,7 @@ def test_record_stores_every_field(tmp_path: Path) -> None:
         assert row["corner"] == 3
         assert row["kind"] == "coaching"
         assert row["priority"] == int(Priority.COACHING)
-        assert row["text"] == "3번, 브레이크 늦음. 5미터."
+        assert row["text"] == "3번에서 브레이크가 늦었어. 5미터 더 일찍 밟아."
         assert row["evidence"] == {"meters": 5.2, "brake_start_m": 510.0}
         assert row["played"] is True
         assert row["latency_ms"] == 87
@@ -136,7 +136,7 @@ def test_record_expired_message_with_reason(tmp_path: Path) -> None:
     try:
         log = RadioLog(conn, session_uid=42)
         log.record(
-            _message("타이어 4개 마모 88퍼센트.", kind=RadioKind.SAFETY),
+            _message("4개 타이어 마모가 88퍼센트야.", kind=RadioKind.SAFETY),
             played=False,
             latency_ms=None,
             dropped_reason="expired",
@@ -144,7 +144,7 @@ def test_record_expired_message_with_reason(tmp_path: Path) -> None:
         log.record(_message("정상 재생"), played=True, latency_ms=12)
 
         rows = {row["text"]: row for row in log.recent()}
-        expired = rows["타이어 4개 마모 88퍼센트."]
+        expired = rows["4개 타이어 마모가 88퍼센트야."]
         played = rows["정상 재생"]
         assert expired["played"] is False
         assert expired["latency_ms"] is None

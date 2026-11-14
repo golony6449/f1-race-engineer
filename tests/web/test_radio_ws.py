@@ -93,7 +93,7 @@ class SlowCache:
     ) -> AudioSource:
         async def chunks() -> AsyncIterator[bytes]:
             yield b"\x01\x00" * 240
-            if text == "박스, 박스.":
+            if text == "박스, 박스. 들어와.":
                 self.first_chunk.set()
                 # 다음 조각이 오기 전에 더 높은 우선순위 무전이 도착한다.
                 await asyncio.sleep(0.2)
@@ -175,7 +175,7 @@ class RecordingService(RadioService):
 
 
 def _message(
-    text: str = "박스, 박스.",
+    text: str = "박스, 박스. 들어와.",
     *,
     kind: RadioKind = RadioKind.BOX,
     ttl_ns: int = 10_000_000_000,
@@ -276,7 +276,7 @@ def test_radio_ws_delivers_audio_and_caption() -> None:
             received = _receive_until(websocket, "done")
 
             caption = next(p for p in received if p["type"] == "caption")
-            assert caption["text"] == "박스, 박스."
+            assert caption["text"] == "박스, 박스. 들어와."
             assert caption["kind"] == "box"
             assert caption["lap"] == 10
 
@@ -295,7 +295,7 @@ def test_radio_ws_delivers_audio_and_caption() -> None:
 
         # 재생했다는 기록이 남는다(시각·재생 여부·지연).
         assert len(log.records) == 1
-        assert log.records[0][0] == "박스, 박스."
+        assert log.records[0][0] == "박스, 박스. 들어와."
         assert log.records[0][1] is True
         assert log.records[0][2] is not None
 
@@ -307,7 +307,7 @@ def test_radio_ws_delivers_audio_and_caption() -> None:
         # 마지막 자막은 새로 접속한 페이지에 다시 보여 준다.
         with client.websocket_connect("/ws/radio") as websocket:
             initial = websocket.receive_json()
-            assert initial["last"]["text"] == "박스, 박스."
+            assert initial["last"]["text"] == "박스, 박스. 들어와."
 
 
 def test_radio_disconnected_status_visible() -> None:
@@ -338,7 +338,7 @@ def test_radio_disconnected_status_visible() -> None:
 def test_alert_loop_sends_message_to_page() -> None:
     """경고 판정 → 큐 → WebSocket까지 실제 경로로 한 줄이 흐르는지."""
     store = StateStore()
-    message = _message("타이어 앞왼쪽 마모 80퍼센트.", kind=RadioKind.SAFETY)
+    message = _message("앞왼쪽 타이어 마모가 80퍼센트야.", kind=RadioKind.SAFETY)
     rules = GatedRules(message)
     service = _service(store, rules=rules)
     app = create_app(store, radio=service)
@@ -350,7 +350,7 @@ def test_alert_loop_sends_message_to_page() -> None:
             received = _receive_until(websocket, "done")
 
             caption = next(p for p in received if p["type"] == "caption")
-            assert caption["text"] == "타이어 앞왼쪽 마모 80퍼센트."
+            assert caption["text"] == "앞왼쪽 타이어 마모가 80퍼센트야."
             assert caption["kind"] == "safety"
             audio = [p for p in received if p["type"] == "audio"]
             assert len(audio) == len(CHUNKS)
@@ -371,7 +371,7 @@ def test_tts_offline_keeps_queue_moving_and_flags_offline() -> None:
         with client.websocket_connect("/ws/radio") as websocket:
             assert websocket.receive_json()["type"] == "status"
             service.queue.push(_message("합성 실패", kind=RadioKind.SAFETY))
-            service.queue.push(_message("박스, 박스.", kind=RadioKind.BOX))
+            service.queue.push(_message("박스, 박스. 들어와.", kind=RadioKind.BOX))
 
             received: list[dict] = []
             while len([p for p in received if p["type"] == "done"]) < 2:
@@ -395,7 +395,7 @@ def test_tts_offline_keeps_queue_moving_and_flags_offline() -> None:
         state = client.get("/api/state").json()["status"]
         assert state["voice"]["state"] == "online"
 
-    assert [record[0] for record in log.records] == ["합성 실패", "박스, 박스."]
+    assert [record[0] for record in log.records] == ["합성 실패", "박스, 박스. 들어와."]
     assert log.records[0][1] is False
     assert log.records[1][1] is True
 
@@ -409,9 +409,9 @@ async def test_higher_priority_interrupts_current_radio() -> None:
 
     service.ensure_started()
     service.add_client()
-    service.queue.push(_message("박스, 박스.", kind=RadioKind.BOX))
+    service.queue.push(_message("박스, 박스. 들어와.", kind=RadioKind.BOX))
     await asyncio.wait_for(cache.first_chunk.wait(), timeout=2.0)
-    service.queue.push(_message("타이어 앞왼쪽 마모 80퍼센트.", kind=RadioKind.SAFETY))
+    service.queue.push(_message("앞왼쪽 타이어 마모가 80퍼센트야.", kind=RadioKind.SAFETY))
 
     deadline = time.monotonic() + 3.0
     while len(log.records) < 2 and time.monotonic() < deadline:
@@ -419,8 +419,8 @@ async def test_higher_priority_interrupts_current_radio() -> None:
     await service.aclose()
 
     assert [record[0] for record in log.records] == [
-        "박스, 박스.",
-        "타이어 앞왼쪽 마모 80퍼센트.",
+        "박스, 박스. 들어와.",
+        "앞왼쪽 타이어 마모가 80퍼센트야.",
     ]
     assert service.queue.pending_count == 0
 
@@ -465,12 +465,12 @@ async def test_priority_interrupt_sends_interrupt_and_speaks_safety() -> None:
     store = StateStore()
     cache = TimedCache(
         {
-            "박스, 박스.": [_pcm(0.5, 1), _pcm(0.5, 2)],
-            "타이어 앞왼쪽 마모 80퍼센트.": [_pcm(0.25, 9)],
+            "박스, 박스. 들어와.": [_pcm(0.5, 1), _pcm(0.5, 2)],
+            "앞왼쪽 타이어 마모가 80퍼센트야.": [_pcm(0.25, 9)],
         }
     )
     log = FakeLog()
-    safety = _message("타이어 앞왼쪽 마모 80퍼센트.", kind=RadioKind.SAFETY)
+    safety = _message("앞왼쪽 타이어 마모가 80퍼센트야.", kind=RadioKind.SAFETY)
     service = RecordingService(
         store, cache=cache, log=log, clock=clock, sleep=clock.sleep
     )
@@ -485,7 +485,7 @@ async def test_priority_interrupt_sends_interrupt_and_speaks_safety() -> None:
     clock.on_sleep = push_safety
     service.ensure_started()
     service.add_client()
-    service.queue.push(_message("박스, 박스."))
+    service.queue.push(_message("박스, 박스. 들어와."))
 
     deadline = time.monotonic() + 3.0
     while len(log.records) < 2 and time.monotonic() < deadline:
@@ -493,8 +493,8 @@ async def test_priority_interrupt_sends_interrupt_and_speaks_safety() -> None:
     await service.aclose()
 
     assert [record[0] for record in log.records] == [
-        "박스, 박스.",
-        "타이어 앞왼쪽 마모 80퍼센트.",
+        "박스, 박스. 들어와.",
+        "앞왼쪽 타이어 마모가 80퍼센트야.",
     ]
     types = [payload["type"] for payload in service.payloads]
     interrupted_at = types.index("interrupt")
@@ -502,7 +502,7 @@ async def test_priority_interrupt_sends_interrupt_and_speaks_safety() -> None:
         index
         for index, payload in enumerate(service.payloads)
         if payload["type"] == "caption"
-        and payload["text"] == "타이어 앞왼쪽 마모 80퍼센트."
+        and payload["text"] == "앞왼쪽 타이어 마모가 80퍼센트야."
     )
     # interrupt가 먼저 가고 그 뒤에 SAFETY 자막·음성이 나간다.
     assert interrupted_at < safety_caption_at
@@ -517,7 +517,7 @@ async def test_priority_interrupt_sends_interrupt_and_speaks_safety() -> None:
     box_done = next(
         payload
         for payload in service.payloads
-        if payload["type"] == "done" and payload["text"] == "박스, 박스."
+        if payload["type"] == "done" and payload["text"] == "박스, 박스. 들어와."
     )
     assert box_done["interrupted"] is True
 
@@ -537,21 +537,21 @@ async def test_without_page_skips_pacing_and_records_unplayed() -> None:
     log = FakeLog()
     service = RecordingService(
         StateStore(),
-        cache=TimedCache({"박스, 박스.": [_pcm(1.0, 1)]}),
+        cache=TimedCache({"박스, 박스. 들어와.": [_pcm(1.0, 1)]}),
         log=log,
         clock=clock,
         sleep=clock.sleep,
     )
 
     service.ensure_started()
-    service.queue.push(_message("박스, 박스."))
+    service.queue.push(_message("박스, 박스. 들어와."))
     deadline = time.monotonic() + 2.0
     while not log.records and time.monotonic() < deadline:
         await asyncio.sleep(0.01)
     await service.aclose()
 
     assert service.queue.pending_count == 0
-    assert log.records[0][:2] == ("박스, 박스.", False)
+    assert log.records[0][:2] == ("박스, 박스. 들어와.", False)
     assert clock.sleeps == [], "페이지가 없는데 재생 대기를 했습니다"
 
 
@@ -588,7 +588,7 @@ def test_radio_without_page_discards_queue_and_keeps_status() -> None:
 
     async def scenario() -> None:
         service.ensure_started()
-        service.queue.push(_message("박스, 박스."))
+        service.queue.push(_message("박스, 박스. 들어와."))
         deadline = time.monotonic() + 2.0
         while not log.records and time.monotonic() < deadline:
             await asyncio.sleep(0.01)
@@ -597,7 +597,7 @@ def test_radio_without_page_discards_queue_and_keeps_status() -> None:
     asyncio.run(scenario())
 
     assert service.queue.pending_count == 0
-    assert log.records[0][:2] == ("박스, 박스.", False)
+    assert log.records[0][:2] == ("박스, 박스. 들어와.", False)
     assert service.status()["radio_page"] == {
         "state": "disconnected",
         "label": "무전 페이지 미연결",
