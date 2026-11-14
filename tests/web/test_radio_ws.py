@@ -7,15 +7,19 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextlib
+import logging
 import time
 from collections.abc import AsyncIterator, Callable
 from typing import Any
 
+import pytest
 from fastapi.testclient import TestClient
 
+from f1re.engine import Engine, Runtime
 from f1re.radio.queue import RadioKind, RadioMessage
 from f1re.state.store import StateStore
-from f1re.tts.cache import AudioSource
+from f1re.tts.cache import AudioSource, VoiceStatus
 from f1re.tts.qwen import TTSUnavailable
 from f1re.web.app import create_app
 from f1re.web.radio_api import RadioService
@@ -134,6 +138,54 @@ class FakeClock:
         if self.on_sleep is not None:
             self.on_sleep(len(self.sleeps))
         await asyncio.sleep(0)
+
+
+class CheckCache(FakeCache):
+    """`check()` 호출을 세는 캐시 대역. 실제 Qwen을 부르지 않는다(SCRUM-92)."""
+
+    def __init__(
+        self, *, offline: bool = False, last_error: str | None = None
+    ) -> None:
+        super().__init__()
+        self.offline = offline
+        self.last_error = last_error
+        self.check_calls = 0
+        self.check_error: Exception | None = None
+
+    async def check(self) -> VoiceStatus:
+        self.check_calls += 1
+        if self.check_error is not None:
+            raise self.check_error
+        self.offline = False
+        self.last_error = None
+        return VoiceStatus.ONLINE
+
+
+class FakeStore:
+    """`snapshot()`만 내는 상태 저장소 대역. 자동 확인 조건을 시험한다."""
+
+    def __init__(self, last_recv_ns: int | None = None) -> None:
+        self.last_recv_ns = last_recv_ns
+        self.snapshot_calls = 0
+
+    def snapshot(self) -> dict[str, Any]:
+        self.snapshot_calls += 1
+        return {
+            "session_uid": None,
+            "packets": {},
+            "flags": {},
+            "lap_validity": [],
+            "diagnostics": {"last_recv_ns": self.last_recv_ns},
+        }
+
+
+class NoRules:
+    """경고를 내지 않는 규칙 대역."""
+
+    def evaluate(
+        self, snapshot: dict[str, Any], events: Any = ()
+    ) -> list[RadioMessage]:
+        return []
 
 
 def _pcm(seconds: float, value: int = 1) -> bytes:
@@ -267,6 +319,7 @@ def test_radio_ws_delivers_audio_and_caption() -> None:
             assert initial["status"]["voice"] == {
                 "state": "online",
                 "label": "음성 온라인",
+                "reason": None,
             }
             assert initial["status"]["radio_page"]["connected"] is True
             assert initial["status"]["radio_page"]["label"] == "무전 페이지 연결됨"
@@ -610,10 +663,210 @@ def test_radio_service_without_cache_reports_offline() -> None:
     store = StateStore()
     service = RadioService(store)
     status = service.status()
-    assert status["voice"] == {"state": "offline", "label": "음성 오프라인"}
+    assert status["voice"] == {
+        "state": "offline",
+        "label": "음성 오프라인",
+        "reason": None,
+    }
 
     app = create_app(store, radio=service)
     with TestClient(app) as client:
         state = client.get("/api/state").json()["status"]
         assert state["voice"]["label"] == "음성 오프라인"
         assert state["radio_page"]["connected"] is False
+
+
+# ---------------------------------------------------------------------------
+# 음성 상태 이유·새로고침·자동 확인(SCRUM-92)
+
+
+def test_status_voice_includes_offline_reason() -> None:
+    store = StateStore()
+    cache = FakeCache()
+    service = _service(store, cache=cache)
+
+    assert service.status()["voice"] == {
+        "state": "online",
+        "label": "음성 온라인",
+        "reason": None,
+    }
+
+    cache.offline = True
+    cache.last_error = "Qwen TTS 대역 오류"
+    assert service.status()["voice"] == {
+        "state": "offline",
+        "label": "음성 오프라인",
+        "reason": "Qwen TTS 대역 오류",
+    }
+
+    # 캐시가 없으면 보여 줄 이유도 없다.
+    assert RadioService(store).status()["voice"]["reason"] is None
+
+
+async def _run_voice_check_loop(
+    cache: CheckCache, store: FakeStore, clock: FakeClock
+) -> RadioService:
+    """자동 확인 루프만 띄워 한 번 돌게 하고 멈춘다."""
+    service = RadioService(
+        store,
+        cache=cache,
+        rules=NoRules(),
+        clock=clock,
+        sleep=clock.sleep,
+        voice_check_s=3600.0,
+    )
+    task = asyncio.create_task(service._voice_check_loop())
+    await asyncio.sleep(0.05)
+    task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await task
+    return service
+
+
+async def test_voice_check_loop_checks_offline_cache_while_receiving() -> None:
+    """오프라인 + 최근 패킷이면 ensure_started가 띄운 루프가 확인한다."""
+    clock = FakeClock()
+    cache = CheckCache(offline=True, last_error="Qwen TTS 대역 오류")
+    store = FakeStore(last_recv_ns=clock() - 1_000_000_000)  # 1초 전 패킷
+    service = RadioService(
+        store,
+        cache=cache,
+        rules=NoRules(),
+        clock=clock,
+        sleep=clock.sleep,
+        voice_check_s=3600.0,
+    )
+
+    service.ensure_started()
+    deadline = time.monotonic() + 2.0
+    while cache.check_calls == 0 and time.monotonic() < deadline:
+        await asyncio.sleep(0.01)
+    await service.aclose()
+
+    assert cache.check_calls == 1
+    assert service.status()["voice"]["state"] == "online"
+
+
+@pytest.mark.parametrize("age_ns", [None, 6_000_000_000])
+async def test_voice_check_loop_skips_without_fresh_telemetry(
+    age_ns: int | None,
+) -> None:
+    """패킷이 없거나 5초보다 오래됐으면 Qwen을 부르지 않는다."""
+    clock = FakeClock()
+    cache = CheckCache(offline=True, last_error="Qwen TTS 대역 오류")
+    last_recv_ns = None if age_ns is None else clock() - age_ns
+    store = FakeStore(last_recv_ns=last_recv_ns)
+
+    await _run_voice_check_loop(cache, store, clock)
+
+    assert store.snapshot_calls >= 1, "자동 확인 루프가 한 번도 돌지 않았습니다"
+    assert cache.check_calls == 0
+
+
+async def test_voice_check_loop_skips_when_online() -> None:
+    """온라인 + 최근 패킷이면 이미 정상이므로 부르지 않는다."""
+    clock = FakeClock()
+    cache = CheckCache(offline=False)
+    store = FakeStore(last_recv_ns=clock())
+    service = RadioService(
+        store,
+        cache=cache,
+        rules=NoRules(),
+        clock=clock,
+        sleep=clock.sleep,
+        voice_check_s=3600.0,
+    )
+    assert service._voice_check_needed() is False
+
+    await _run_voice_check_loop(cache, store, clock)
+
+    assert cache.check_calls == 0
+
+
+async def test_voice_check_loop_keeps_running_after_error(caplog) -> None:
+    """확인 중 오류가 나도 로그만 남기고 다음 주기에 계속 돈다."""
+    clock = FakeClock()
+    cache = CheckCache(offline=True, last_error="Qwen TTS 대역 오류")
+    cache.check_error = RuntimeError("대역 오류")
+    store = FakeStore(last_recv_ns=clock())
+    service = RadioService(
+        store,
+        cache=cache,
+        rules=NoRules(),
+        clock=clock,
+        sleep=clock.sleep,
+        voice_check_s=0.01,
+    )
+
+    with caplog.at_level(logging.ERROR, logger="f1re.web.radio_api"):
+        task = asyncio.create_task(service._voice_check_loop())
+        deadline = time.monotonic() + 2.0
+        while cache.check_calls < 2 and time.monotonic() < deadline:
+            await asyncio.sleep(0.01)
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+    assert cache.check_calls >= 2
+    assert any(
+        "음성 상태 자동 확인 중 오류" in record.getMessage()
+        for record in caplog.records
+    )
+
+
+def test_voice_check_endpoint_calls_check_once_and_returns_online() -> None:
+    store = StateStore()
+    cache = CheckCache(offline=True, last_error="Qwen TTS 대역 오류")
+    service = _service(store, cache=cache)
+    app = create_app(store, radio=service)
+
+    with TestClient(app) as client:
+        response = client.post("/api/voice/check")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert cache.check_calls == 1
+    assert payload["status"]["voice"] == {
+        "state": "online",
+        "label": "음성 온라인",
+        "reason": None,
+    }
+
+
+def test_voice_check_endpoint_engine_off_returns_default_without_call() -> None:
+    store = StateStore()
+    cache = CheckCache(offline=True, last_error="Qwen TTS 대역 오류")
+    service = _service(store, cache=cache)
+    app = create_app(store, radio=service)
+
+    with TestClient(app) as client:
+        assert client.post("/api/engine", json={"state": "off"}).status_code == 200
+        response = client.post("/api/voice/check")
+
+    assert response.status_code == 200
+    status = response.json()["status"]
+    assert cache.check_calls == 0
+    assert status["voice"] == {
+        "state": "offline",
+        "label": "음성 오프라인",
+        "reason": None,
+    }
+    assert status["radio_page"]["state"] == "disconnected"
+
+
+def test_voice_check_endpoint_without_service_returns_offline() -> None:
+    store = StateStore()
+    engine = Engine(runtime=Runtime(store=store, radio=None, conn=None, map=None))
+    app = create_app(engine=engine)
+
+    with TestClient(app) as client:
+        response = client.post("/api/voice/check")
+
+    assert response.status_code == 200
+    status = response.json()["status"]
+    assert status["voice"] == {
+        "state": "offline",
+        "label": "음성 오프라인",
+        "reason": None,
+    }
+    assert status["radio_page"]["connected"] is False

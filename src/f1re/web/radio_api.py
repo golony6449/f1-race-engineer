@@ -50,7 +50,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 
 from f1re.alerts.rules import AlertRules, rules_from_config
@@ -82,6 +82,12 @@ PACE_SLICE_S = 0.05
 # 클라이언트 한 명에게 쌓아 둘 메시지 수. 느린 브라우저가 서버를 막지 않게 한다.
 CLIENT_QUEUE_SIZE = 256
 
+# 음성 상태 자동 확인 주기(초). Qwen 호출은 비용이 들어 게임 중일 때만 한다.
+VOICE_CHECK_S = 30.0
+
+# 최근 이 시간(초) 안에 패킷을 받았으면 텔레메트리 수신 중으로 본다.
+TELEMETRY_FRESH_S = 5.0
+
 # 오디오 형식. VoiceCache가 내는 PCM과 같다.
 SAMPLE_RATE = 24_000
 CHANNELS = 1
@@ -91,6 +97,22 @@ STATUS_VOICE_ONLINE = {"state": "online", "label": "음성 온라인"}
 STATUS_VOICE_OFFLINE = {"state": "offline", "label": "음성 오프라인"}
 STATUS_RADIO_CONNECTED = {"state": "connected", "label": "무전 페이지 연결됨"}
 STATUS_RADIO_DISCONNECTED = {"state": "disconnected", "label": "무전 페이지 미연결"}
+
+
+def default_status() -> dict[str, Any]:
+    """서비스가 없거나 엔진이 꺼져 있을 때의 기본 상태(음성 오프라인·미연결).
+
+    음성 캐시가 없으므로 실패 이유(`reason`)도 없다. `status()`와 같은 모양을
+    유지해 화면이 두 응답을 같이 다룰 수 있게 한다.
+    """
+    return {
+        "voice": dict(STATUS_VOICE_OFFLINE, reason=None),
+        "radio_page": {
+            **STATUS_RADIO_DISCONNECTED,
+            "connected": False,
+            "clients": 0,
+        },
+    }
 
 
 @dataclass
@@ -119,6 +141,7 @@ class RadioService:
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
         alert_poll_s: float = ALERT_POLL_S,
         idle_s: float = IDLE_S,
+        voice_check_s: float = VOICE_CHECK_S,
     ) -> None:
         self._store = store
         self._queue = queue if queue is not None else RadioQueue(clock=clock)
@@ -133,6 +156,9 @@ class RadioService:
         self._sleep = sleep
         self._alert_poll_s = alert_poll_s
         self._idle_s = idle_s
+        self._voice_check_s = voice_check_s
+        # 수동·자동 확인이 겹쳐 Qwen을 두 번 부르지 않게 한다(SCRUM-92).
+        self._voice_check_lock = asyncio.Lock()
 
         self._lock = threading.Lock()
         self._clients: dict[int, _Client] = {}
@@ -152,6 +178,9 @@ class RadioService:
         self._tasks = [
             asyncio.create_task(self._alert_loop(), name="f1re-radio-alerts"),
             asyncio.create_task(self._play_loop(), name="f1re-radio-play"),
+            asyncio.create_task(
+                self._voice_check_loop(), name="f1re-radio-voice-check"
+            ),
         ]
 
     async def aclose(self) -> None:
@@ -176,11 +205,19 @@ class RadioService:
         voice_online = self._cache is not None and not bool(
             getattr(self._cache, "offline", False)
         )
+        voice = dict(
+            STATUS_VOICE_ONLINE if voice_online else STATUS_VOICE_OFFLINE
+        )
+        # 오프라인 이유를 화면에 보여 준다(SCRUM-92). `TTSUnavailable` 메시지에는
+        # API 키가 담기지 않는다(`tts/qwen.py`).
+        voice["reason"] = (
+            None
+            if voice_online or self._cache is None
+            else getattr(self._cache, "last_error", None)
+        )
         clients = self._client_count()
         return {
-            "voice": dict(
-                STATUS_VOICE_ONLINE if voice_online else STATUS_VOICE_OFFLINE
-            ),
+            "voice": voice,
             "radio_page": {
                 **(
                     STATUS_RADIO_CONNECTED
@@ -191,6 +228,20 @@ class RadioService:
                 "clients": clients,
             },
         }
+
+    async def check_voice(self) -> dict[str, Any]:
+        """음성 상태를 지금 다시 확인한다(SCRUM-92).
+
+        캐시가 없으면 아무것도 부르지 않고 지금 상태를 돌려준다. 캐시가 있으면
+        짧은 문장을 한 번 합성하고(`VoiceCache.check`) 결과를 화면에 알린다.
+        동시에 여러 번 눌려도 Qwen 호출이 겹치지 않도록 잠금 안에서 확인한다.
+        """
+        if self._cache is None:
+            return self.status()
+        async with self._voice_check_lock:
+            await self._cache.check()
+            self._broadcast_status()
+            return self.status()
 
     @property
     def queue(self) -> RadioQueue:
@@ -267,6 +318,37 @@ class RadioService:
             except Exception:  # 판정 버그가 재생 루프를 멈추지 않게 한다.
                 logger.exception("위험 경고 판정 중 오류")
             await asyncio.sleep(self._alert_poll_s)
+
+    async def _voice_check_loop(self) -> None:
+        """음성이 오프라인일 때 게임 중이면 주기적으로 다시 확인한다(SCRUM-92).
+
+        확인 한 번이 곧 Qwen 호출이라 비용이 든다. 캐시가 오프라인이고 최근
+        패킷을 받고 있을 때만 부른다. 오류는 남기고 루프는 계속 돈다.
+        """
+        while True:
+            try:
+                if self._voice_check_needed():
+                    await self.check_voice()
+            except Exception:  # 확인 버그가 자동 복구 루프를 멈추지 않게 한다.
+                logger.exception("음성 상태 자동 확인 중 오류")
+            # 재생 루프의 페이싱과 섞이지 않도록 실제 시계로 쉰다.
+            await asyncio.sleep(self._voice_check_s)
+
+    def _voice_check_needed(self) -> bool:
+        """지금 자동 확인을 할 조건인지. 캐시 오프라인 + 텔레메트리 수신 중."""
+        cache = self._cache
+        if cache is None or not bool(getattr(cache, "offline", False)):
+            return False
+        return self._telemetry_active()
+
+    def _telemetry_active(self) -> bool:
+        """최근 `TELEMETRY_FRESH_S`초 안에 패킷을 받았는지."""
+        diagnostics = self._store.snapshot().get("diagnostics") or {}
+        last_recv_ns = diagnostics.get("last_recv_ns")
+        if not isinstance(last_recv_ns, int):
+            return False
+        fresh_ns = int(TELEMETRY_FRESH_S * 1_000_000_000)
+        return self._clock() - last_recv_ns <= fresh_ns
 
     async def _play_loop(self) -> None:
         while True:
@@ -511,6 +593,24 @@ def radio_page() -> FileResponse:
     )
 
 
+@router.post("/api/voice/check")
+async def voice_check(request: Request) -> dict[str, Any]:
+    """음성 상태를 지금 다시 확인한다(SCRUM-92).
+
+    캐시가 있으면 Qwen을 한 번 호출한다. 엔진이 꺼져 있거나 무전 서비스가
+    없으면 호출하지 않고 기본(오프라인·미연결) 상태를 200으로 돌려준다.
+    """
+    engine = getattr(request.app.state, "engine", None)
+    if engine is not None and engine.state != ENGINE_ON:
+        return {"status": default_status()}
+    service: RadioService | None = (
+        engine.radio if engine is not None else None
+    ) or getattr(request.app.state, "radio", None)
+    if service is None:
+        return {"status": default_status()}
+    return {"status": await service.check_voice()}
+
+
 @router.websocket("/ws/radio")
 async def ws_radio(websocket: WebSocket) -> None:
     """무전 페이지 하나와 연결해 음성 조각·자막·상태를 보낸다.
@@ -532,14 +632,7 @@ async def ws_radio(websocket: WebSocket) -> None:
         await websocket.send_json(
             {
                 "type": "status",
-                "status": {
-                    "voice": dict(STATUS_VOICE_OFFLINE),
-                    "radio_page": {
-                        **STATUS_RADIO_DISCONNECTED,
-                        "connected": False,
-                        "clients": 0,
-                    },
-                },
+                "status": default_status(),
                 "last": None,
             }
         )
