@@ -662,6 +662,9 @@ class RacePipeline:
             "fuel_kg": _float(status.get("fuel_in_tank")),
             "fuel_remaining_laps": fuel_remaining,
             "remaining_race_laps": remaining_race_laps,
+            "total_laps": self._total_laps,
+            # 감정 단계(SCRUM-91): 마지막 3랩이면 코칭·리프트가 격앙 표현을 쓴다.
+            "remaining_laps": remaining_race_laps,
             "fuel_laps_margin": fuel_margin,
             "brake_temp": _max_number(telemetry.get("brakes_temperature")),
             "brake_temps": _number_list(telemetry.get("brakes_temperature")),

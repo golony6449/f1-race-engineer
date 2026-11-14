@@ -452,6 +452,53 @@ def test_single_cause_message_has_where_what_howmuch() -> None:
     assert "metrics" in evidence and "reference_metrics" in evidence
 
 
+def _expression_choices(key: str, mood: str, **slots) -> list[str]:
+    from f1re.radio.templates import TEMPLATES
+
+    return [
+        text.format(**slots)
+        for text in TEMPLATES[key].texts_for(mood)
+    ]
+
+
+def test_last_laps_coaching_uses_hyped_wording() -> None:
+    """레이스 마지막 3랩이면 격앙된 표현(hyped)으로 말한다(SCRUM-91)."""
+    coach = _coach(SUZUKA, focus=[9])
+    lap = _suzuka(2, effects=_early_brake(SUZUKA, 9))
+
+    messages = _messages(
+        _feed(
+            coach,
+            lap,
+            overrides={"session_type": 10, "remaining_laps": 3},
+        )
+    )
+
+    assert len(messages) == 1
+    message = messages[0]
+    assert message.evidence["mood"] == "hyped"
+    assert message.text in _expression_choices(
+        "coaching.brake_early", "hyped", corner=9, meters=5
+    )
+
+
+def test_time_trial_is_not_hyped_even_near_the_end() -> None:
+    """타임 트라이얼은 남은 랩이 적어도 격앙 표현을 쓰지 않는다."""
+    coach = _coach(SUZUKA, focus=[9])
+    lap = _suzuka(1, effects=_early_brake(SUZUKA, 9))
+
+    messages = _messages(
+        _feed(
+            coach,
+            lap,
+            overrides={"session_type": 13, "remaining_laps": 1},
+        )
+    )
+
+    assert len(messages) == 1
+    assert messages[0].evidence["mood"] == "calm"
+
+
 def test_late_brake_is_the_cause_when_line_also_wide() -> None:
     """브레이크가 늦고 라인이 밖으로 밀리면 '브레이크 늦음'을 원인으로 고른다."""
     coach = _coach(MONACO, focus=[10])
@@ -601,7 +648,8 @@ def test_focus_improved_message_announces_next_corner() -> None:
     message = messages[0]
     assert message.kind == RadioKind.IMPROVEMENT
     assert message.corner == 6
-    assert message.text == "6번 좋아졌어. 다음은 10번 보자."
+    assert message.text == "오~ 6번 좋아졌어~ 그렇지~ 다음은 10번 보자."
+    assert message.evidence["mood"] == "warm"
     assert 6 not in coach.focus_corners
     assert 10 in coach.focus_corners
 
@@ -613,7 +661,7 @@ def test_focus_improved_without_replacement_uses_short_message() -> None:
     messages = coach.on_lap_completed(_suzuka(2))
 
     assert len(messages) == 1
-    assert messages[0].text == "3번 좋아졌어."
+    assert messages[0].text == "오~ 3번 좋아졌어~"
 
 
 def test_improvement_uses_ordinal_wording_for_unofficial_corners() -> None:
@@ -628,7 +676,7 @@ def test_improvement_uses_ordinal_wording_for_unofficial_corners() -> None:
     messages = coach.on_lap_completed(_suzuka(2))
 
     assert len(messages) == 1
-    assert messages[0].text == "3번째 코너 좋아졌어."
+    assert messages[0].text == "오~ 3번째 코너 좋아졌어~"
 
 
 # ---------------------------------------------------------------------------
@@ -735,8 +783,10 @@ def test_demo_coaching_scenario_emits_readable_messages(track: Track, outline) -
     assert emitted, "리플레이에서 코칭 무전이 나와야 한다"
     for _lap, message in emitted:
         assert message.kind in {RadioKind.COACHING, RadioKind.IMPROVEMENT}
-        assert message.text.endswith(".")
+        # calm은 마침표, warm은 물결표, 급박·격앙은 느낌표로 끝난다.
+        assert message.text[-1] in ".~!"
         assert message.text.strip()
         # 무전은 짧은 반말 문장이다. 길면 말이 늦게 끝나 운전을 방해한다.
         assert len(message.text) <= 60
         assert message.evidence
+        assert message.evidence["mood"] in {"calm", "hyped", "warm"}

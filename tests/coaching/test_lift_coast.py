@@ -373,6 +373,7 @@ def test_demo_scenario_instruction_lift_feedback_order() -> None:
     assert "발 떼" in instruction.text and "미터" in instruction.text
     assert instruction.lap == 3
     assert instruction.evidence["reason"] == "fuel_laps_margin"
+    assert instruction.evidence["mood"] == "calm"
     assert {zone.corner for zone in zones} <= set(
         instruction.evidence["corners"]
     )
@@ -386,6 +387,7 @@ def test_demo_scenario_instruction_lift_feedback_order() -> None:
         assert message.kind == RadioKind.IMPROVEMENT
         assert message.lap == 4
         assert message.evidence["status"] == "good"
+        assert message.evidence["mood"] == "warm"
         assert message.evidence["measured_m"] >= message.evidence["target_m"]
 
     # 5랩: 여유 회복 → "연료 회복됐어. 이제 리프트 안 해도 돼." 한 번.
@@ -393,7 +395,7 @@ def test_demo_scenario_instruction_lift_feedback_order() -> None:
     stops = [
         message
         for message in lap5
-        if message.text == "연료 회복됐어. 이제 리프트 안 해도 돼."
+        if message.text == "연료 회복됐어~ 이제 리프트 안 해도 돼~"
     ]
     assert len(stops) == 1
     assert stops[0].kind == RadioKind.IMPROVEMENT
@@ -404,6 +406,46 @@ def test_demo_scenario_instruction_lift_feedback_order() -> None:
 
     # 순서: 지시(3랩) → 피드백(4랩) → 정지(5랩).
     assert instruction.lap < min(message.lap for message in feedback) < stops[0].lap
+
+
+def test_last_laps_lift_instruction_uses_hyped_wording() -> None:
+    """레이스 마지막 3랩이면 리프트 지시도 격앙된 표현으로 말한다(SCRUM-91)."""
+    coach = _coach()
+    first = _suzuka(1)
+    _feed(coach, first, 1)
+    _complete(coach, first)
+    second = _suzuka(2)
+    _feed(
+        coach,
+        second,
+        2,
+        overrides={
+            **_alert_overrides(2),
+            "session_type": 10,
+            "remaining_laps": 3,
+        },
+    )
+    _complete(coach, second)
+    assert coach.recommendations
+
+    lap3 = _messages(
+        _feed(
+            coach,
+            _suzuka(3),
+            3,
+            overrides={
+                **_alert_overrides(3),
+                "session_type": 10,
+                "remaining_laps": 2,
+            },
+        )
+    )
+
+    assert len(lap3) == 1
+    instruction = lap3[0]
+    assert instruction.kind == RadioKind.COACHING
+    assert instruction.evidence["mood"] == "hyped"
+    assert "!" in instruction.text
 
 
 def test_short_lift_feedback_says_how_much_more() -> None:
@@ -583,7 +625,7 @@ def test_ordinal_wording_for_unofficial_corners() -> None:
     good = [message for message in lap4 if "리프트 좋아" in message.text]
     assert good
     assert any(
-        "번째 코너 리프트 좋아. 그대로 해." in message.text for message in good
+        "번째 코너 리프트 좋아" in message.text for message in good
     )
 
 

@@ -24,6 +24,7 @@ from f1re.demo_sender.scenarios import SCENARIO_DIR, load_scenarios
 from f1re.laps.traces import LapTrace, Sample
 from f1re.overtake.advisor import ERS_STORE_MAX_J, OvertakeAdvisor, OvertakeConfig
 from f1re.radio.queue import RadioKind, RadioQueue
+from f1re.radio.templates import TEMPLATES
 from f1re.tracks.model import Corner, Track, load_outline, load_track
 
 SUZUKA_ID = 13
@@ -494,6 +495,68 @@ def test_max_two_options_and_once_per_lap() -> None:
         "9번에서 바짝 붙어서 직선에서 넘어."
     )
     assert twice.evaluate(snapshot, traces, NOW_NS + 10**8) == []
+
+
+# ---------------------------------------------------------------------------
+# 감정 단계 (SCRUM-91)
+
+
+def _choices(key: str, mood: str, **slots: object) -> list[str]:
+    return [
+        text.format(**slots)
+        for text in TEMPLATES[key].texts_for(mood)
+    ]
+
+
+def test_close_battle_under_half_second_uses_hyped_wording() -> None:
+    """간격 0.5초 이하 추월 무전은 격앙된 표현(hyped)으로 말한다."""
+    advisor = _advisor()
+    messages = advisor.evaluate(
+        _snapshot(
+            gap_s=0.5,
+            player_status={"drs_allowed": 1, "drs_distance": 150},
+        ),
+        None,
+        NOW_NS,
+    )
+
+    assert len(messages) == 1
+    assert messages[0].evidence["mood"] == "hyped"
+    assert messages[0].text in _choices(
+        "overtake.drs_ers", "hyped", gap="0.5"
+    )
+
+
+def test_last_three_laps_uses_hyped_wording() -> None:
+    """레이스 마지막 3랩이면 간격이 0.6초여도 격앙 표현을 쓴다."""
+    advisor = _advisor()
+    snapshot = _snapshot(
+        gap_s=0.6,
+        lap=48,
+        player_status={"drs_allowed": 1, "drs_distance": 150},
+    )
+    snapshot["packets"]["session"]["total_laps"] = 50
+
+    messages = advisor.evaluate(snapshot, None, NOW_NS)
+
+    assert len(messages) == 1
+    assert messages[0].evidence["mood"] == "hyped"
+
+
+def test_normal_overtake_uses_calm_wording() -> None:
+    """레이스 중반, 간격이 0.5초를 넘으면 calm 표현을 쓴다."""
+    advisor = _advisor()
+    messages = advisor.evaluate(
+        _snapshot(
+            gap_s=0.6,
+            player_status={"drs_allowed": 1, "drs_distance": 150},
+        ),
+        None,
+        NOW_NS,
+    )
+
+    assert len(messages) == 1
+    assert messages[0].evidence["mood"] == "calm"
 
 
 # ---------------------------------------------------------------------------
