@@ -652,6 +652,8 @@ class RacePipeline:
             "gear": gear,
             "x": _float(motion.get("world_position_x")) or 0.0,
             "z": _float(motion.get("world_position_z")) or 0.0,
+            # 코치의 트랙 이탈 판정은 바퀴 4개 노면으로만 한다(SCRUM-93).
+            "surface": _surface_types(telemetry.get("surface_type")),
             "lap_valid": not invalid,
             "invalid_reason": next(iter(self._invalid_reasons), None),
             "in_pit": _int(lap.get("pit_status")) in (1, 2),
@@ -1126,6 +1128,19 @@ def _number_list(value: Any) -> list[float] | None:
             return None
         numbers.append(number)
     return numbers
+
+
+def _surface_types(value: Any) -> list[int] | None:
+    """바퀴별 노면(Car Telemetry surface_type) 4개. 형식이 다르면 None."""
+    if not isinstance(value, (list, tuple)) or len(value) != 4:
+        return None
+    surfaces: list[int] = []
+    for item in value:
+        number = _int(item)
+        if number is None:
+            return None
+        surfaces.append(number)
+    return surfaces
 
 
 def _max_number(value: Any) -> float | None:

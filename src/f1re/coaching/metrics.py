@@ -10,6 +10,10 @@
 - 라인: 기준 궤적에서 벗어난 최대 거리(진입·정점·탈출 지점), 트랙 이탈
 - 결과: 코너 구간 시간
 
+트랙 이탈은 **바퀴 4개가 모두 트랙 밖일 때만** 참이다(SCRUM-93). 연석을 밟거나
+바퀴 하나만 나간 것은 이탈이 아니므로 아스팔트(0)·연석(1)은 트랙 위 노면으로 본다.
+노면 값이 없는 옛 기준 랩·데모 샘플은 이탈을 판단하지 않는다(False).
+
 문턱값은 `config/default.toml`의 `[coaching.thresholds]`에만 둔다(설계 6.2).
 값은 데모 송신기 스즈카·모나코 랩에 맞춰 정했고, 실제 녹화로 다시 맞춘다.
 
@@ -30,7 +34,8 @@
 - 스로틀 다시 밟은 지점은 최저 속도 뒤에서 스로틀이 문턱값을 아래에서 위로
   지난 마지막 지점이다(잠깐 튄 값에 속지 않는다).
 - 기준 궤적 이탈 거리는 같은 랩 거리 근처(`line_dev_search_m`)의 기준 궤적
-  선분까지 수직 거리다. 진입·정점·탈출 세 지점 중 가장 큰 값을 쓴다.
+  선분까지 수직 거리다. 진입·정점·탈출 세 지점 중 가장 큰 값을 쓴다. 이 값이
+  `line_dev_max_m`을 넘으면 좌표계가 다른 기준 랩으로 보고 0으로 버린다.
 """
 
 from __future__ import annotations
@@ -48,6 +53,11 @@ from f1re.laps.traces import LapTrace, Sample
 from f1re.tracks.model import Corner
 from f1re.tracks.outline import TrackOutline
 
+# 트랙 위 노면으로 보는 값(F1 25 surface_type). 0 아스팔트, 1 연석(럼블 스트립).
+# 사용자 요구(2026-11-14): 연석을 밟거나 바퀴 하나만 나간 것은 트랙 이탈이 아니다.
+# 바퀴 4개가 모두 이 집합에 없을 때만 이탈로 본다(SCRUM-93).
+ON_TRACK_SURFACES = frozenset({0, 1})
+
 
 @dataclass(frozen=True)
 class CoachingThresholds:
@@ -63,7 +73,7 @@ class CoachingThresholds:
     steer_correction_min_gap_m: float
     throttle_on: float
     full_throttle: float
-    off_track_dev_m: float
+    line_dev_max_m: float
     line_dev_search_m: float
 
 
@@ -112,7 +122,7 @@ _NON_NEGATIVE_FIELDS = (
 )
 _POSITIVE_FIELDS = (
     "steer_smooth_m",
-    "off_track_dev_m",
+    "line_dev_max_m",
     "line_dev_search_m",
 )
 
@@ -196,7 +206,8 @@ def corner_metrics(
     """랩 하나에서 코너 `corner`의 지표를 계산한다.
 
     `ref_path`는 기준 랩의 궤적(`(dist_m, x, z)` 점)이다. 없으면 라인 지표는
-    0이고 트랙 이탈은 아니라고 본다.
+    0이고 트랙 이탈은 아니라고 본다. 트랙 이탈은 코너 구간 샘플의 바퀴별
+    노면으로만 판단하며, 노면이 없는 샘플(옛 기준 랩·데모)은 이탈이 아니다.
     """
     limits = thresholds or default_coaching_thresholds()
     samples = _clean_samples(trace)
@@ -263,7 +274,7 @@ def corner_metrics(
         full_throttle_m=full_throttle_m,
         exit_speed=exit_speed,
         max_line_dev_m=max_line_dev_m,
-        off_track=max_line_dev_m >= limits.off_track_dev_m,
+        off_track=_off_track(samples, corner),
         corner_time_ms=corner_time_ms,
         exit_wheel_slip=exit_wheel_slip,
     )
@@ -542,6 +553,21 @@ def _exit_wheel_slip(
     return max(values) if values else None
 
 
+def _off_track(samples: Sequence[Sample], corner: Corner) -> bool:
+    """코너 구간에서 바퀴 4개가 모두 트랙 밖인 샘플이 하나라도 있는가.
+
+    연석(1)을 밟은 바퀴가 하나라도 있으면 이탈이 아니다. 노면 값이 없는
+    샘플(옛 기준 랩·데모)만 있으면 판단하지 않는다(False).
+    """
+    for sample in _window(samples, corner.entry_m, corner.exit_m):
+        surface = sample.surface
+        if surface is None or len(surface) != 4:
+            continue
+        if all(value not in ON_TRACK_SURFACES for value in surface):
+            return True
+    return False
+
+
 def _line_deviation(
     samples: Sequence[Sample],
     corner: Corner,
@@ -565,7 +591,13 @@ def _line_deviation(
                 ref_path, point, dist_m, thresholds.line_dev_search_m
             )
         )
-    return max(deviations)
+    max_deviation = max(deviations)
+    if max_deviation > thresholds.line_dev_max_m:
+        # 2026-11-14 실제 세션에서 이탈 거리가 110~1157 m로 나왔다. 기준 랩이
+        # 저장소(데모) 좌표로 저장돼 게임 Motion 좌표와 같은 랩 거리에서도 수백 m
+        # 떨어졌기 때문이다. 이런 기준 랩으로는 라인을 판단하지 않는다(SCRUM-93).
+        return 0.0
+    return max_deviation
 
 
 def _distance_to_path(

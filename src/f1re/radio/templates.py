@@ -527,12 +527,12 @@ _TEMPLATES: tuple[Template, ...] = (
         RadioKind.COACHING,
         _moods(
             calm=(
-                "{corner}번에서 트랙 벗어났어. 라인이 {meters}미터 밖이었어.",
-                "{corner}번 트랙 밖이었어. 라인이 {meters}미터 나갔어.",
+                "{corner}번에서 바퀴 {count}개 다 트랙 밖으로 나갔어.",
+                "{corner}번 트랙 밖이었어. 바퀴 {count}개가 다 나갔어.",
             ),
             hyped=(
-                "{corner}번 트랙 밖! {meters}미터야! 안으로 붙어!",
-                "{corner}번 나갔어! {meters}미터! 라인 당겨!",
+                "{corner}번 나갔어! 바퀴 {count}개 다 밖이야! 트랙 안에 붙여!",
+                "{corner}번 트랙 밖! {count}개 다 나갔어! 라인 당겨!",
             ),
         ),
         needs_evidence=True,
@@ -663,12 +663,12 @@ _TEMPLATES: tuple[Template, ...] = (
         RadioKind.COACHING,
         _moods(
             calm=(
-                "{corner_label}에서 트랙 벗어났어. 라인이 {meters}미터 밖이었어.",
-                "{corner_label} 트랙 밖이었어. 라인이 {meters}미터 나갔어.",
+                "{corner_label}에서 바퀴 {count}개 다 트랙 밖으로 나갔어.",
+                "{corner_label} 트랙 밖이었어. 바퀴 {count}개가 다 나갔어.",
             ),
             hyped=(
-                "{corner_label} 트랙 밖! {meters}미터야! 안으로 붙어!",
-                "{corner_label} 나갔어! {meters}미터! 라인 당겨!",
+                "{corner_label} 나갔어! 바퀴 {count}개 다 밖이야! 트랙 안에 붙여!",
+                "{corner_label} 트랙 밖! {count}개 다 나갔어! 라인 당겨!",
             ),
         ),
         needs_evidence=True,

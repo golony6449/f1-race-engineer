@@ -14,6 +14,7 @@ from pathlib import Path
 import pytest
 
 from f1re.coaching.metrics import (
+    ON_TRACK_SURFACES,
     CoachingThresholds,
     corner_duration_ms,
     corner_metrics,
@@ -106,6 +107,19 @@ def _trace(
 def _scenario_trace(lap: int, **kwargs) -> LapTrace:
     """coaching.yaml의 그 랩 주입을 넣은 랩."""
     return _trace(lap, effects=_effects_for(lap), **kwargs)
+
+
+def _with_surface(trace: LapTrace, surface: tuple[int, ...] | None, predicate) -> LapTrace:
+    """조건에 맞는 샘플에만 바퀴별 노면을 넣은 랩."""
+    return dataclasses.replace(
+        trace,
+        samples=[
+            dataclasses.replace(sample, surface=surface)
+            if predicate(sample)
+            else sample
+            for sample in trace.samples
+        ],
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -234,7 +248,8 @@ def test_late_throttle_detected() -> None:
 
 
 def test_line_deviation_m() -> None:
-    """5번 코너 트랙 이탈 주입 7.5m: 기준 궤적에서 벗어난 최대 거리와 트랙 이탈."""
+    """5번 코너 라인 이탈 주입 7.5m: 기준 궤적에서 벗어난 거리는 재지만,
+    노면 정보가 없는 데모 샘플은 트랙 이탈로 보지 않는다."""
     baseline = _trace(4)
     scenario = _scenario_trace(3)
     corner = _corner(5)
@@ -245,12 +260,109 @@ def test_line_deviation_m() -> None:
     assert ref_path is not None
     metrics = corner_metrics(scenario, corner, ref_path)
     assert metrics.max_line_dev_m == pytest.approx(7.5, abs=1.0)
-    assert metrics.off_track is True
+    assert metrics.off_track is False
 
     # 기준 랩 자신은 라인을 벗어나지 않는다.
     base_metrics = corner_metrics(baseline, corner, ref_path)
     assert base_metrics.max_line_dev_m == pytest.approx(0.0, abs=0.05)
     assert base_metrics.off_track is False
+
+
+def test_on_track_surfaces_are_asphalt_and_rumble_strip() -> None:
+    """트랙 위 노면은 아스팔트(0)와 연석(1)뿐이다."""
+    assert ON_TRACK_SURFACES == frozenset({0, 1})
+
+
+@pytest.mark.parametrize(
+    ("surface", "expected"),
+    [
+        ((0, 0, 0, 0), False),  # 아스팔트 네 바퀴
+        ((0, 1, 0, 0), False),  # 연석 한 바퀴
+        ((1, 7, 7, 7), False),  # 연석 한 바퀴 + 잔디 세 바퀴: 이탈 아님
+        ((7, 7, 7, 7), True),  # 네 바퀴 모두 잔디
+        ((4, 7, 6, 7), True),  # 자갈·잔디·모래·잔디
+    ],
+)
+def test_off_track_needs_all_four_wheels_off_track(
+    surface: tuple[int, ...], expected: bool
+) -> None:
+    """바퀴 4개가 모두 아스팔트·연석이 아닐 때만 트랙 이탈이다."""
+    trace = _with_surface(_trace(4), surface, lambda sample: True)
+
+    assert corner_metrics(trace, _corner(5)).off_track is expected
+
+
+def test_off_track_ignores_surface_outside_corner_window() -> None:
+    """코너 진입 앞의 잔디 네 바퀴는 이 코너의 트랙 이탈이 아니다."""
+    corner = _corner(5)
+    trace = _with_surface(
+        _trace(4), (7, 7, 7, 7), lambda sample: sample.dist_m < corner.entry_m
+    )
+
+    assert corner_metrics(trace, corner).off_track is False
+
+
+def test_off_track_false_without_surface() -> None:
+    """노면이 없는 옛 기준 랩·데모 샘플은 오류 없이 이탈 아님으로 본다."""
+    trace = _trace(4)
+    assert all(sample.surface is None for sample in trace.samples)
+
+    assert corner_metrics(trace, _corner(5)).off_track is False
+
+
+def test_real_session_sample_is_not_off_track_and_line_dev_is_discarded() -> None:
+    """2026-11-14 스즈카 실제 세션 표본(차 19, 4276 m)을 그대로 넣는다.
+
+    게임 Motion 좌표와 저장소 윤곽 좌표가 같은 랩 거리에서 수백 m(71·174·324 m)
+    떨어졌고 노면은 네 바퀴 모두 아스팔트(0)였다. 이 표본은 트랙 이탈이 아니며,
+    좌표계가 다른 기준 랩과의 라인 거리는 0으로 버린다.
+    """
+    # (lap_distance, Motion world x, Motion world z, 윤곽 x, 윤곽 z)
+    rows = [
+        (4276.0, -720.6, -153.8, -717.5, 170.0),  # 차 19(내 차), 324 m
+        (4456.0, -557.5, -78.8, -554.1, 94.9),  # 차 5, 174 m
+        (4781.0, -251.5, 29.5, -259.2, -40.6),  # 차 0, 71 m
+    ]
+    trace = LapTrace(
+        car_index=19,
+        lap=1,
+        valid=True,
+        invalid_reason=None,
+        samples=[
+            Sample(
+                dist_m=dist_m,
+                t_ms=index * 10_000,
+                speed=250.0,
+                throttle=1.0,
+                brake=0.0,
+                steer=0.0,
+                gear=7,
+                x=x,
+                z=z,
+                surface=(0, 0, 0, 0),
+            )
+            for index, (dist_m, x, z, _outline_x, _outline_z) in enumerate(rows)
+        ],
+    )
+    ref_path = TrackOutline(
+        [(dist_m, outline_x, outline_z) for dist_m, _x, _z, outline_x, outline_z in rows]
+    )
+    corner = Corner(
+        number=1, official=True, entry_m=4276.0, apex_m=4456.0, exit_m=4781.0
+    )
+
+    # 상한을 풀면 실제로 수백 m가 나온다(좌표계가 다르다는 근거). 같은 랩 거리의
+    # 두 점 차이는 324 m이고, 가장 가까운 선분까지의 거리로 재면 약 295 m다.
+    uncapped = dataclasses.replace(
+        default_coaching_thresholds(), line_dev_max_m=1000.0
+    )
+    raw = corner_metrics(trace, corner, ref_path, thresholds=uncapped)
+    assert raw.max_line_dev_m > 200.0
+    assert raw.off_track is False
+
+    metrics = corner_metrics(trace, corner, ref_path)
+    assert metrics.max_line_dev_m == 0.0
+    assert metrics.off_track is False
 
 
 def test_line_deviation_without_reference_is_zero() -> None:
@@ -363,4 +475,15 @@ def test_load_thresholds_rejects_inverted_full_throttle(tmp_path: Path) -> None:
     path = tmp_path / "config.toml"
     path.write_text(broken, encoding="utf-8")
     with pytest.raises(ConfigError, match="full_throttle"):
+        load_coaching_thresholds(path)
+
+
+def test_load_thresholds_rejects_non_positive_line_dev_max(tmp_path: Path) -> None:
+    """라인 거리 상한은 0보다 커야 한다(상한 없는 판단을 막는다)."""
+    text = CONFIG_PATH.read_text(encoding="utf-8")
+    broken = text.replace("line_dev_max_m = 50.0", "line_dev_max_m = 0.0")
+    assert broken != text
+    path = tmp_path / "config.toml"
+    path.write_text(broken, encoding="utf-8")
+    with pytest.raises(ConfigError, match="line_dev_max_m"):
         load_coaching_thresholds(path)
