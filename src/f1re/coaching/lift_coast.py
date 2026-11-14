@@ -20,9 +20,10 @@
    전까지다(설계 6.7). 말할 타이밍은 작업 16의 `defer_until_straight`를 그대로
    재사용해 다음 긴 직선으로 미룬다.
 4. **피드백**: 지시한 다음 랩, 그 구간을 빠져나온 직후 실제 코스팅 거리로
-   "N번 리프트 짧음. M미터 더." 또는 "N번 리프트 좋음."을 한 번 말한다.
+   "N번 리프트가 짧았어. M미터 더 일찍 떼." 또는 "N번 리프트 좋아. 그대로 해."를
+   한 번 말한다.
    같은 랩에 같은 구간을 두 번 말하지 않는다. 세 가지 지표가 모두 OK로
-   돌아오면 "연료 회복. 리프트 그만."을 한 번 말하고 지시를 멈춘다.
+   돌아오면 "연료 회복됐어. 이제 리프트 안 해도 돼."를 한 번 말하고 지시를 멈춘다.
 
 무전은 작업 11의 문장 틀만 쓴다(`coaching.fuel_lift`, `coaching.fuel_lift_short`,
 `improvement.fuel_lift_good`, `improvement.fuel_lift_stop`). 브레이크·타이어 온도만
@@ -259,7 +260,7 @@ def rank_lift_zones(
 
     무전 문장 틀(`coaching.fuel_lift` 등)은 거리 슬롯이 하나뿐이므로 상위
     구간들은 **같은 목표 코스팅 거리**를 쓴다(가장 짧은 목표에 맞춘다). 그래야
-    "16번, 1번, 10번 리프트. 40미터."라고 말한 뒤 피드백도 같은 40m로 비교한다.
+    "16번, 1번, 10번에서 40미터 일찍 발 떼."라고 말한 뒤 피드백도 같은 40m로 비교한다.
     """
     limits = config or LiftCoastConfig()
     coaching_thresholds = thresholds or default_coaching_thresholds()

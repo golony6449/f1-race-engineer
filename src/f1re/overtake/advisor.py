@@ -10,10 +10,10 @@
   `LapTrace`).
 - **말하는 것**: 점수 순 상위 1~2개 선택지. 기본 설정(랩당 1회)에서는 랩마다 한
   번만 말한다. 문장은 `radio/templates.py`의 추월 틀에서 만든다.
-  - `overtake.drs` / `overtake.drs_ers`: "앞차 0.6. 다음 직선 DRS. ERS 전부."
-  - `overtake.slow_exit`: "앞차 0.6. 9번 탈출 느림. 9번 붙고 직선에서."
+  - `overtake.drs` / `overtake.drs_ers`: "앞차랑 0.6초야. 다음 직선에서 DRS랑 ERS 다 써."
+  - `overtake.slow_exit`: "앞차랑 0.6초야. 앞차가 9번 탈출이 느려. 9번에서 바짝 붙어서 직선에서 넘어."
     (코너 데이터가 없는 서킷의 자동 탐지 코너는 "9번째 코너"로 말한다)
-  - `overtake.tyre_wait`: "앞차 0.6. 타이어 7랩 새거. 2랩 기다림."
+  - `overtake.tyre_wait`: "앞차랑 0.6초야. 우리 타이어가 7랩 더 새거야. 2랩만 기다렸다가 공격해."
 - 무전 종류는 `overtake`(우선순위: 코너 코칭 다음)이며, 코칭과 겹치면
   `RadioQueue`가 우선순위·유효 시간으로 정리한다(설계 6.7). 대시보드에서 추월
   무전을 끄면 `RadioQueue.push`가 거부하므로 결과에도 넣지 않는다.

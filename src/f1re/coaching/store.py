@@ -156,7 +156,7 @@ class StoredReference:
     def speakable_loss_ms(self, loss_ms: int) -> int | None:
         """말해도 되는 시간 손실(ms). 조건이 다른 기준이면 `None`.
 
-        조건이 다르면 무전은 "3번, 브레이크 늦음. 5미터."처럼 동작과 거리만
+        조건이 다르면 무전은 "3번에서 브레이크가 늦었어. 5미터 더 일찍 밟아."처럼 동작과 거리만
         말하고, 시간 손실("0.4초")은 입에 올리지 않는다.
         """
         return int(loss_ms) if self.time_comparable else None

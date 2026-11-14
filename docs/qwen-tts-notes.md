@@ -17,7 +17,7 @@
   {
     "model": "qwen3-tts-flash",
     "input": {
-      "text": "3번, 브레이크 늦음. 5미터.",
+      "text": "3번에서 브레이크가 늦었어. 5미터 더 일찍 밟아.",
       "voice": "Sohee",
       "language_type": "Korean"
     }
