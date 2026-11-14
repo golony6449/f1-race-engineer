@@ -43,9 +43,14 @@ from typing import Any
 from f1re.coaching.metrics import corner_metrics
 from f1re.coaching.reference import NON_AI_SESSION_TYPES
 from f1re.config import AppConfig
-from f1re.laps.traces import LapTrace
+from f1re.laps.traces import RACE_SESSION_TYPES, LapTrace
 from f1re.radio.queue import RadioKind, RadioMessage, RadioQueue
-from f1re.radio.templates import render, render_corner
+from f1re.radio.templates import (
+    CLOSE_OVERTAKE_GAP_S,
+    VariantRotator,
+    is_last_laps,
+    mood_for,
+)
 from f1re.tracks.model import Corner, Track, load_track
 
 # F1 25 ERS 저장소 최대 에너지(J). `web/app.py`와 같은 공식 규정값이다.
@@ -127,14 +132,20 @@ class OvertakeConfig:
 
 @dataclass(frozen=True)
 class _Option:
-    """판단한 선택지 하나(점수 순 정렬 전)."""
+    """판단한 선택지 하나(점수 순 정렬 전).
+
+    문장은 무전을 실제로 내보낼 때 감정 단계·표현 번호와 함께 만든다.
+    후보로만 남고 버려진 선택지가 표현 돌려 쓰기를 소비하지 않게 하기 위해서다.
+    """
 
     key: str
     score: float
-    text: str
+    slots: dict[str, Any]
     ttl_s: float
     evidence: dict[str, Any]
     corner: int | None = None
+    corner_render: bool = False
+    official: bool = True
 
 
 @dataclass(frozen=True)
@@ -154,6 +165,7 @@ class _View:
     lap: int | None
     distance: float
     gap_s: float | None
+    last_laps: bool
 
 
 class OvertakeAdvisor:
@@ -188,6 +200,8 @@ class OvertakeAdvisor:
         # 차 인덱스 → (랩 트레이스, 코너 번호 → 탈출 속도). 최신 랩만 들고 있어
         # 세션 내내 쌓이지 않는다.
         self._exit_cache: dict[int, tuple[LapTrace, dict[int, float]]] = {}
+        # 감정 단계(SCRUM-91): 간격 0.5초 이하·마지막 3랩은 격앙, 그 밖은 calm.
+        self._variants = VariantRotator()
 
     # --- 조회 -------------------------------------------------------------
 
@@ -215,6 +229,7 @@ class OvertakeAdvisor:
         self._previous_gap_ns = None
         self._gap_change = None
         self._exit_cache.clear()
+        self._variants.reset()
 
     # --- 판단 -------------------------------------------------------------
 
@@ -271,14 +286,31 @@ class OvertakeAdvisor:
             self._config.max_options,
             self._config.per_lap - self._messages_this_lap,
         )
+        mood = mood_for(
+            last_laps=view.last_laps,
+            close_battle=gap <= CLOSE_OVERTAKE_GAP_S,
+        )
         messages: list[RadioMessage] = []
         for option in options[:limit]:
+            text = (
+                self._variants.render_corner(
+                    option.key,
+                    int(option.corner or 0),
+                    official=option.official,
+                    mood=mood,
+                    **option.slots,
+                )
+                if option.corner_render
+                else self._variants.render(
+                    option.key, mood=mood, **option.slots
+                )
+            )
             message = RadioMessage.create(
                 RadioKind.OVERTAKE.value,
-                option.text,
+                text,
                 now_ns=now,
                 ttl_ns=int(option.ttl_s * 1_000_000_000),
-                evidence=option.evidence,
+                evidence={**option.evidence, "mood": mood.value},
                 lap=view.lap,
                 corner=option.corner,
             )
@@ -411,7 +443,7 @@ class OvertakeAdvisor:
         return _Option(
             key=key,
             score=score,
-            text=render(key, gap=_gap_text(gap)),
+            slots={"gap": _gap_text(gap)},
             ttl_s=DRS_TTL_S,
             evidence=evidence,
         )
@@ -467,15 +499,12 @@ class OvertakeAdvisor:
         return _Option(
             key="overtake.slow_exit",
             score=score,
-            text=render_corner(
-                "overtake.slow_exit",
-                corner.number,
-                official=corner.official,
-                gap=_gap_text(gap),
-            ),
+            slots={"gap": _gap_text(gap)},
             ttl_s=SLOW_EXIT_TTL_S,
             evidence=evidence,
             corner=corner.number,
+            corner_render=True,
+            official=corner.official,
         )
 
     def _tyre_option(
@@ -510,12 +539,11 @@ class OvertakeAdvisor:
         return _Option(
             key="overtake.tyre_wait",
             score=score,
-            text=render(
-                "overtake.tyre_wait",
-                gap=_gap_text(gap),
-                laps=advantage,
-                wait_laps=self._config.tyre_wait_laps,
-            ),
+            slots={
+                "gap": _gap_text(gap),
+                "laps": advantage,
+                "wait_laps": self._config.tyre_wait_laps,
+            },
             ttl_s=TYRE_WAIT_TTL_S,
             evidence=evidence,
         )
@@ -581,9 +609,18 @@ def _view(snapshot: Mapping[str, Any] | None) -> _View:
         else {}
     )
 
+    session_type = _integer(session.get("session_type"))
+    lap = _integer(player_entry.get("current_lap_num"))
+    total_laps = _integer(session.get("total_laps"))
+    remaining_laps = (
+        max(total_laps - lap + 1, 0)
+        if total_laps is not None and lap is not None
+        else None
+    )
+
     return _View(
         session_uid=_integer(source.get("session_uid")),
-        session_type=_integer(session.get("session_type")),
+        session_type=session_type,
         track_id=_integer(session.get("track_id")),
         safety_car=_integer(session.get("safety_car_status")) in (1, 2),
         player_index=player_index,
@@ -592,9 +629,12 @@ def _view(snapshot: Mapping[str, Any] | None) -> _View:
         player_status=player_status,
         ahead_index=ahead_index,
         ahead_status=ahead_status,
-        lap=_integer(player_entry.get("current_lap_num")),
+        lap=lap,
         distance=_number(player_entry.get("lap_distance")) or 0.0,
         gap_s=_gap_seconds(player_entry) if ahead_index is not None else None,
+        last_laps=(
+            session_type in RACE_SESSION_TYPES and is_last_laps(remaining_laps)
+        ),
     )
 
 

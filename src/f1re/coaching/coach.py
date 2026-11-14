@@ -15,6 +15,9 @@
   `car_state` 플래그로 받아 코칭하지 않는다(리뷰 포커스 4).
 - 집중 코너 목록 변화(개선)는 `on_lap_completed()`가 `FocusSet`에서 받아
   "3번 좋아졌어. 다음은 7번 보자." 무전으로 만든다.
+- 감정 단계(SCRUM-91): 레이스 마지막 3랩이면 `hyped`, 개선 알림은 `warm`,
+  그 밖의 코칭은 `calm`이다. 고른 단계는 근거(`evidence["mood"]`)에 남기고,
+  같은 틀·단계가 연달아 나가면 직전 표현을 피한다(`VariantRotator`).
 
 `on_sample(car_state, dist_m, now_ns)`의 `car_state`는 다음 키를 갖는 매핑이다
 (모두 선택이며, 없으면 그 샘플은 건너뛴다).
@@ -66,10 +69,14 @@ from f1re.laps.traces import (
 )
 from f1re.radio.queue import RadioKind, RadioMessage, RadioQueue
 from f1re.radio.templates import (
+    ORDINAL_KEYS,
     PRELOAD_KEYS,
+    Mood,
+    VariantRotator,
+    all_phrases,
     corner_label,
-    render,
-    render_corner,
+    is_last_laps,
+    mood_for,
 )
 from f1re.tracks.model import Corner, Track
 from f1re.tracks.outline import TrackOutline
@@ -477,6 +484,12 @@ class Coach:
         self._crossed: set[int] = set()
         self._pending: list[_Pending] = []
 
+        # 감정 단계(SCRUM-91): 마지막 샘플에서 남은 랩을 기억해, 랩 완료 때
+        # 개선 알림의 단계를 정한다. 표현 돌려 쓰기도 코치마다 하나씩 둔다.
+        self._variants = VariantRotator()
+        self._remaining_laps: float | None = None
+        self._in_last_laps = False
+
         # 기준 랩 조회·지표·궤적은 랩마다 한 번만 계산해 캐시한다.
         self._ref_cache: dict[int, tuple[LapTrace, str] | None] = {}
         self._ref_metrics_cache: dict[
@@ -530,6 +543,15 @@ class Coach:
         if lap != self._lap or self._rewound(distance):
             self._start_lap(lap, distance, now)
 
+        # 감정 단계(SCRUM-91): 남은 랩과 레이스 여부를 매 샘플에서 갱신한다.
+        # 무효 랩·SC 중에도 갱신해 두어야 다음 랩 완료 때 개선 알림 단계가 맞다.
+        self._remaining_laps = _remaining_laps_from_state(
+            state, self._remaining_laps
+        )
+        self._in_last_laps = self._is_race(state) and is_last_laps(
+            self._remaining_laps
+        )
+
         if not self._coaching_allowed(state, lap):
             self._samples.clear()
             self._pending.clear()
@@ -547,9 +569,10 @@ class Coach:
             messages.extend(self._release_pending(sample, now))
 
         previous = self._last_dist
+        mood = mood_for(last_laps=self._in_last_laps)
         if previous is not None and distance >= previous:
             for corner in self._crossed_exits(previous, distance):
-                messages.extend(self._coach_corner(corner, sample, now))
+                messages.extend(self._coach_corner(corner, sample, now, mood))
         self._last_dist = distance
         return messages
 
@@ -592,33 +615,28 @@ class Coach:
     # --- 세션 시작 prefetch -----------------------------------------------
 
     def prefetch_phrases(self) -> list[str]:
-        """세션 시작 때 미리 만들 코칭·개선 문장(그 서킷 코너 전부 + 고정 경고)."""
+        """세션 시작 때 미리 만들 코칭·개선 문장(그 서킷 코너 전부 + 고정 경고).
+
+        감정 단계(calm·urgent·hyped·warm)와 표현을 모두 포함해, 어떤 단계로
+        말해도 캐시에 있는 문장을 바로 쓸 수 있게 한다(SCRUM-91).
+        """
         phrases: list[str] = []
         for corner in self._track.corners:
-            phrases.append(
-                render_corner(
-                    "coaching.brake_late",
-                    corner.number,
-                    official=corner.official,
-                    meters=5,
-                )
-            )
-            phrases.append(
-                render_corner(
-                    "coaching.min_speed_low",
-                    corner.number,
-                    official=corner.official,
-                    kmh=5,
-                )
-            )
-            phrases.append(
-                render_corner(
-                    "improvement.corner_improved_short",
-                    corner.number,
-                    official=corner.official,
-                )
-            )
-        phrases.extend(render(key) for key in PRELOAD_KEYS)
+            label = corner_label(corner.number, official=corner.official)
+            for key, slots in (
+                ("coaching.brake_late", {"meters": 5}),
+                ("coaching.min_speed_low", {"kmh": 5}),
+                ("improvement.corner_improved_short", {}),
+            ):
+                if corner.official:
+                    slots = {"corner": corner.number, **slots}
+                    resolved = key
+                else:
+                    slots = {"corner_label": label, **slots}
+                    resolved = ORDINAL_KEYS[key]
+                phrases.extend(all_phrases(resolved, **slots))
+        for key in PRELOAD_KEYS:
+            phrases.extend(all_phrases(key))
         return list(dict.fromkeys(phrases))
 
     async def prefetch(
@@ -694,6 +712,13 @@ class Coach:
             return False
         return True
 
+    def _is_race(self, state: Mapping[str, Any]) -> bool:
+        """레이스 세션인가(마지막 3랩 격앙 표현의 전제)."""
+        session_type = _number(state.get("session_type"))
+        if session_type is None:
+            session_type = self._session_type
+        return session_type is not None and int(session_type) in RACE_SESSION_TYPES
+
     def _make_sample(
         self, state: Mapping[str, Any], distance: float, now_ns: int
     ) -> Sample | None:
@@ -739,7 +764,11 @@ class Coach:
     # --- 코너 판단 ---------------------------------------------------------
 
     def _coach_corner(
-        self, corner: Corner, sample: Sample, now_ns: int
+        self,
+        corner: Corner,
+        sample: Sample,
+        now_ns: int,
+        mood: Mood = Mood.CALM,
     ) -> list[RadioMessage]:
         self._crossed.add(corner.number)
         if len(self._samples) < 2:
@@ -784,8 +813,9 @@ class Coach:
         evidence = _corner_evidence(
             cause, metrics, reference_metrics, loss_ms, source, focused, corner
         )
+        evidence["mood"] = mood.value
         message = self._corner_message(
-            corner, cause, sample, now_ns, evidence
+            corner, cause, sample, now_ns, evidence, mood
         )
         decision = defer_until_straight(
             sample.dist_m,
@@ -809,11 +839,13 @@ class Coach:
         sample: Sample,
         now_ns: int,
         evidence: dict[str, Any],
+        mood: Mood = Mood.CALM,
     ) -> RadioMessage:
-        text = render_corner(
+        text = self._variants.render_corner(
             cause.template_key,
             corner.number,
             official=corner.official,
+            mood=mood,
             **{cause.slot: cause.value},
         )
         return RadioMessage.create(
@@ -901,44 +933,42 @@ class Coach:
         corner = self._by_number.get(change.corner)
         official = corner.official if corner is not None else True
         next_corner = self._by_number.get(change.next_corner or -1)
-        if change.next_corner is not None:
-            next_label = corner_label(
-                change.next_corner,
-                official=next_corner.official if next_corner is not None else True,
-            )
-        else:
-            next_label = None
+        mood = mood_for(last_laps=self._in_last_laps, praise=True)
 
         if official:
             if change.next_corner is not None:
-                text = render(
-                    "improvement.corner_improved",
-                    corner=change.corner,
-                    next_corner=change.next_corner,
-                )
+                key = "improvement.corner_improved"
+                slots: dict[str, Any] = {
+                    "corner": change.corner,
+                    "next_corner": change.next_corner,
+                }
             else:
-                text = render(
-                    "improvement.corner_improved_short", corner=change.corner
-                )
+                key = "improvement.corner_improved_short"
+                slots = {"corner": change.corner}
         else:
             label = corner_label(change.corner, official=False)
-            if next_label is not None:
-                text = render(
-                    "improvement.corner_improved_ordinal",
-                    corner_label=label,
-                    next_label=next_label,
-                )
+            if change.next_corner is not None:
+                key = "improvement.corner_improved_ordinal"
+                slots = {
+                    "corner_label": label,
+                    "next_label": corner_label(
+                        change.next_corner,
+                        official=(
+                            next_corner.official if next_corner is not None else True
+                        ),
+                    ),
+                }
             else:
-                text = render(
-                    "improvement.corner_improved_short_ordinal",
-                    corner_label=label,
-                )
+                key = "improvement.corner_improved_short_ordinal"
+                slots = {"corner_label": label}
+        text = self._variants.render(key, mood=mood, **slots)
 
         evidence: dict[str, Any] = {
             "corner": change.corner,
             "loss_ms": change.loss_ms,
             "next_corner": change.next_corner,
             "corner_official": official,
+            "mood": mood.value,
         }
         return RadioMessage.create(
             RadioKind.IMPROVEMENT.value,
@@ -971,6 +1001,19 @@ def _number(value: Any, default: float | None = None) -> float | None:
     if isinstance(value, (int, float)) and math.isfinite(float(value)):
         return float(value)
     return None
+
+
+def _remaining_laps_from_state(
+    state: Mapping[str, Any], fallback: float | None
+) -> float | None:
+    """남은 랩 수. `remaining_laps`가 없으면 총 랩·현재 랩으로 계산한다."""
+    remaining = _number(state.get("remaining_laps"))
+    if remaining is None:
+        total = _number(state.get("total_laps"))
+        lap = _number(state.get("lap_num", state.get("current_lap_num")))
+        if total is not None and lap is not None:
+            remaining = max(total - lap + 1.0, 0.0)
+    return remaining if remaining is not None else fallback
 
 
 def _metric_values(metrics: CornerMetrics) -> dict[str, Any]:
