@@ -16,6 +16,11 @@ import numpy as np
 # Qwen TTS가 내보내는 PCM 형식 (24kHz, 16bit, mono).
 QWEN_SAMPLE_RATE = 24_000
 
+# 무전 효과를 입힌 최종 음성 끝에 붙이는 무음 길이(SCRUM-90). 브라우저가
+# 재생 끝을 자르지 않도록 마지막 소리 뒤에 확실한 무음을 둔다. 값을 바꾸면
+# 캐시된 WAV를 다시 만들도록 `RadioFxConfig.version`도 올린다.
+TAIL_SILENCE_MS = 150.0
+
 logger = logging.getLogger(__name__)
 
 # 시작 효과음을 읽지 못했다는 경고는 프로세스에서 한 번만 남긴다.
@@ -34,7 +39,9 @@ class RadioFxConfig:
     drive: float = 1.2
     seed: int | None = 0
     taps: int = 257
-    version: int = 1
+    # SCRUM-90: 속도 변환 전 끝 여백과 효과 뒤 끝 무음이 생겨, 기존 캐시 WAV를
+    # 다시 만들도록 버전을 1에서 올렸다.
+    version: int = 2
 
 
 def _bandpass_taps(
@@ -150,6 +157,17 @@ def apply_radio_fx_wav(
     """WAV 바이트를 읽어 무전 효과를 입힌 WAV 바이트로 돌려준다."""
     pcm, sample_rate = wav_to_pcm(wav_bytes)
     return pcm_to_wav(apply_radio_fx(pcm, sample_rate, config=config), sample_rate)
+
+
+def append_tail_silence_wav(
+    wav_bytes: bytes, *, duration_ms: float = TAIL_SILENCE_MS
+) -> bytes:
+    """WAV 끝에 무음을 덧붙여 돌려준다. 브라우저 재생 끝이 잘리지 않게 한다."""
+    pcm, sample_rate = wav_to_pcm(wav_bytes)
+    count = max(0, int(round(sample_rate * duration_ms / 1000.0)))
+    if count == 0:
+        return wav_bytes
+    return pcm_to_wav(pcm + b"\x00\x00" * count, sample_rate)
 
 
 def prepend_intro_sound(

@@ -260,10 +260,29 @@ async def test_cache_key_uses_text_voice_and_effect_version(tmp_path: Path) -> N
         config=config,
         cache_dir=tmp_path / "other",
         intro=intro,
-        fx_config=RadioFxConfig(version=2),
+        fx_config=RadioFxConfig(version=RadioFxConfig().version + 1),
     )
     assert other.cache_key("문장", "Katerina") != key
     assert other.cache_path("문장").parent == tmp_path / "other"
+
+
+def test_default_effect_version_rebuilds_old_cache(tmp_path: Path) -> None:
+    # SCRUM-90: 끝 여백·끝 무음이 생겨 SCRUM-90 이전 버전(1)의 캐시 WAV를
+    # 다시 만들도록 기본 효과 버전을 올렸다.
+    tts = FakeTTS()
+    cache, config, intro = _make_cache(tmp_path, tts)
+    old = VoiceCache(
+        tts,  # type: ignore[arg-type]
+        config=config,
+        cache_dir=tmp_path / "old",
+        intro=intro,
+        fx_config=RadioFxConfig(version=1),
+    )
+
+    assert RadioFxConfig().version != 1
+    assert cache.effect_version != old.effect_version
+    assert cache.cache_key("문장") != old.cache_key("문장")
+    assert cache.cache_path("문장") != old.cache_path("문장")
 
 
 async def test_corrupt_cache_file_is_regenerated(tmp_path: Path) -> None:

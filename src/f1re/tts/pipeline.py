@@ -1,7 +1,7 @@
 """합성 음성을 무전 오디오로 만드는 처리 순서.
 
-합성 WAV → 말 속도(WSOLA) → 무전 효과 → 앞에 시작 효과음.
-모든 무전이 이 경로를 지나므로 시작 효과음도 항상 붙는다.
+합성 WAV → 말 속도(WSOLA, 끝 여백 포함) → 무전 효과 → 끝 무음 → 앞에 시작
+효과음. 모든 무전이 이 경로를 지나므로 시작 효과음과 끝 무음도 항상 붙는다.
 """
 
 from __future__ import annotations
@@ -10,6 +10,7 @@ from f1re.config import TTSConfig, resolve_asset_path
 from f1re.tts.radiofx import (
     IntroSoundConfig,
     RadioFxConfig,
+    append_tail_silence_wav,
     apply_radio_fx_wav,
     effect_version,
     prepend_intro_sound,
@@ -37,7 +38,9 @@ def render_radio_voice(
     resolved_intro = intro if intro is not None else intro_from_tts(config)
     stretched = time_stretch_wav(wav_bytes, config.speed)
     with_fx = apply_radio_fx_wav(stretched, config=fx_config)
-    return prepend_intro_sound(with_fx, intro=resolved_intro, config=fx_config)
+    # 무전 효과 뒤 최종 음성 끝에 무음을 둔다(SCRUM-90).
+    with_tail = append_tail_silence_wav(with_fx)
+    return prepend_intro_sound(with_tail, intro=resolved_intro, config=fx_config)
 
 
 def radio_effect_version(
