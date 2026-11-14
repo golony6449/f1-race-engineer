@@ -20,7 +20,9 @@
 - 박스 지시는 (1) 레이스에서 타이어 마모가 DANGER가 되었거나 (2) 서브해야 할
   드라이브스루·스톱고 페널티가 생겼을 때 한 번 나간다. 타임 트라이얼에는
   박스가 없으므로 타이어 경고만 한다.
-- 문장은 `radio.templates`의 틀에서만 만든다. 말투는 짧고 건조한 명사형이다.
+- 문장은 `radio.templates`의 틀에서만 만든다. 안전 경고·박스 지시는 감정
+  단계 `urgent`(짧게 끊고 반복, 느낌표)로 말한다(SCRUM-91). 같은 틀·단계가
+  연달아 나가면 직전 표현을 피해 다음 표현을 쓴다.
 - 무전 종류는 `RadioKind`(safety/box)이고, 안전 경고는 큐에서 끌 수 없다.
 
 `evaluate(snapshot, events)`는 `StateStore.snapshot()`과 그 사이에 생긴 사건을
@@ -40,7 +42,7 @@ from typing import Any
 from f1re.alerts.thresholds import Severity, metric_threshold, severity
 from f1re.config import load_config
 from f1re.radio.queue import RadioKind, RadioMessage
-from f1re.radio.templates import render
+from f1re.radio.templates import Mood, VariantRotator
 from f1re.state.events import Event, EventKind
 
 # 무전 유효 시간 기본값. 안전 경고·박스 지시는 앞 무전이 재생되는 동안
@@ -182,6 +184,8 @@ class AlertRules:
         self._box_ttl_ns = int(box_ttl_ns)
         self._session_uid: int | None = None
         self._memory = _Memory()
+        # 안전 경고·박스 지시는 항상 urgent. 같은 틀이 연달아 나가면 표현을 바꾼다.
+        self._variants = VariantRotator()
 
     @property
     def safety_ttl_ns(self) -> int:
@@ -196,6 +200,7 @@ class AlertRules:
     def reset(self) -> None:
         """세션 전이 기억을 비운다(세션 재시작·테스트용)."""
         self._memory = _Memory()
+        self._variants.reset()
 
     def evaluate(
         self,
@@ -637,10 +642,10 @@ class AlertRules:
     ) -> RadioMessage:
         return RadioMessage.create(
             kind=kind.value,
-            text=render(template, **slots),
+            text=self._variants.render(template, mood=Mood.URGENT, **slots),
             now_ns=now_ns,
             ttl_ns=ttl_ns,
-            evidence=evidence,
+            evidence={**evidence, "mood": Mood.URGENT.value},
             lap=lap,
         )
 

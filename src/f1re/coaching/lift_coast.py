@@ -76,7 +76,12 @@ from f1re.laps.traces import (
     Sample,
 )
 from f1re.radio.queue import RadioKind, RadioMessage, RadioQueue
-from f1re.radio.templates import corner_label, render, render_corner
+from f1re.radio.templates import (
+    VariantRotator,
+    corner_label,
+    is_last_laps,
+    mood_for,
+)
 from f1re.tracks.model import Corner, Track
 
 # 스로틀을 뗀 것으로 보는 값(설계·Jira: 스로틀 < 5%).
@@ -624,6 +629,11 @@ class LiftCoastCoach:
         self._instructed_targets: dict[int, float] = {}
         self._reinstruct = False
 
+        # 감정 단계(SCRUM-91): 레이스 마지막 3랩은 격앙, 리프트 좋음은 밝게.
+        self._variants = VariantRotator()
+        self._remaining_laps: float | None = None
+        self._in_last_laps = False
+
     # --- 조회 -------------------------------------------------------------
 
     @property
@@ -673,6 +683,14 @@ class LiftCoastCoach:
         lap = self._resolve_lap(state, distance)
         if lap != self._lap or self._rewound(distance):
             self._start_lap(lap, distance, now)
+
+        # 감정 단계(SCRUM-91): 마지막 3랩이면 격앙 표현을 쓴다.
+        self._remaining_laps = _remaining_laps_from_state(
+            state, self._remaining_laps
+        )
+        self._in_last_laps = self._is_race(state) and is_last_laps(
+            self._remaining_laps
+        )
 
         messages: list[RadioMessage] = []
         for message in self._update_need(state, now):
@@ -926,19 +944,23 @@ class LiftCoastCoach:
         short_m = target_m - measurement.distance_m
         if short_m > self._config.good_tolerance_m:
             meters = max(1, int(round(short_m)))
-            text = render_corner(
+            mood = mood_for(last_laps=self._in_last_laps)
+            text = self._variants.render_corner(
                 "coaching.fuel_lift_short",
                 corner.number,
                 official=corner.official,
+                mood=mood,
                 meters=meters,
             )
             kind = RadioKind.COACHING.value
             status = "short"
         else:
-            text = render_corner(
+            mood = mood_for(last_laps=self._in_last_laps, praise=True)
+            text = self._variants.render_corner(
                 "improvement.fuel_lift_good",
                 corner.number,
                 official=corner.official,
+                mood=mood,
             )
             kind = RadioKind.IMPROVEMENT.value
             status = "good"
@@ -952,6 +974,7 @@ class LiftCoastCoach:
             "coast_time_ms": int(measurement.time_ms),
             "status": status,
             "corner_official": corner.official,
+            "mood": mood.value,
         }
         return RadioMessage.create(
             kind,
@@ -1035,6 +1058,7 @@ class LiftCoastCoach:
             if self._episode_start_lap is None
             else max(1, self._lap - self._episode_start_lap + 1)
         )
+        mood = mood_for(last_laps=self._in_last_laps, praise=True)
         evidence = {
             "lap": self._lap,
             "episode_start_lap": self._episode_start_lap,
@@ -1042,10 +1066,13 @@ class LiftCoastCoach:
             "fuel_laps_margin": _rounded(self._fuel_margin),
             "brake_temp": _rounded(self._brake_temp),
             "front_tyre_temp": _rounded(self._front_tyre_temp),
+            "mood": mood.value,
         }
         return RadioMessage.create(
             RadioKind.IMPROVEMENT.value,
-            render("improvement.fuel_lift_stop"),
+            self._variants.render(
+                "improvement.fuel_lift_stop", mood=mood
+            ),
             now_ns=now_ns,
             ttl_ns=int(self._config.stop_ttl_s * 10**9),
             evidence=evidence,
@@ -1084,22 +1111,29 @@ class LiftCoastCoach:
         corners = ", ".join(zone.label for zone in zones)
         meters = max(1, int(round(min(zone.target_m for zone in zones))))
         reason = self._need_reasons[0] if self._need_reasons else ""
+        mood = mood_for(last_laps=self._in_last_laps)
         if reason == "fuel_laps_margin":
             margin = self._fuel_margin or 0.0
             laps = max(1, int(round(abs(margin))))
-            text = render(
-                "coaching.fuel_lift", laps=laps, corners=corners, meters=meters
+            text = self._variants.render(
+                "coaching.fuel_lift",
+                mood=mood,
+                laps=laps,
+                corners=corners,
+                meters=meters,
             )
         elif reason == "brake_temp":
-            text = render(
+            text = self._variants.render(
                 "coaching.brake_temp_lift",
+                mood=mood,
                 corners=corners,
                 meters=meters,
                 celsius=int(round(self._brake_temp or 0.0)),
             )
         else:
-            text = render(
+            text = self._variants.render(
                 "coaching.tyre_temp_lift",
+                mood=mood,
                 corners=corners,
                 meters=meters,
                 celsius=int(round(self._front_tyre_temp or 0.0)),
@@ -1115,6 +1149,7 @@ class LiftCoastCoach:
             "targets_m": {zone.corner: zone.target_m for zone in zones},
             "meters": meters,
             "lap": self._lap,
+            "mood": mood.value,
         }
         return RadioMessage.create(
             RadioKind.COACHING.value,
@@ -1381,6 +1416,19 @@ def _number(value: Any, default: float | None = None) -> float | None:
     if isinstance(value, (int, float)) and math.isfinite(float(value)):
         return float(value)
     return None
+
+
+def _remaining_laps_from_state(
+    state: Mapping[str, Any], fallback: float | None
+) -> float | None:
+    """남은 랩 수. `remaining_laps`가 없으면 총 랩·현재 랩으로 계산한다."""
+    remaining = _number(state.get("remaining_laps"))
+    if remaining is None:
+        total = _number(state.get("total_laps"))
+        lap = _number(state.get("lap_num", state.get("current_lap_num")))
+        if total is not None and lap is not None:
+            remaining = max(total - lap + 1.0, 0.0)
+    return remaining if remaining is not None else fallback
 
 
 def _rounded(value: float | None) -> float | None:

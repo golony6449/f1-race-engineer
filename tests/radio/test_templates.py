@@ -11,12 +11,19 @@ from f1re.radio.templates import (
     TEMPLATES,
     WHERE_SLOTS,
     MissingSlot,
+    Mood,
+    TemplateError,
     UnknownTemplate,
+    VariantRotator,
+    all_phrases,
     all_templates,
     corner_phrases,
+    is_last_laps,
+    mood_for,
     prefetch_phrases,
     render,
     template_slots,
+    template_slots_for,
     templates_by_category,
 )
 
@@ -155,21 +162,38 @@ def test_render_ignores_extra_slots() -> None:
 def test_corner_phrases_cover_every_corner_number() -> None:
     phrases = corner_phrases([1, 2, 18], meters=5)
 
-    assert phrases == [
-        "1번에서 브레이크가 늦었어. 5미터 더 일찍 밟아.",
-        "2번에서 브레이크가 늦었어. 5미터 더 일찍 밟아.",
-        "18번에서 브레이크가 늦었어. 5미터 더 일찍 밟아.",
-    ]
-    assert len(set(phrases)) == 3
+    expected: list[str] = []
+    for number in (1, 2, 18):
+        expected.extend(
+            all_phrases("coaching.brake_late", corner=number, meters=5)
+        )
+    # 모든 감정 단계·표현을 코너마다 담는다(SCRUM-91).
+    assert phrases == list(dict.fromkeys(expected))
+    assert render("coaching.brake_late", corner=1, meters=5) in phrases
+    assert (
+        render(
+            "coaching.brake_late",
+            mood=Mood.HYPED,
+            variant=0,
+            corner=1,
+            meters=5,
+        )
+        in phrases
+    )
 
 
 def test_prefetch_phrases_include_corners_and_fixed_warnings() -> None:
     phrases = prefetch_phrases([1, 2, 3])
 
-    assert "2번에서 브레이크가 늦었어. 5미터 더 일찍 밟아." in phrases
+    expected: list[str] = []
+    for number in (1, 2, 3):
+        expected.extend(
+            all_phrases("coaching.brake_late", corner=number, meters=5)
+        )
     for key in PRELOAD_KEYS:
-        assert render(key, **_sample_for(key)) in phrases
-    assert len(phrases) == len(set(phrases)) == 3 + len(PRELOAD_KEYS)
+        expected.extend(all_phrases(key, **_sample_for(key)))
+    assert phrases == list(dict.fromkeys(expected))
+    assert len(phrases) == len(set(phrases))
 
 
 def test_templates_by_category_splits_kinds() -> None:
@@ -181,3 +205,90 @@ def test_templates_by_category_splits_kinds() -> None:
         "coaching.brake_late",
         "coaching.fuel_lift",
     }
+
+
+# ---------------------------------------------------------------------------
+# 감정 단계와 표현 돌려 쓰기 (SCRUM-91)
+
+
+def test_every_mood_expression_uses_the_same_slots() -> None:
+    """한 틀의 모든 단계·표현은 같은 슬롯 집합을 쓴다."""
+    for template in all_templates():
+        base = set(template_slots(template.key))
+        for mood, texts in template.moods.items():
+            for variant in range(len(texts)):
+                slots = set(
+                    template_slots_for(template.key, mood, variant)
+                )
+                assert slots == base, (template.key, mood, variant)
+            # 각 단계는 같은 뜻의 표현 2~3개를 둔다.
+            assert 2 <= len(texts) <= 3, (template.key, mood)
+
+
+def test_all_mood_expressions_render_short_text() -> None:
+    """어떤 단계·표현이 나가도 무전은 짧아야 한다."""
+    for template in all_templates():
+        for mood, texts in template.moods.items():
+            for variant in range(len(texts)):
+                text = render(
+                    template.key,
+                    mood=mood,
+                    variant=variant,
+                    **_sample_for(template.key),
+                )
+                assert text.strip()
+                assert len(text) <= 80, (template.key, mood, variant, text)
+
+
+def test_legacy_render_keeps_calm_first_expression() -> None:
+    """단계를 생략한 기존 호출은 calm 첫 표현 그대로다."""
+    assert render("box.box_box") == "박스, 박스. 들어와."
+    assert render("coaching.brake_late", corner=3, meters=5) == (
+        "3번에서 브레이크가 늦었어. 5미터 더 일찍 밟아."
+    )
+    # 단계를 줘도 표현 번호를 생략하면 그 단계의 첫 표현이다.
+    assert (
+        render("box.box_box", mood=Mood.URGENT)
+        == "박스, 박스! 들어와!"
+    )
+
+
+def test_mood_selection_rules() -> None:
+    """안전→urgent, 마지막 3랩·0.5초 이내 추월→hyped, 개선→warm."""
+    assert mood_for(urgent=True) is Mood.URGENT
+    assert mood_for(urgent=True, last_laps=True) is Mood.URGENT
+    assert mood_for(last_laps=True) is Mood.HYPED
+    assert mood_for(last_laps=True, praise=True) is Mood.HYPED
+    assert mood_for(close_battle=True) is Mood.HYPED
+    assert mood_for(praise=True) is Mood.WARM
+    assert mood_for() is Mood.CALM
+
+    assert is_last_laps(3) is True
+    assert is_last_laps(2.9) is True
+    assert is_last_laps(4) is False
+    assert is_last_laps(None) is False
+
+
+def test_rotator_avoids_previous_expression() -> None:
+    """같은 틀·같은 단계가 연달아 나가면 직전 표현을 피한다(결정적)."""
+    rotator = VariantRotator()
+    first = rotator.render("box.box_box", mood=Mood.URGENT)
+    second = rotator.render("box.box_box", mood=Mood.URGENT)
+    third = rotator.render("box.box_box", mood=Mood.URGENT)
+
+    choices = set(all_phrases("box.box_box"))
+    assert first in choices and second in choices and third in choices
+    assert first != second
+    assert third != second
+    assert third == first  # 표현이 둘이라 세 번째는 첫 표현으로 돌아온다.
+
+    # 다른 단계는 따로 센다.
+    calm_first = rotator.render("box.box_box", mood=Mood.CALM)
+    assert calm_first == "박스, 박스. 들어와."
+
+
+def test_render_rejects_unknown_mood_and_variant() -> None:
+    with pytest.raises(TemplateError):
+        render("box.box_box", mood="angry")
+    with pytest.raises(TemplateError):
+        render("box.box_box", mood=Mood.URGENT, variant=5)
