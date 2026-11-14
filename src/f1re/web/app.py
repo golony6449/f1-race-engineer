@@ -350,7 +350,15 @@ class EngineStateRequest(BaseModel):
 
 # 엔진이 꺼져 있어도 동작해야 하는 HTTP 경로(SCRUM-82).
 # 그 밖의 API는 503 `{"engine": "off"}`로 답한다. 화면·정적 파일은 항상 뜬다.
-_ENGINE_OFF_ALLOWED_PATHS = {"/", "/radio", "/health", "/api/engine"}
+# 음성 상태 새로고침(SCRUM-92)은 엔진 OFF에서도 Qwen을 부르지 않고 기본
+# 상태를 200으로 돌려줘야 화면 버튼이 503을 받지 않는다.
+_ENGINE_OFF_ALLOWED_PATHS = {
+    "/",
+    "/radio",
+    "/health",
+    "/api/engine",
+    "/api/voice/check",
+}
 
 
 def _engine_off_allowed(path: str) -> bool:

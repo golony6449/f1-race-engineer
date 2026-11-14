@@ -401,7 +401,11 @@ def test_empty_state_keeps_skeleton_and_radio_status() -> None:
 
     # 음성·무전 페이지 상태는 서버가 실제 값으로 내려 준다(설계 6.9-5).
     # 음성 캐시 없는 기본 앱이므로 오프라인, 무전 페이지는 아직 미연결이다.
-    assert data["status"]["voice"] == {"state": "offline", "label": "음성 오프라인"}
+    assert data["status"]["voice"] == {
+        "state": "offline",
+        "label": "음성 오프라인",
+        "reason": None,
+    }
     assert data["status"]["radio_page"]["state"] == "disconnected"
     assert data["status"]["radio_page"]["label"] == "무전 페이지 미연결"
     assert data["status"]["radio_page"]["connected"] is False
@@ -493,3 +497,16 @@ def test_dashboard_and_static_files_are_served() -> None:
     for relative in imports:
         path = "/static/" + relative.removeprefix("./")
         assert client.get(path).status_code == 200, path
+
+
+def test_radio_page_has_voice_check_button() -> None:
+    """SCRUM-92: 무전 페이지에서 음성 상태를 직접 새로고침할 수 있다."""
+    client = _client(StateStore())
+    html = client.get("/radio").text
+
+    assert 'id="voice-check"' in html
+    assert "상태 새로고침" in html
+
+    # 버튼은 음성 상태 새로고침 API를 부른다.
+    js = client.get("/static/radio.js").text
+    assert '"/api/voice/check"' in js

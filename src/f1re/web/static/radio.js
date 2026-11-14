@@ -22,6 +22,7 @@ const KIND_LABELS = {
 
 const connectionNode = document.getElementById("connection");
 const connectButton = document.getElementById("connect");
+const voiceCheckButton = document.getElementById("voice-check");
 const voiceNode = document.getElementById("voice");
 const captionText = document.getElementById("caption-text");
 const captionMeta = document.getElementById("caption-meta");
@@ -48,8 +49,10 @@ function setConnection(state, text) {
   connectionNode.textContent = text;
 }
 
-function setVoice(label) {
-  voiceNode.textContent = label || "음성 오프라인";
+function setVoice(label, reason) {
+  const text = label || "음성 오프라인";
+  // 실패 이유는 서버가 준 문자열을 textContent로만 넣는다(HTML 삽입 금지).
+  voiceNode.textContent = reason ? `${text} (${reason})` : text;
 }
 
 /**
@@ -189,7 +192,7 @@ function playAudio(payload) {
 function handleStatus(payload) {
   const status = payload.status || {};
   const voiceOffline = status.voice && status.voice.state === "offline";
-  if (status.voice) setVoice(status.voice.label);
+  if (status.voice) setVoice(status.voice.label, status.voice.reason);
   if (status.radio_page) {
     const connected = Boolean(status.radio_page.connected);
     if (!connected) {
@@ -260,6 +263,24 @@ function handleMessage(payload) {
   }
 }
 
+/**
+ * 음성 상태를 서버에 다시 확인한다(SCRUM-92). 서버가 Qwen을 한 번 호출하고,
+ * 돌아온 상태를 화면에 그대로 반영한다. 실패해도 버튼은 다시 켠다.
+ */
+async function refreshVoiceStatus() {
+  voiceCheckButton.disabled = true;
+  try {
+    const response = await fetch("/api/voice/check", { method: "POST" });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const data = await response.json();
+    if (data && data.status) handleStatus({ status: data.status });
+  } catch (error) {
+    // 서버가 잠깐 응답하지 않을 수 있다. 다음 상태 메시지가 오면 갱신된다.
+  } finally {
+    voiceCheckButton.disabled = false;
+  }
+}
+
 function connect() {
   if (engineState !== "on") return;
   if (socket && (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING)) {
@@ -304,6 +325,10 @@ function scheduleReconnect() {
     if (started) connect();
   }, 1000);
 }
+
+voiceCheckButton.addEventListener("click", () => {
+  refreshVoiceStatus();
+});
 
 connectButton.addEventListener("click", () => {
   if (engineState !== "on") return;

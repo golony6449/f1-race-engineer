@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import Any
 
@@ -12,6 +13,7 @@ from f1re.config import TTSConfig
 from f1re.radio.templates import prefetch_phrases
 from f1re.tracks import load_track
 from f1re.tts.cache import (
+    PROBE_TEXT,
     VoiceCache,
     VoiceStatus,
 )
@@ -336,3 +338,80 @@ async def test_empty_text_rejected_and_empty_prefetch_is_noop(tmp_path: Path) ->
     result = await cache.prefetch(["", "  "])
     assert result == type(result)(requested=0, cached=0, synthesized=0, failed=0)
     assert tts.synthesize_calls == []
+
+
+# ---------------------------------------------------------------------------
+# 오프라인 전환 로그·상태 확인(SCRUM-92)
+
+
+async def test_offline_warning_only_on_transition(tmp_path: Path, caplog) -> None:
+    """오프라인 전환 순간에만 warning을 남기고, 같은 장애가 반복되면 남기지 않는다."""
+    tts = FakeTTS(synthesize_error=TTSUnavailable("Qwen TTS 네트워크 오류"))
+    cache, _, _ = _make_cache(tmp_path, tts)
+
+    with caplog.at_level(logging.WARNING, logger="f1re.tts.cache"):
+        await cache.prefetch(["첫 문장"])
+        await cache.prefetch(["둘째 문장"])
+
+    warnings = [
+        record.getMessage()
+        for record in caplog.records
+        if record.levelno == logging.WARNING
+    ]
+    assert warnings == [
+        "Qwen TTS 실패로 음성 오프라인: Qwen TTS 네트워크 오류"
+    ]
+
+    # 온라인으로 돌아왔다가 다시 실패하면 그 전환 때 한 번 더 남긴다.
+    tts.synthesize_error = None
+    await cache.prefetch(["셋째 문장"])
+    assert cache.status is VoiceStatus.ONLINE
+
+    tts.synthesize_error = TTSUnavailable("Qwen TTS 네트워크 오류")
+    caplog.clear()
+    with caplog.at_level(logging.WARNING, logger="f1re.tts.cache"):
+        await cache.prefetch(["넷째 문장"])
+    assert len(
+        [r for r in caplog.records if r.levelno == logging.WARNING]
+    ) == 1
+
+
+async def test_check_synthesizes_probe_without_caching(tmp_path: Path) -> None:
+    """확인은 설정 보이스로 짧은 문장 한 번만 합성하고 캐시 파일을 만들지 않는다."""
+    tts = FakeTTS()
+    cache, config, _ = _make_cache(tmp_path, tts)
+
+    status = await cache.check()
+
+    assert status is VoiceStatus.ONLINE
+    assert cache.status is VoiceStatus.ONLINE
+    assert tts.synthesize_calls == [(PROBE_TEXT, config.voice)]
+    assert tts.stream_calls == []
+    assert cache.is_cached(PROBE_TEXT) is False
+
+
+async def test_check_flags_offline_and_recovers(tmp_path: Path) -> None:
+    tts = FakeTTS(synthesize_error=TTSUnavailable("Qwen TTS 네트워크 오류"))
+    cache, _, _ = _make_cache(tmp_path, tts)
+
+    assert await cache.check() is VoiceStatus.OFFLINE
+    assert cache.offline is True
+    assert cache.last_error == "Qwen TTS 네트워크 오류"
+
+    tts.synthesize_error = None
+    assert await cache.check() is VoiceStatus.ONLINE
+    assert cache.offline is False
+    assert cache.last_error is None
+    assert len(tts.synthesize_calls) == 2
+
+
+async def test_check_reraises_unexpected_error(tmp_path: Path) -> None:
+    """TTSUnavailable이 아닌 오류는 상태를 바꾸지 않고 그대로 올린다."""
+    tts = FakeTTS(synthesize_error=RuntimeError("예상 밖 오류"))
+    cache, _, _ = _make_cache(tmp_path, tts)
+
+    with pytest.raises(RuntimeError, match="예상 밖 오류"):
+        await cache.check()
+
+    assert cache.status is VoiceStatus.ONLINE
+    assert cache.last_error is None

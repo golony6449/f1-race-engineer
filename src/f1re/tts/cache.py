@@ -46,6 +46,9 @@ logger = logging.getLogger(__name__)
 # 캐시 폴더 기본 위치. `data/`는 .gitignore에 있다.
 DEFAULT_CACHE_RELPATH = Path("data") / "tts-cache"
 
+# 음성 상태 확인용 짧은 문장(SCRUM-92). 캐시에는 넣지 않는다.
+PROBE_TEXT = "라디오 체크."
+
 
 class VoiceStatus(StrEnum):
     """음성 경로 상태. 화면(작업 12)의 "음성 온라인/오프라인" 표시에 쓴다."""
@@ -256,6 +259,20 @@ class VoiceCache:
             failed=failed,
         )
 
+    async def check(self) -> VoiceStatus:
+        """짧은 문장을 한 번 합성해 음성 API가 응답하는지 확인한다(SCRUM-92).
+
+        상태 확인용이라 캐시 파일은 만들지 않는다. `TTSUnavailable`이면
+        오프라인으로 바꾸고, 그 밖의 예외는 그대로 올린다.
+        """
+        try:
+            await self._tts.synthesize(PROBE_TEXT, self._resolved_voice(None))
+        except TTSUnavailable as exc:
+            self._set_offline(exc)
+        else:
+            self._set_online()
+        return self._status
+
     # --- 내부: 캐시 파일 ---------------------------------------------------
 
     async def _read_cached(self, path: Path) -> tuple[bytes, int] | None:
@@ -375,6 +392,9 @@ class VoiceCache:
         return resolved
 
     def _set_offline(self, error: BaseException) -> None:
+        # 전환 순간에만 남긴다. 이미 오프라인이면 실패마다 로그를 찍지 않는다.
+        if self._status is VoiceStatus.ONLINE:
+            logger.warning("Qwen TTS 실패로 음성 오프라인: %s", error)
         self._status = VoiceStatus.OFFLINE
         self._last_error = str(error)
 
