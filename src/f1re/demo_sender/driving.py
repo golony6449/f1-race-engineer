@@ -430,11 +430,13 @@ def profile_state(profile: SpeedProfile, time_s: float) -> tuple[float, float, f
     return _profile_state(profile, time_s)
 
 
-def _profile_time_at_distance(profile: SpeedProfile, distance_m: float) -> float:
+def profile_time_at_distance(profile: SpeedProfile, distance_m: float) -> float:
     """랩 거리 `distance_m`의 프로필 시각(s).
 
     프로필은 랩마다 같은 닫힌 곡선이므로 범위를 벗어난 거리는 랩 길이로 나눈
-    나머지를 쓴다. 거리로 위치를 정한 뒤 그 위치의 속도·곡률을 조회할 때 쓴다.
+    나머지를 쓴다. 거리로 위치를 정한 뒤 그 위치의 속도·곡률·경과 시간을
+    조회할 때 쓴다. 마지막 구간에서 시각이 랩 타임과 정확히 같아지면
+    `_profile_state`가 랩 시작 속도를 돌려주므로 아주 조금 앞에서 멈춘다.
     """
     dists = profile.dists
     length = dists[-1] + profile.segment_lengths[-1]
@@ -444,7 +446,7 @@ def _profile_time_at_distance(profile: SpeedProfile, distance_m: float) -> float
         start = dists[-1]
         end = length
         span = max(end - start, 1e-9)
-        fraction = min(1.0, max(0.0, (distance - start) / span))
+        fraction = min(1.0 - 1e-9, max(0.0, (distance - start) / span))
         return profile.times[-1] + fraction * (profile.lap_time_s - profile.times[-1])
     start = dists[index]
     end = dists[index + 1]
@@ -457,7 +459,7 @@ def profile_state_at_distance(
     profile: SpeedProfile, distance_m: float
 ) -> tuple[float, float, float, float]:
     """랩 거리 `distance_m`의 (랩 거리, 속도 m/s, 곡률, 속도 변화율 m/s²)."""
-    return _profile_state(profile, _profile_time_at_distance(profile, distance_m))
+    return _profile_state(profile, profile_time_at_distance(profile, distance_m))
 
 
 def _effective_apex(corner: Corner, shift_m: float) -> float:

@@ -25,6 +25,7 @@ from f1re.demo_sender.driving import (
     pedals_for_acceleration,
     profile_state,
     profile_state_at_distance,
+    profile_time_at_distance,
 )
 from f1re.tracks.model import Track
 from f1re.tracks.outline import TrackOutline
@@ -342,8 +343,7 @@ class RaceField:
 
         x, z = self._outline.position_at(lap_distance)
         yaw = self._outline.heading_at(lap_distance)
-        lap_fraction = min(1.0, max(0.0, lap_distance / length))
-        current_lap_ms = int(round(lap_fraction * car.lap_time_ms))
+        current_lap_ms = self._current_lap_ms(car, lap_distance)
         sector1, sector2 = self._sector_splits()
         sector = 0 if lap_distance < sector1 else 1 if lap_distance < sector2 else 2
         third_ms = car.lap_time_ms // 3
@@ -373,6 +373,16 @@ class RaceField:
             sector2_ms=third_ms if sector >= 2 else 0,
             tyre_age_laps=min(MAX_TYRE_AGE_LAPS, car.tyre_age_base + lap - 1),
             compound=car.compound,
+        )
+
+    def _current_lap_ms(self, car: CarProfile, lap_distance_m: float) -> int:
+        """그 차가 랩 위치까지 오는 데 걸린 시간(ms).
+
+        거리에 비례하는 등속 가정 대신, 같은 위치의 프로필 시각을 그 차의
+        pace로 나눈다. 느린 코너에서 실제보다 시간이 적게 흐르는 문제를 막는다.
+        """
+        return int(
+            round(profile_time_at_distance(self._profile, lap_distance_m) / car.pace * 1000.0)
         )
 
     def _sector_splits(self) -> tuple[float, float]:
@@ -405,7 +415,7 @@ class RaceField:
             lap=lap,
             lap_distance_m=lap_distance,
             total_distance_m=total,
-            current_lap_ms=int(round(lap_distance / length * target.last_lap_ms)),
+            current_lap_ms=self._current_lap_ms(self._cars[target.car_index], lap_distance),
         )
         return [adjusted if state.car_index == target.car_index else state for state in states]
 
