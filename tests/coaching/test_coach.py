@@ -16,6 +16,7 @@ import pytest
 from f1re.coaching.coach import (
     CAUSE_BRAKE_EARLY,
     CAUSE_BRAKE_LATE,
+    CAUSE_LINE_WIDE,
     CAUSE_MIN_SPEED_LOW,
     CAUSE_OFF_TRACK,
     Coach,
@@ -115,6 +116,21 @@ def _monaco(lap: int, **kwargs) -> LapTrace:
     return _trace(MONACO, _MONACO_OUTLINE, lap, **kwargs)
 
 
+def _with_surface(
+    trace: LapTrace, surface: tuple[int, ...] | None, predicate
+) -> LapTrace:
+    """조건에 맞는 샘플에만 바퀴별 노면을 넣은 랩."""
+    return dataclasses.replace(
+        trace,
+        samples=[
+            dataclasses.replace(sample, surface=surface)
+            if predicate(sample)
+            else sample
+            for sample in trace.samples
+        ],
+    )
+
+
 def _effects(track: Track, events: Iterable[dict]) -> dict:
     numbers = [corner.number for corner in track.corners]
     return corner_effects(parse_scenarios(list(events)), numbers)
@@ -178,6 +194,7 @@ def _state(sample: Sample, lap: int, **overrides) -> dict:
         "gear": sample.gear,
         "x": sample.x,
         "z": sample.z,
+        "surface": sample.surface,
         "lap_num": lap,
     }
     state.update(overrides)
@@ -250,27 +267,96 @@ def test_big_loss_non_focus_corner_speaks() -> None:
 
 
 def test_off_track_non_focus_corner_speaks_immediately() -> None:
-    """손실이 없어도 트랙을 벗어나면 집중 코너가 아니어도 말한다."""
+    """손실이 없어도 네 바퀴가 모두 트랙 밖이면 집중 코너가 아니어도 말한다."""
     coach = _coach(SUZUKA)
-    off_track = _effects(
+    corner = _corner(SUZUKA, 5)
+    off_track = _with_surface(
+        _suzuka(1),
+        (7, 7, 7, 7),
+        lambda sample: corner.entry_m <= sample.dist_m <= corner.exit_m,
+    )
+
+    messages = _messages(_feed(coach, off_track))
+
+    assert len(messages) == 1
+    message = messages[0]
+    assert message.corner == 5
+    assert message.evidence["cause"] == CAUSE_OFF_TRACK
+    assert message.evidence["amount"] == 4
+    assert message.evidence["unit"] == "count"
+    # 미터 수치를 말하지 않는다(SCRUM-93).
+    assert "미터" not in message.text
+
+
+def test_off_track_templates_do_not_mention_meters() -> None:
+    """트랙 이탈 무전 표현(모든 감정 단계)에는 거리 수치가 없다."""
+    from f1re.radio.templates import all_phrases
+
+    phrases = all_phrases("coaching.off_track", corner=5, count=4)
+    phrases.extend(
+        all_phrases("coaching.off_track_ordinal", corner_label="5번째 코너", count=4)
+    )
+
+    assert phrases
+    for text in phrases:
+        assert "미터" not in text
+        assert "{meters}" not in text
+
+
+def test_line_wide_still_judged_within_line_dev_cap() -> None:
+    """상한(50 m) 안의 라인 이탈 10 m는 지금처럼 line_wide 원인이 된다."""
+    coach = _coach(SUZUKA, focus=[5])
+    wide = _effects(
         SUZUKA,
         [
             {
                 "lap": 1,
                 "corner": 5,
                 "kind": "off_track",
-                "params": {"width_m": 7.5},
+                "params": {"width_m": 10.0},
             }
         ],
     )
-    lap = _suzuka(1, effects=off_track)
+    lap = _suzuka(1, effects=wide)
 
     messages = _messages(_feed(coach, lap))
 
     assert len(messages) == 1
-    assert messages[0].corner == 5
-    assert messages[0].text == "5번에서 트랙 벗어났어. 라인이 7미터 밖이었어."
-    assert messages[0].evidence["cause"] == CAUSE_OFF_TRACK
+    message = messages[0]
+    assert message.corner == 5
+    assert message.evidence["cause"] == CAUSE_LINE_WIDE
+    assert "10미터" in message.text
+
+
+def test_coordinate_mismatch_makes_no_line_or_off_track_cause() -> None:
+    """실제 세션 표본처럼 기준 궤적과 수백 m 떨어진 위치여도 라인·이탈을 말하지 않는다.
+
+    2026-11-14 스즈카 세션에서 차 19의 Motion 좌표(-720.6, -153.8)는 같은 랩
+    거리(4276 m)의 저장소 윤곽(-717.5, 170.0)과 324 m 달랐고, 노면은 네 바퀴
+    모두 아스팔트(0)였다. 좌표계가 다른 기준 랩과의 라인 거리는 버린다.
+    """
+    # 차 19의 두 좌표 차이 벡터. 모든 샘플을 이만큼 옮겨 좌표계 불일치를 만든다.
+    offset_x, offset_z = -720.6 - (-717.5), -153.8 - 170.0
+    base = _suzuka(1)
+    shifted = dataclasses.replace(
+        base,
+        samples=[
+            dataclasses.replace(
+                sample,
+                x=sample.x + offset_x,
+                z=sample.z + offset_z,
+                surface=(0, 0, 0, 0),
+            )
+            for sample in base.samples
+        ],
+    )
+    coach = _coach(SUZUKA, focus=[1, 5, 9])
+
+    messages = _messages(_feed(coach, shifted))
+
+    causes = {message.evidence["cause"] for message in messages}
+    assert CAUSE_LINE_WIDE not in causes
+    assert CAUSE_OFF_TRACK not in causes
 
 
 def test_no_message_on_clean_lap() -> None:

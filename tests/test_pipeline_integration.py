@@ -18,18 +18,32 @@
 from __future__ import annotations
 
 import asyncio
+import random
 import re
 import sys
 import time
 from pathlib import Path
 from typing import Any
 
+import pytest
 from fastapi.testclient import TestClient
 
+from f1re.coaching.reference import SOURCE_SELF, ReferenceSet
+from f1re.coaching.store import ReferenceKey, ReferenceStore
 from f1re.config import AppConfig
+from f1re.db import open_db, save_track_outline
+from f1re.demo_sender.driving import DriverProfile, generate_lap
 from f1re.demo_sender.scenarios import SCENARIO_DIR
 from f1re.engine import Engine
+from f1re.laps.traces import LapTrace, Sample
+from f1re.pipeline import RacePipeline
 from f1re.radio.queue import RadioMessage, RadioQueue
+from f1re.state.store import StateStore
+from f1re.tracks.model import load_outline, load_track
+from f1re.tracks.outline import TrackOutline
+from f1re.udp.parser import Packet
+from f1re.udp.session_uid import demo_session_uid
+from f1re.udp.spec import PACKET_FORMAT, Header, PacketId
 from f1re.web.app import create_app
 
 SUZUKA_ID = 13
@@ -350,3 +364,233 @@ async def test_engine_off_on_rewires_pipeline(tmp_path: Path) -> None:
     finally:
         await engine.stop()
     assert engine.pipeline is None
+
+
+# ---------------------------------------------------------------------------
+# 데모 세션 기준 랩·윤곽 분리(SCRUM-93)
+#
+# 데모 송신기 UID(위 32비트 0x5EED0000)는 실제 게임 세션과 기준 랩을 주고받지
+# 않는다. 실제 DB 표본으로 확인된 오염(데모 기준이 실제 세션에 저장됨)을 막는다.
+
+REAL_SESSION_UID = 0x65153D81F29B6D98
+
+
+def _packet(
+    packet_id: PacketId,
+    body: dict[str, Any],
+    *,
+    uid: int,
+    frame: int = 0,
+    player_index: int = 0,
+) -> Packet:
+    return Packet(
+        header=Header(
+            packet_format=PACKET_FORMAT,
+            game_year=25,
+            game_major=1,
+            game_minor=0,
+            packet_version=1,
+            packet_id=int(packet_id),
+            session_uid=uid,
+            session_time=0.0,
+            frame_id=frame,
+            overall_frame_id=frame,
+            player_car_index=player_index,
+            secondary_player_car_index=255,
+        ),
+        body=body,
+    )
+
+
+def _session_body(
+    track_id: int = SUZUKA_ID, session_type: int = 13
+) -> dict[str, Any]:
+    return {
+        "track_id": track_id,
+        "session_type": session_type,
+        "weather": 0,
+        "track_length": 5807.0,
+        "safety_car_status": 0,
+        "game_paused": 0,
+    }
+
+
+def _lap_trace(*, lap: int = 1, pace: float = 1.0) -> LapTrace:
+    track = load_track(SUZUKA_ID)
+    outline = load_outline(SUZUKA_ID)
+    assert track is not None and outline is not None
+    samples = generate_lap(
+        track, outline, DriverProfile(pace=pace), lap, random.Random(0)
+    )
+    return LapTrace(
+        car_index=0,
+        lap=lap,
+        valid=True,
+        invalid_reason=None,
+        samples=[
+            Sample(
+                dist_m=sample.dist_m,
+                t_ms=sample.t_ms,
+                speed=sample.speed_kmh,
+                throttle=sample.throttle,
+                brake=sample.brake,
+                steer=sample.steer,
+                gear=sample.gear,
+                x=sample.x,
+                z=sample.z,
+            )
+            for sample in samples
+        ],
+    )
+
+
+def _reference_key() -> ReferenceKey:
+    """데모·실제 테스트가 함께 쓰는 타임 트라이얼·맑음 기준 키."""
+    return ReferenceKey.from_session(
+        track_id=SUZUKA_ID,
+        session_type=13,
+        weather_code=0,
+        team_id=None,
+    )
+
+
+def _stored_reference(lap: int = 7, pace: float = 0.9) -> ReferenceSet:
+    track = load_track(SUZUKA_ID)
+    assert track is not None
+    references = ReferenceSet(track.corners, player_car_index=0, session_type=13)
+    references.update(_lap_trace(lap=lap, pace=pace))
+    return references
+
+
+def _reference_payload(conn: Any) -> str | None:
+    row = conn.execute("SELECT reference FROM reference_sets").fetchone()
+    return None if row is None else str(row["reference"])
+
+
+def _pipeline(conn: Any) -> RacePipeline:
+    return RacePipeline(StateStore(), _FakeRadio(), conn, config=AppConfig())
+
+
+async def test_demo_session_does_not_load_or_save_reference(
+    tmp_path: Path,
+) -> None:
+    """데모 UID 세션은 DB 기준이 있어도 안 불러오고, 랩을 끝내도 저장하지 않는다."""
+    conn = open_db(tmp_path / "demo.db")
+    try:
+        ReferenceStore(conn).save(_reference_key(), _stored_reference(lap=7), [3])
+        before = _reference_payload(conn)
+        pipeline = _pipeline(conn)
+        await pipeline.start()
+        try:
+            pipeline.on_packet(
+                _packet(
+                    PacketId.SESSION,
+                    _session_body(),
+                    uid=demo_session_uid(0),
+                ),
+                time.time_ns(),
+            )
+            assert pipeline.coach is not None
+            # 저장된 기준(랩 7)을 물려받지 않는다.
+            assert pipeline.coach.references.best_lap(SOURCE_SELF) is None
+
+            # 세션 안의 코칭은 그대로: 이 세션 랩이 기준이 된다.
+            await pipeline._process_laps([_lap_trace(lap=1)])
+            best = pipeline.coach.references.best_lap(SOURCE_SELF)
+            assert best is not None and best.lap == 1
+        finally:
+            await pipeline.aclose()
+
+        # 데모 세션은 기준 랩을 저장하지 않는다(기존 행이 그대로다).
+        assert _reference_payload(conn) == before
+    finally:
+        conn.close()
+
+
+async def test_real_session_loads_and_saves_reference(tmp_path: Path) -> None:
+    """실제 UID 세션은 지금처럼 저장된 기준을 불러오고 새 랩을 저장한다."""
+    conn = open_db(tmp_path / "real.db")
+    try:
+        key = _reference_key()
+        ReferenceStore(conn).save(key, _stored_reference(lap=7, pace=0.9), [3])
+        before = _reference_payload(conn)
+        pipeline = _pipeline(conn)
+        await pipeline.start()
+        try:
+            pipeline.on_packet(
+                _packet(PacketId.SESSION, _session_body(), uid=REAL_SESSION_UID),
+                time.time_ns(),
+            )
+            assert pipeline.coach is not None
+            loaded = pipeline.coach.references.best_lap(SOURCE_SELF)
+            assert loaded is not None and loaded.lap == 7
+
+            # 이번 세션 랩(더 빠름)을 마치면 저장된 기준이 갱신된다.
+            await pipeline._process_laps([_lap_trace(lap=1, pace=1.0)])
+            after = _reference_payload(conn)
+            assert after is not None and after != before
+            reloaded = ReferenceStore(conn).load(key)
+            assert reloaded is not None
+            best = reloaded.best_lap(SOURCE_SELF)
+            assert best is not None and best.lap == 1
+        finally:
+            await pipeline.aclose()
+    finally:
+        conn.close()
+
+
+@pytest.mark.parametrize(
+    ("uid", "expected_outlines"),
+    [(demo_session_uid(0), 0), (REAL_SESSION_UID, 1)],
+    ids=["demo", "real"],
+)
+async def test_demo_session_does_not_save_learned_outline(
+    tmp_path: Path, uid: int, expected_outlines: int
+) -> None:
+    """학습 윤곽은 데모 세션에서 저장하지 않고, 실제 세션에서는 지금처럼 저장한다."""
+    conn = open_db(tmp_path / "outline.db")
+    pipeline = _pipeline(conn)
+    await pipeline.start()
+    try:
+        pipeline._session_uid = uid
+        pipeline._player_index = 0
+        pipeline._track_id = 99  # 데이터 파일이 없는 서킷 → 학습 윤곽 경로
+        pipeline._session_type = 13
+        pipeline._track_length = 5807.0
+
+        await pipeline._process_laps([_lap_trace(lap=1)])
+
+        assert pipeline.track is not None
+        count = conn.execute("SELECT COUNT(*) FROM track_outlines").fetchone()[0]
+        assert count == expected_outlines
+    finally:
+        await pipeline.aclose()
+        conn.close()
+
+
+@pytest.mark.parametrize(
+    ("uid", "expected_loaded"),
+    [(demo_session_uid(0), False), (REAL_SESSION_UID, True)],
+    ids=["demo", "real"],
+)
+def test_demo_session_does_not_load_learned_outline(
+    tmp_path: Path, uid: int, expected_loaded: bool
+) -> None:
+    """데모 세션은 DB의 학습 윤곽을 불러오지 않고, 실제 세션은 불러온다."""
+    conn = open_db(tmp_path / "outline-load.db")
+    try:
+        save_track_outline(
+            conn,
+            99,
+            TrackOutline([(0.0, 0.0, 0.0), (100.0, 0.0, 100.0)]),
+        )
+        pipeline = _pipeline(conn)
+
+        pipeline.on_packet(
+            _packet(PacketId.SESSION, _session_body(track_id=99), uid=uid),
+            time.time_ns(),
+        )
+
+        assert (pipeline._outline is not None) is expected_loaded
+    finally:
+        conn.close()

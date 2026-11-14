@@ -66,6 +66,7 @@ from f1re.udp.schema import (
     StructDef,
     StructField,
 )
+from f1re.udp.session_uid import demo_session_uid
 from f1re.udp.spec import (
     MENU_RATE_HZ,
     PACKET_FORMAT,
@@ -291,7 +292,7 @@ class DemoSender:
         self._scenario_events = list(scenarios or [])
         self._validate_scenarios()
 
-        self._session_uid = 0x5EED_0000_0000_0000 | (seed & 0xFFFF_FFFF)
+        self._session_uid = demo_session_uid(seed)
         self._frame_id = 0
         self._completed: list[LapResult] = []
         self._next_lap_end = 0

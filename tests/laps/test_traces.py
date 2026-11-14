@@ -144,6 +144,7 @@ def _telemetry_packet(
             brake=spec.get("brake", 0.1),
             steer=spec.get("steer", 0.2),
             gear=spec.get("gear", 5),
+            surface_type=spec.get("surface_type", [0, 0, 0, 0]),
         )
         entries[car_index] = entry
     body["car_telemetry_data"] = entries
@@ -310,6 +311,28 @@ def test_records_all_cars_by_lap_distance() -> None:
     assert trace0.samples[5].fuel_kg == 42.5
     assert all(sample.wheel_slip is None for sample in trace1.samples)
     assert all(sample.fuel_kg is None for sample in trace1.samples)
+
+
+def test_records_wheel_surface_types() -> None:
+    """Car Telemetry의 바퀴별 노면(RL·RR·FL·FR)을 차마다 샘플에 남긴다."""
+    harness = _Harness()
+    harness.feed(
+        {
+            0: {"lap": 1, "dist": 0.0, "t_ms": 0, "surface_type": [0, 1, 7, 7]},
+            1: {"lap": 1, "dist": 0.0, "t_ms": 0, "surface_type": [7, 7, 7, 7]},
+        }
+    )
+    harness.feed(
+        {
+            0: {"lap": 2, "dist": 0.0, "t_ms": 0},
+            1: {"lap": 2, "dist": 0.0, "t_ms": 0},
+        }
+    )
+
+    trace0 = _completed(harness.completed, 1, car_index=0)
+    trace1 = _completed(harness.completed, 1, car_index=1)
+    assert trace0.samples[0].surface == (0, 1, 7, 7)
+    assert trace1.samples[0].surface == (7, 7, 7, 7)
 
 
 def test_position_falls_back_to_outline_without_motion() -> None:

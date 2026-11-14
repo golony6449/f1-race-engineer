@@ -27,6 +27,8 @@
   없으면 `now_ns` 차이로 만든다.
 - `lap_num`(또는 `current_lap_num`): 없으면 랩 거리가 되감길 때 랩을 센다.
 - `x`, `z`: 라인 이탈 판정용. 없으면 0으로 두어 라인 지표를 쓰지 않는다.
+- `surface`: Car Telemetry의 바퀴별 노면 4개(RL·RR·FL·FR). 없으면 트랙 이탈을
+  판단하지 않는다(옛 입력·데모 호환, SCRUM-93).
 - `lap_valid`(기본 True), `invalid_reason`, `in_pit`, `safety_car`, `vsc`,
   `session_type`
 - `car_index`/`is_player`: 내 차가 아니면 아무것도 하지 않는다.
@@ -145,15 +147,15 @@ def pick_cause(metrics: CornerMetrics, reference: CornerMetrics) -> Cause | None
     설계 6.4의 예("브레이크가 늦고 정점 라인이 밖으로 밀렸으면 브레이크 늦음")처럼
     여러 원인이 겹치면 앞 순서의 원인을 쓴다. 문턱을 넘는 원인이 없으면 `None`.
     """
-    # 트랙 이탈은 그 자체로 가장 큰 사고이므로 맨 앞에 둔다.
+    # 트랙 이탈은 그 자체로 가장 큰 사고이므로 맨 앞에 둔다. 무전은 거리(미터)를
+    # 말하지 않고 바퀴 4개가 모두 나갔다는 사실만 전한다(SCRUM-93).
     if metrics.off_track:
-        meters = max(1, int(round(metrics.max_line_dev_m)))
         return Cause(
             key=CAUSE_OFF_TRACK,
-            amount=float(meters),
-            unit="m",
-            slot="meters",
-            value=meters,
+            amount=4.0,
+            unit="count",
+            slot="count",
+            value=4,
             detail={
                 "line_dev_m": round(metrics.max_line_dev_m, 1),
                 "reference_line_dev_m": round(reference.max_line_dev_m, 1),
@@ -751,6 +753,7 @@ class Coach:
             gear=int(gear),
             x=float(x),
             z=float(z),
+            surface=_surface(state.get("surface")),
         )
 
     def _crossed_exits(self, previous: float, distance: float) -> list[Corner]:
@@ -1001,6 +1004,18 @@ def _number(value: Any, default: float | None = None) -> float | None:
     if isinstance(value, (int, float)) and math.isfinite(float(value)):
         return float(value)
     return None
+
+
+def _surface(value: Any) -> tuple[int, ...] | None:
+    """바퀴별 노면 4개를 정수 튜플로 만든다. 없거나 형식이 다르면 None."""
+    if not isinstance(value, (list, tuple)) or len(value) != 4:
+        return None
+    surfaces: list[int] = []
+    for item in value:
+        if isinstance(item, bool) or not isinstance(item, int):
+            return None
+        surfaces.append(int(item))
+    return tuple(surfaces)
 
 
 def _remaining_laps_from_state(

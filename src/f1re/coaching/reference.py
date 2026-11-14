@@ -316,6 +316,8 @@ def _sample_to_dict(sample: Sample) -> dict[str, Any]:
         data["wheel_slip"] = [round(float(value), 4) for value in sample.wheel_slip]
     if sample.fuel_kg is not None:
         data["fuel_kg"] = round(float(sample.fuel_kg), 3)
+    if sample.surface is not None:
+        data["surface"] = [int(value) for value in sample.surface]
     return data
 
 
@@ -332,6 +334,7 @@ def _sample_from_dict(data: Mapping[str, Any]) -> Sample:
         z=_as_float(data["z"]),
         wheel_slip=_as_wheel_slip(data.get("wheel_slip")),
         fuel_kg=_as_optional_float(data.get("fuel_kg")),
+        surface=_as_surface(data.get("surface")),
     )
 
 
@@ -360,6 +363,18 @@ def _as_wheel_slip(value: Any) -> tuple[float, ...] | None:
     if not isinstance(value, (list, tuple)):
         raise ValueError(f"휠 슬립이 목록이 아닙니다: {value!r}")
     return tuple(_as_float(item) for item in value)
+
+
+def _as_surface(value: Any) -> tuple[int, ...] | None:
+    """바퀴별 노면(4개). 키가 없거나 형식이 틀린 옛 데이터는 None으로 읽는다."""
+    if not isinstance(value, (list, tuple)) or len(value) != 4:
+        return None
+    surfaces: list[int] = []
+    for item in value:
+        if isinstance(item, bool) or not isinstance(item, int):
+            return None
+        surfaces.append(int(item))
+    return tuple(surfaces)
 
 
 __all__ = [
