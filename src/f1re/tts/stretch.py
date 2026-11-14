@@ -4,6 +4,11 @@ Qwen TTS는 말 속도 파라미터를 주지 않으므로 서버에서 합성 �
 줄인다. 창 30ms(한 창 = 2 hop), 출력 hop = 창/2, 입력 hop = 출력 hop × 속도로
 두고, 다음 조각의 시작을 앞 조각 꼬리와 상관이 가장 큰 곳(±8ms)으로 맞춘다.
 속도 1.0이면 입력을 그대로 돌려준다.
+
+변환 전에 끝에 `TAIL_PAD_MS` 무음을 붙인다(SCRUM-90). WSOLA는 마지막 창을
+`signal.size - frame`까지만 놓을 수 있어 원본 마지막 30~50ms가 출력에서
+사라진다. 끝 여백을 붙이면 그 손실이 무음 구간에서 일어나 말소리 꼬리는
+출력에 남고, 출력도 무음으로 끝나 브라우저 재생 끝이 덜 잘린다.
 """
 
 from __future__ import annotations
@@ -16,9 +21,18 @@ from f1re.tts.radiofx import pcm_to_wav, wav_to_pcm
 FRAME_MS = 30.0
 SEARCH_MS = 8.0
 
+# 변환 전에 끝에 붙이는 무음 길이. 마지막 창이 놓이지 못해 버려지던 말소리
+# 꼬리를 이 무음 안에서 흘려보낸다(SCRUM-90). 값을 바꾸면 캐시된 WAV를 다시
+# 만들도록 `RadioFxConfig.version`도 올린다.
+TAIL_PAD_MS = 300.0
+
 
 def time_stretch_pcm(pcm: bytes, sample_rate: int, speed: float) -> bytes:
-    """16bit mono PCM의 길이를 `1/speed`로 늘이거나 줄인다. 음 높이는 유지한다."""
+    """16bit mono PCM의 길이를 `1/speed`로 늘이거나 줄인다. 음 높이는 유지한다.
+
+    변환 전에 끝에 `TAIL_PAD_MS` 무음을 붙이므로 출력은 그만큼 더 길고,
+    말소리 꼬리를 잃지 않으며 무음으로 끝난다.
+    """
     if not isinstance(sample_rate, int) or sample_rate <= 0:
         raise ValueError("sample_rate는 양의 정수여야 합니다")
     if not isinstance(speed, (int, float)) or not np.isfinite(speed) or speed <= 0:
@@ -31,6 +45,10 @@ def time_stretch_pcm(pcm: bytes, sample_rate: int, speed: float) -> bytes:
         return pcm
 
     samples = np.frombuffer(pcm, dtype="<i2").astype(np.float64)
+    # 끝 여백은 여기 한 곳에서만 붙인다. 호출부가 따로 붙이면 두 번 붙는다.
+    pad = int(round(sample_rate * TAIL_PAD_MS / 1000.0))
+    if pad > 0:
+        samples = np.concatenate([samples, np.zeros(pad, dtype=np.float64)])
     stretched = _wsola(samples, sample_rate, float(speed))
     output = np.clip(np.round(stretched), -32768.0, 32767.0).astype("<i2")
     return output.tobytes()

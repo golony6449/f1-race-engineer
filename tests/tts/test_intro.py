@@ -19,11 +19,13 @@ from f1re.tts.pipeline import (
 from f1re.tts.radiofx import (
     IntroSoundConfig,
     RadioFxConfig,
+    TAIL_SILENCE_MS,
     effect_version,
     pcm_to_wav,
     prepend_intro_sound,
     wav_to_pcm,
 )
+from f1re.tts.stretch import TAIL_PAD_MS
 
 SAMPLE_RATE = 24_000
 
@@ -161,18 +163,23 @@ def test_render_radio_voice_runs_speed_fx_then_intro(tmp_path: Path) -> None:
     samples = _samples(pcm)
     intro_len = len(intro_pcm) // 2
     gap_len = int(SAMPLE_RATE * 0.15)
-    expected_voice_len = len(voice_pcm) / 2 / 1.2
-    voice_len = samples.size - intro_len - gap_len
+    # 속도 변환 전 끝 여백과 효과 뒤 끝 무음도 음성 구간 길이에 들어간다.
+    expected_voice_seconds = (
+        len(voice_pcm) / 2 / SAMPLE_RATE + TAIL_PAD_MS / 1000.0
+    ) / 1.2 + TAIL_SILENCE_MS / 1000.0
+    voice_seconds = (samples.size - intro_len - gap_len) / SAMPLE_RATE
 
     assert sample_rate == SAMPLE_RATE
     # 속도 1.2가 적용됐다(±5%).
-    assert voice_len == pytest.approx(expected_voice_len, rel=0.05)
+    assert voice_seconds == pytest.approx(expected_voice_seconds, rel=0.05)
     # 앞에는 효과음, 그다음 무음, 그다음 무전 음성 순서다.
     expected_intro = _samples(intro_pcm) * 0.5
     assert np.max(np.abs(samples[:intro_len] - expected_intro)) <= 2.0 / 32768.0
     assert np.all(samples[intro_len : intro_len + gap_len] == 0.0)
     voice = samples[intro_len + gap_len :]
     assert _rms(voice) > 0.05
+    # 마지막은 브라우저 재생 끝을 지키는 무음이다.
+    assert np.all(samples[-int(SAMPLE_RATE * TAIL_SILENCE_MS / 1000.0) :] == 0.0)
 
 
 def test_render_radio_voice_survives_missing_intro(
