@@ -1,4 +1,4 @@
-"""무전 효과: 길이 유지, 대역 제한, 잡음·클릭, 재현성."""
+"""무전 효과: 길이 유지, 대역 제한, 잡음·클릭, 재현성, 끝 무음."""
 
 from __future__ import annotations
 
@@ -8,7 +8,9 @@ import numpy as np
 import pytest
 
 from f1re.tts.radiofx import (
+    TAIL_SILENCE_MS,
     RadioFxConfig,
+    append_tail_silence_wav,
     apply_radio_fx,
     apply_radio_fx_wav,
     wav_to_pcm,
@@ -104,6 +106,30 @@ def test_apply_radio_fx_wav_keeps_format_and_length(make_wav: Callable[..., byte
     assert output_rate == original_rate == SAMPLE_RATE
     assert len(output_pcm) == len(original_pcm)
     assert output.startswith(b"RIFF")
+
+
+def test_append_tail_silence_adds_zero_samples(
+    make_wav: Callable[..., bytes],
+) -> None:
+    wav = make_wav(seconds=0.2)
+    original_pcm, original_rate = wav_to_pcm(wav)
+
+    output = append_tail_silence_wav(wav)
+
+    pcm, sample_rate = wav_to_pcm(output)
+    tail = int(SAMPLE_RATE * TAIL_SILENCE_MS / 1000.0)
+    assert sample_rate == original_rate
+    assert len(pcm) == len(original_pcm) + tail * 2
+    assert pcm.endswith(b"\x00\x00" * tail)
+    assert pcm[: len(original_pcm)] == original_pcm
+
+
+def test_append_tail_silence_zero_duration_keeps_wav(
+    make_wav: Callable[..., bytes],
+) -> None:
+    wav = make_wav(seconds=0.1)
+
+    assert append_tail_silence_wav(wav, duration_ms=0.0) == wav
 
 
 def test_wav_to_pcm_rejects_non_wav() -> None:
