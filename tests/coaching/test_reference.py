@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import dataclasses
+import json
 import random
 
 import pytest
@@ -18,6 +19,8 @@ from f1re.coaching.reference import (
     SOURCE_SELF,
     ReferenceSet,
     corner_time_loss_ms,
+    reference_from_dict,
+    reference_to_dict,
     trace_outline,
 )
 from f1re.demo_sender.driving import DriverProfile, Sample as DrivingSample, generate_lap
@@ -327,3 +330,62 @@ def test_trace_outline_and_line_reference() -> None:
     assert len(path.points) >= 2
     deviations = corner_metrics(reference, _corner(5), path).max_line_dev_m
     assert deviations == pytest.approx(0.0, abs=0.05)
+
+
+# ---------------------------------------------------------------------------
+# 직렬화: 바퀴별 노면(SCRUM-93)
+
+
+def _reference_with_surface(
+    surface: tuple[int, ...] | None = (0, 1, 7, 7)
+) -> ReferenceSet:
+    references = ReferenceSet(TRACK.corners)
+    trace = _trace(1)
+    trace.samples = [
+        dataclasses.replace(sample, surface=surface) for sample in trace.samples
+    ]
+    references.update(trace)
+    return references
+
+
+def test_roundtrip_keeps_wheel_surface() -> None:
+    """저장·복원을 거쳐도 바퀴별 노면이 그대로 남는다."""
+    references = _reference_with_surface()
+    payload = json.loads(json.dumps(reference_to_dict(references)))
+
+    loaded = reference_from_dict(payload)
+
+    best = loaded.best_lap(SOURCE_SELF)
+    assert best is not None
+    assert best.samples
+    assert all(sample.surface == (0, 1, 7, 7) for sample in best.samples)
+
+
+def test_old_reference_without_surface_loads() -> None:
+    """노면 키가 없던 옛 기준 랩 JSON도 읽고, 노면은 None이 된다."""
+    payload = reference_to_dict(_reference_with_surface())
+    for lap in payload["laps"]:
+        for sample in lap["samples"]:
+            sample.pop("surface", None)
+
+    loaded = reference_from_dict(json.loads(json.dumps(payload)))
+
+    best = loaded.best_lap(SOURCE_SELF)
+    assert best is not None
+    assert all(sample.surface is None for sample in best.samples)
+
+
+@pytest.mark.parametrize(
+    "surface",
+    [[0, 1], [0, 1, 7, 7, 0], [0, 1, "7", 7], [0, True, 7, 7], "grass"],
+)
+def test_malformed_surface_loads_as_none(surface: object) -> None:
+    """노면 형식이 틀린 옛 데이터는 오류 없이 None으로 읽는다."""
+    payload = reference_to_dict(_reference_with_surface())
+    payload["laps"][0]["samples"][0]["surface"] = surface
+
+    loaded = reference_from_dict(payload)
+
+    best = loaded.best_lap(SOURCE_SELF)
+    assert best is not None
+    assert best.samples[0].surface is None

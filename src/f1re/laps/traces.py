@@ -2,7 +2,8 @@
 
 Car Telemetry 패킷이 올 때마다 차마다 샘플 하나를 만든다(설계 6.2). 샘플의 랩
 거리와 랩 시각은 같은 프레임의 Lap Data 값이고, 위치는 Motion(없으면 중심선
-보간), 휠 슬립은 Motion Ex(내 차만), 연료량은 Car Status(내 차만)에서 온다.
+보간), 바퀴별 노면은 Car Telemetry, 휠 슬립은 Motion Ex(내 차만), 연료량은
+Car Status(내 차만)에서 온다.
 
 Lap Data의 랩 번호가 커지면 이전 랩을 `LapTrace`로 마감해 돌려준다. 다음
 경우에는 `valid=False`와 이유를 붙여 기준 랩·코칭에서 빼게 한다(리뷰 포커스
@@ -70,6 +71,11 @@ class Sample:
     Motion Ex의 바퀴별 슬립 비율(내 차만, 없으면 None)이고 `fuel_kg`는 Car
     Status의 내 차 연료량(없으면 None)이다. `fuel_kg`는 리프트 앤 코스트
     분석(SCRUM-71)이 쓸 수 있게 남겨 둔다.
+
+    `surface`는 Car Telemetry의 바퀴별 노면(`surface_type`, RL·RR·FL·FR 순서)이다.
+    F1 25 값은 0 아스팔트, 1 연석, 2 콘크리트, 3 바위, 4 자갈, 5 진흙, 6 모래,
+    7 잔디, 8 물, 9 자갈길, 10 금속, 11 요철이다. 옛 기준 랩이나 노면이 없는
+    입력은 None이다(SCRUM-93).
     """
 
     dist_m: float
@@ -83,6 +89,7 @@ class Sample:
     z: float
     wheel_slip: tuple[float, ...] | None = None
     fuel_kg: float | None = None
+    surface: tuple[int, ...] | None = None
 
 
 @dataclass
@@ -334,6 +341,7 @@ class LapTraceRecorder:
             z=z,
             wheel_slip=self._motion_ex.get(car_index) if is_player else None,
             fuel_kg=self._fuel_kg.get(car_index) if is_player else None,
+            surface=_surface_tuple(telemetry.get("surface_type")),
         )
 
     def _position(self, car_index: int, dist_m: float) -> tuple[float, float]:
@@ -441,3 +449,16 @@ def _as_float(value: Any) -> float | None:
     if isinstance(value, (int, float)) and math.isfinite(float(value)):
         return float(value)
     return None
+
+
+def _surface_tuple(value: Any) -> tuple[int, ...] | None:
+    """바퀴별 노면(4개)을 정수 튜플로 만든다. 형식이 다르면 None."""
+    if not isinstance(value, (list, tuple)) or len(value) != 4:
+        return None
+    surfaces: list[int] = []
+    for item in value:
+        surface = _as_int(item)
+        if surface is None:
+            return None
+        surfaces.append(surface)
+    return tuple(surfaces)
