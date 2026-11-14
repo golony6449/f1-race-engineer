@@ -74,6 +74,7 @@ from f1re.tracks.model import (
 )
 from f1re.tracks.outline import TrackOutline
 from f1re.udp.parser import Packet
+from f1re.udp.session_uid import is_demo_session_uid
 from f1re.udp.spec import PacketId
 
 logger = logging.getLogger(__name__)
@@ -342,7 +343,11 @@ class RacePipeline:
             self._coach = None
             self._lift_coach = None
             self._advisor = None
-            self._outline, _source = resolve_outline(track_id, self._conn)
+            # 데모 세션은 학습 윤곽을 불러오지 않는다(SCRUM-93).
+            outline_conn = (
+                None if is_demo_session_uid(self._session_uid) else self._conn
+            )
+            self._outline, _source = resolve_outline(track_id, outline_conn)
             self._lap_recorder.set_outline(self._outline)
 
         session_type = _int(body.get("session_type"))
@@ -428,11 +433,20 @@ class RacePipeline:
         return track
 
     def _build_coaches(self, track: Track) -> None:
-        """기준 랩을 불러와 코치·추월 판단을 만들고, 밀린 랩을 반영한다."""
+        """기준 랩을 불러와 코치·추월 판단을 만들고, 밀린 랩을 반영한다.
+
+        데모 세션(UID 위 32비트 `0x5EED0000`)은 저장된 기준을 불러오지 않고
+        빈 `ReferenceSet`으로 시작한다. 데모 좌표는 게임 좌표와 달라 실제
+        세션 기준으로 쓸 수 없고, 반대로 데모 기준이 실제 세션에 섞이면 안 된다.
+        """
         player = int(self._player_index or 0)
         references: ReferenceSet | None = None
         focus_seed: tuple[int, ...] = ()
-        if self._reference_store is not None and self._track_id is not None:
+        if (
+            not is_demo_session_uid(self._session_uid)
+            and self._reference_store is not None
+            and self._track_id is not None
+        ):
             key = ReferenceKey.from_session(
                 track_id=self._track_id,
                 session_type=self._session_type,
@@ -781,7 +795,12 @@ class RacePipeline:
             length_m=length,
             corners=corners,
         )
-        if self._conn is not None and self._track_id is not None:
+        if (
+            self._conn is not None
+            and self._track_id is not None
+            and not is_demo_session_uid(self._session_uid)
+        ):
+            # 데모 세션의 학습 윤곽은 저장하지 않는다(좌표계가 게임과 다르다).
             outline = remember_outline(self._conn, self._track_id, trace)
             if outline is not None:
                 self._outline = outline
@@ -874,10 +893,15 @@ class RacePipeline:
         return metrics
 
     def _save_reference(self) -> None:
-        """같은 조건(트랙·모드·날씨·차) 키로 기준 랩·집중 코너를 저장한다."""
+        """같은 조건(트랙·모드·날씨·차) 키로 기준 랩·집중 코너를 저장한다.
+
+        데모 세션은 저장하지 않는다. 데모 좌표 기준이 실제 세션 DB에 섞이면
+        다음 실제 세션이 그 기준으로 코칭해 라인·트랙 이탈이 어긋난다(SCRUM-93).
+        """
         coach = self._coach
         if (
-            self._reference_store is None
+            is_demo_session_uid(self._session_uid)
+            or self._reference_store is None
             or self._key is None
             or coach is None
         ):

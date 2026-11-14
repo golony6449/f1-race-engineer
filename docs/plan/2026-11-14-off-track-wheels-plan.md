@@ -90,9 +90,31 @@ Car Telemetry 패킷의 바퀴별 노면(`surface_type`, 4개, 순서 RL·RR·FL
    - 구간 밖(진입 앞)의 `(7,7,7,7)` → `off_track False`.
    - 라인 거리 10 m(상한 안) → 지금처럼 `line_wide` 판정이 된다.
 
+### 작업 3: 데모 세션 기준 랩 분리
+
+**Files:**
+- Create: `src/f1re/udp/session_uid.py`
+- Modify: `src/f1re/demo_sender/sender.py`
+- Modify: `src/f1re/pipeline.py`
+- Test: `tests/udp/test_session_uid.py`
+- Test: `tests/test_pipeline_integration.py`
+
+1. `src/f1re/udp/session_uid.py`: `DEMO_SESSION_UID_PREFIX = 0x5EED_0000`(위 32비트),
+   `demo_session_uid(seed: int) -> int`(지금 데모 송신기 식과 같은 값), `is_demo_session_uid(uid: int | None) -> bool`
+   (`uid >> 32 == DEMO_SESSION_UID_PREFIX`, `None`이면 False).
+2. 데모 송신기는 `demo_session_uid(seed)`로 UID를 만든다(값은 지금과 같아야 한다).
+3. 파이프라인: 지금 세션 UID가 데모면
+   - 저장된 기준을 불러오지 않는다(`_build_coaches`에서 `load_compatible`을 부르지 않고 빈 `ReferenceSet`으로 시작).
+   - 기준 랩을 저장하지 않는다(`_save_reference`가 아무것도 하지 않음).
+   - 학습 윤곽을 저장하지 않는다(`remember_outline`을 부르지 않음).
+   - 세션 안의 코칭(그 세션 랩끼리 비교)은 지금처럼 한다.
+4. 테스트: `is_demo_session_uid(0x5EED_0000_1234_5678)` True, 실제 표본 UID 3개(`0x65153d81f29b6d98`, `0x46c6a53cf8f7d1b8`, `0x0c639f026e854e87`) False, `None` False.
+   데모 UID 세션은 DB에 기준이 있어도 불러오지 않고, 랩을 끝내도 `reference_sets`에 저장하지 않는다. 실제 UID 세션은 지금처럼 불러오고 저장한다.
+
 ## Review Focus
 
 1. 트랙 이탈이 "4바퀴 모두 아스팔트·연석이 아님"일 때만 참인가. 바퀴 하나라도 아스팔트·연석이면 이탈이 아닌가.
 2. `surface`가 없는 옛 기준 랩·데모 샘플에서 오류 없이 `off_track False`가 되는가. 옛 `reference_sets` JSON을 읽을 수 있는가.
 3. 상한(50 m)을 넘는 라인 거리가 `line_wide` 원인을 만들지 않는가.
 4. 트랙 이탈 무전에 더 이상 미터 수치가 나오지 않는가. 템플릿 검사 테스트가 통과하는가.
+5. 데모 세션(UID 위 32비트 0x5EED0000)은 기준 랩·윤곽을 불러오지도 저장하지도 않는가. 실제 세션 동작은 그대로인가.
