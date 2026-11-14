@@ -378,6 +378,8 @@ function renderRadioStatus(voice, radioPage) {
     ? `무전 페이지 연결 ${clients}`
     : "무전 페이지 미연결";
   node.textContent = `${voiceText} · ${radioText}`;
+  // 음성 오프라인 이유는 마우스를 올렸을 때 보여 준다(SCRUM-92).
+  node.title = !online && voice && voice.reason ? voice.reason : "";
 
   const healthy = online && connected;
   node.classList.toggle("ok", healthy);

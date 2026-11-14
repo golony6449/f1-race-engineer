@@ -497,3 +497,16 @@ def test_dashboard_and_static_files_are_served() -> None:
     for relative in imports:
         path = "/static/" + relative.removeprefix("./")
         assert client.get(path).status_code == 200, path
+
+
+def test_radio_page_has_voice_check_button() -> None:
+    """SCRUM-92: 무전 페이지에서 음성 상태를 직접 새로고침할 수 있다."""
+    client = _client(StateStore())
+    html = client.get("/radio").text
+
+    assert 'id="voice-check"' in html
+    assert "상태 새로고침" in html
+
+    # 버튼은 음성 상태 새로고침 API를 부른다.
+    js = client.get("/static/radio.js").text
+    assert '"/api/voice/check"' in js

@@ -91,6 +91,12 @@
         opacity: 0.45;
         cursor: default;
       }
+      /* 음성 상태 새로고침은 보조 동작이라 연결 버튼보다 작고 어둡게 둔다. */
+      #voice-check {
+        font-size: 16px;
+        padding: 10px 18px;
+        background: #2a323d;
+      }
       .voice {
         color: var(--muted);
         font-size: 16px;
@@ -200,6 +206,7 @@
       <div class="connect-row">
         <!-- 브라우저 자동 재생 정책 때문에 처음 한 번 직접 눌러야 한다. -->
         <button id="connect" type="button">무전 연결</button>
+        <button id="voice-check" type="button">상태 새로고침</button>
         <span class="voice">
           음성: <strong id="voice">음성 오프라인</strong>
         </span>
