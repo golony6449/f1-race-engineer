@@ -145,9 +145,6 @@ class AppConfig:
     radio: RadioConfig = dataclasses.field(default_factory=RadioConfig)
     recording: RecordingConfig = dataclasses.field(default_factory=RecordingConfig)
     llm: LLMConfig = dataclasses.field(default_factory=LLMConfig)
-    coaching: CoachingSensitivityConfig = dataclasses.field(
-        default_factory=CoachingSensitivityConfig
-    )
     focus_corner_count: int = 5
     focus_recent_laps: int = 3
     big_loss_s: float = 0.3
@@ -155,6 +152,10 @@ class AppConfig:
     overtake_gap_s: float = 1.0
     overtake_per_lap: int = 1
     udp_port: int = 20777
+    # 코너 코칭 민감도(SCRUM-124). 기존 위치 인자 호출과 호환되도록 맨 뒤에 둔다.
+    coaching: CoachingSensitivityConfig = dataclasses.field(
+        default_factory=CoachingSensitivityConfig
+    )
 
 
 def repo_root() -> Path:
