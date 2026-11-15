@@ -29,6 +29,11 @@ const connectionTextNode = document.getElementById("connection-text");
 const dataStatusNode = document.getElementById("data-status");
 const dataStatusValue = document.getElementById("data-status-value");
 const dataStatusDetail = document.getElementById("data-status-detail");
+const dataStatusAge = document.getElementById("data-status-age");
+const sessionValue = document.getElementById("session-value");
+const currentCornerValue = document.getElementById("current-corner-value");
+const nextCornerValue = document.getElementById("next-corner-value");
+const nextCornerDistance = document.getElementById("next-corner-distance");
 const connectButton = document.getElementById("connect");
 const voiceCheckButton = document.getElementById("voice-check");
 const voiceNode = document.getElementById("voice");
@@ -51,11 +56,23 @@ let engineState = "off";
 let currentPriority = null;
 const activeSources = new Set();
 
-// 데이터 수신 상태(SCRUM-111). 대시보드가 쓰는 `/api/state`를 약 1초마다
-// 읽어, 엔진이 켜져 있는 동안만 갱신한다.
+// 데이터 수신 상태(SCRUM-111 · SCRUM-126). 대시보드가 쓰는 `/api/state`를 약
+// 1초마다 읽어 엔진이 켜져 있는 동안만 갱신한다. 마지막 정상 응답 시각과
+// 서버가 알려 준 패킷 나이로 "마지막 수신" 시점을 추정해 0.25초마다 초를
+// 다시 세고, 3초 넘게 응답이 없으면 빨간 "서버 응답 없음"으로 바꾼다.
 const DATA_POLL_MS = 1000;
+const DATA_TICK_MS = 250;
+const DATA_TIMEOUT_MS = 3000;
 let dataPollTimer = null;
+let dataTickTimer = null;
 let dataRefreshing = false;
+// 데이터 폴링을 시작한 시각. 아직 정상 응답이 한 번도 없을 때 무응답 판정의
+// 기준으로 쓴다.
+let pollStartedMs = null;
+let lastSuccessMs = null;
+// 클라이언트 시계 기준으로 추정한 마지막 UDP 패킷 수신 시각. 서버 응답이
+// 끊겨도 이 값에서 계속 초를 세어 "마지막 수신 N.N초 전"을 보여 준다.
+let lastPacketMs = null;
 
 /** 연결 상태 배너의 왼쪽(무전 연결) 칸. state: connected | connecting | disconnected */
 function setConnection(state, text) {
@@ -75,6 +92,42 @@ function setDataStatus(payload) {
       : connection.stale
         ? "stale"
         : "live";
+  // 서버가 준 패킷 나이를 받은 시각에서 빼면 클라이언트 시계 기준의 마지막
+  // 패킷 수신 시점이 된다. 이후 폴링이 실패해도 이 시점에서 초를 계속 센다.
+  lastSuccessMs = Date.now();
+  lastPacketMs = Number.isFinite(connection.data_age_ms)
+    ? lastSuccessMs - connection.data_age_ms
+    : null;
+  updateDataAge();
+  setRaceContext(payload);
+}
+
+/** "마지막 수신 N.N초 전"을 다시 그린다. 수신 기록이 없으면 안내 문구. */
+function updateDataAge() {
+  if (!dataStatusAge) return;
+  if (lastPacketMs === null) {
+    dataStatusAge.textContent = lastSuccessMs === null ? "" : "수신 기록 없음";
+    return;
+  }
+  const seconds = Math.max(0, Date.now() - lastPacketMs) / 1000;
+  dataStatusAge.textContent = `마지막 수신 ${seconds.toFixed(1)}초 전`;
+}
+
+/** 0.25초마다 마지막 수신 초를 다시 세고, 3초 넘게 응답이 없으면 오류로 바꾼다. */
+function dataTick() {
+  updateDataAge();
+  if (engineState !== "on") return;
+  const anchor = lastSuccessMs === null ? pollStartedMs : lastSuccessMs;
+  if (anchor === null) return;
+  if (Date.now() - anchor > DATA_TIMEOUT_MS) markDataError();
+}
+
+/** `/api/state` 조회 실패·무응답. 마지막 수신 초는 계속 세면서 빨간색으로 알린다. */
+function markDataError() {
+  dataStatusNode.dataset.state = "error";
+  dataStatusValue.textContent = "서버 응답 없음";
+  dataStatusDetail.textContent = "";
+  updateDataAge();
 }
 
 /** 엔진이 꺼졌을 때. 수신이 없으므로 대시보드와 같은 "데이터 없음"으로 둔다. */
@@ -82,9 +135,50 @@ function clearDataStatus() {
   dataStatusValue.textContent = connectionText({}, {});
   dataStatusDetail.textContent = "";
   dataStatusNode.dataset.state = "none";
+  lastSuccessMs = null;
+  lastPacketMs = null;
+  if (dataStatusAge) dataStatusAge.textContent = "";
+  clearRaceContext();
+}
+
+/** 세션 종류·현재/다음 코너·남은 거리. 트랙을 모르면 모두 `—`로 둔다. */
+function setRaceContext(payload) {
+  const session = payload.session || {};
+  const corner = payload.corner || {};
+  sessionValue.textContent = session.label || "—";
+  if (!corner.track_loaded) {
+    currentCornerValue.textContent = "—";
+    nextCornerValue.textContent = "—";
+    nextCornerDistance.textContent = "—";
+    return;
+  }
+  currentCornerValue.textContent =
+    corner.current_corner === null || corner.current_corner === undefined
+      ? "직선"
+      : `${corner.current_corner}번`;
+  nextCornerValue.textContent =
+    corner.next_corner === null || corner.next_corner === undefined
+      ? "—"
+      : `${corner.next_corner}번`;
+  nextCornerDistance.textContent =
+    typeof corner.distance_to_next_corner_m === "number"
+      ? `${corner.distance_to_next_corner_m.toFixed(2)} m`
+      : "—";
+}
+
+function clearRaceContext() {
+  sessionValue.textContent = "—";
+  currentCornerValue.textContent = "—";
+  nextCornerValue.textContent = "—";
+  nextCornerDistance.textContent = "—";
 }
 
 function startDataPolling() {
+  if (dataTickTimer === null) {
+    pollStartedMs = Date.now();
+    dataTickTimer = window.setInterval(dataTick, DATA_TICK_MS);
+  }
+  if (dataPollTimer !== null || dataRefreshing) return;
   refreshDataStatus();
 }
 
@@ -92,6 +186,10 @@ function stopDataPolling() {
   if (dataPollTimer !== null) {
     window.clearTimeout(dataPollTimer);
     dataPollTimer = null;
+  }
+  if (dataTickTimer !== null) {
+    window.clearInterval(dataTickTimer);
+    dataTickTimer = null;
   }
 }
 
@@ -117,7 +215,9 @@ async function refreshDataStatus() {
     const payload = await response.json();
     if (engineState === "on") setDataStatus(payload);
   } catch (error) {
-    // 서버가 잠깐 응답하지 않을 수 있다. 마지막 표시를 두고 다음 주기에 다시 묻는다.
+    // 서버가 죽었거나 네트워크가 끊겼다. 마지막 수신 초는 계속 세면서 빨간
+    // 상태로 바꾸고, 다음 주기에 다시 묻는다.
+    if (engineState === "on") markDataError();
   } finally {
     dataRefreshing = false;
     scheduleDataPoll();
