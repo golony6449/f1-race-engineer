@@ -12,6 +12,7 @@
 
 from __future__ import annotations
 
+import re
 import sqlite3
 from collections.abc import Callable, Sequence
 from pathlib import Path
@@ -40,6 +41,16 @@ from f1re.web.replay_api import create_replay_router
 SESSION_UID = 0x0123_4567_89AB_CDEF
 # 녹화 첫 패킷의 수신 시각. 실제 게임처럼 0이 아닌 절대 시각(ns)을 쓴다.
 BASE_NS = 1_700_000_000_000_000_000
+
+# 대시보드 정적 스크립트. 라우터만 붙인 앱에는 정적 파일이 없으므로 원본을 읽는다.
+DASHBOARD_JS_PATH = (
+    Path(__file__).resolve().parents[2]
+    / "src"
+    / "f1re"
+    / "web"
+    / "static"
+    / "dashboard.js"
+)
 
 
 # ---------------------------------------------------------------------------
@@ -174,8 +185,12 @@ def _add_recording(
     local_path: Path | None = None,
     gcs_object: str | None = None,
     backup_status: str = "uploaded",
+    backup_error: str | None = None,
 ) -> int:
-    """마감된 녹화 행을 만든다. `local_path` 파일이 있으면 로컬 보유 상태다."""
+    """마감된 녹화 행을 만든다. `local_path` 파일이 있으면 로컬 보유 상태다.
+
+    `backup_error`를 주면 백업 실패·건너뜀 사유까지 남긴다(예: rclone 미설치).
+    """
     conn = db.open_db(db_path)
     try:
         recording_id = db.create_recording(
@@ -210,6 +225,13 @@ def _add_recording(
                 backup_status="uploaded",
                 gcs_object=gcs_object,
                 backed_up_at_ns=started_at_ns + 2_000,
+            )
+        if backup_error is not None:
+            db.mark_recording_backup(
+                conn,
+                recording_id,
+                backup_status=backup_status,
+                backup_error=backup_error,
             )
         return recording_id
     finally:
@@ -412,6 +434,82 @@ def test_recordings_list_includes_segment_and_end_reason(tmp_path: Path) -> None
     assert {item["id"] for item in race_items} == {first, second}
     assert [item["id"] for item in limited] == [third]
     assert len(empty_category) == 3
+
+
+def test_recordings_list_includes_backup_error_reason(tmp_path: Path) -> None:
+    """SCRUM-132: skipped·failed 녹화의 백업 사유를 목록 응답이 그대로 준다."""
+    app, _conn_factory, _fetcher, _manager = _build(tmp_path)
+    db_path = tmp_path / "f1re.db"
+    skipped_file = _write_file(
+        tmp_path / "recordings" / "race" / "skipped.f1rec.zst"
+    )
+    skipped = _add_recording(
+        db_path,
+        session_uid=601,
+        started_at_ns=1_000,
+        local_path=skipped_file,
+        backup_status="skipped",
+        backup_error="rclone을 사용할 수 없습니다",
+    )
+    failed = _add_recording(
+        db_path,
+        session_uid=602,
+        started_at_ns=2_000,
+        backup_status="failed",
+        backup_error="rclone 업로드 실패: quota exceeded",
+    )
+    uploaded = _add_recording(
+        db_path,
+        session_uid=603,
+        started_at_ns=3_000,
+        gcs_object="race/uploaded.f1rec.zst",
+    )
+
+    with _client(app) as client:
+        items = client.get("/api/recordings").json()["recordings"]
+
+    by_id = {item["id"]: item for item in items}
+    # 홈서버에서 본 rclone 미설치 사유가 API에서도 사라지지 않는다.
+    assert by_id[skipped]["backup_status"] == "skipped"
+    assert by_id[skipped]["backup_error"] == "rclone을 사용할 수 없습니다"
+    # 건너뛴 녹화의 로컬 파일은 보존돼 다운로드·재생이 그대로 된다.
+    assert by_id[skipped]["local_exists"] is True
+    assert by_id[skipped]["downloadable"] is True
+    # 업로드 실패 사유도 같은 필드로 온다.
+    assert by_id[failed]["backup_status"] == "failed"
+    assert by_id[failed]["backup_error"] == "rclone 업로드 실패: quota exceeded"
+    # 업로드가 끝난 녹화는 사유가 없다(None).
+    assert by_id[uploaded]["backup_status"] == "uploaded"
+    assert by_id[uploaded]["backup_error"] is None
+    # 기존 필드는 그대로 유지된다.
+    assert by_id[skipped]["category_label"] == "레이스"
+    assert by_id[skipped]["end_reason_label"] == "정상 종료"
+
+
+def test_dashboard_shows_backup_error_reason_safely() -> None:
+    """SCRUM-132: 대시보드가 skipped·failed 사유를 안전한 글자로 보여 준다."""
+    script = DASHBOARD_JS_PATH.read_text(encoding="utf-8")
+
+    match = re.search(
+        r"function backupIssueText\(recording\) \{(.*?)\n\}", script, re.S
+    )
+    assert match, "백업 사유 문구를 만드는 함수가 없습니다"
+    body = match.group(1)
+    # skipped·failed만 사유를 보여 주고 uploaded 등은 무시한다.
+    assert 'status !== "skipped" && status !== "failed"' in body
+    assert "recording.backup_error" in body
+    assert '"백업 안 함"' in body
+    assert '"백업 실패"' in body
+    # 사유는 HTML이 아니라 글자로만 다룬다(XSS 없음).
+    assert "innerHTML" not in body
+
+    # 목록 항목은 사유를 메타 줄과 title에 글자로 넣는다.
+    assert "const backupIssue = backupIssueText(recording);" in script
+    assert "if (backupIssue && recording.local_exists) parts.push(backupIssue);" in script
+    assert "meta.textContent = parts.filter(Boolean).join(\" · \");" in script
+    assert "if (backupIssue) meta.title = backupIssue;" in script
+    # 대시보드는 innerHTML을 쓰지 않는다.
+    assert "innerHTML" not in script
 
 
 # ---------------------------------------------------------------------------
