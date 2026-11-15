@@ -537,7 +537,7 @@ def test_last_laps_coaching_uses_hyped_wording() -> None:
         _feed(
             coach,
             lap,
-            overrides={"session_type": 10, "remaining_laps": 3},
+            overrides={"session_type": 15, "remaining_laps": 3},
         )
     )
 
@@ -558,7 +558,7 @@ def test_time_trial_is_not_hyped_even_near_the_end() -> None:
         _feed(
             coach,
             lap,
-            overrides={"session_type": 13, "remaining_laps": 1},
+            overrides={"session_type": 18, "remaining_laps": 1},
         )
     )
 
@@ -633,12 +633,12 @@ def test_invalid_lap_is_not_coached(overrides: dict) -> None:
 def test_race_lap_1_is_not_coached_but_lap_2_is() -> None:
     lap = _suzuka(1, effects=_early_brake(SUZUKA, 9))
 
-    first = _coach(SUZUKA, focus=[9], session_type=10)
-    assert _feed(first, lap, overrides={"session_type": 10}) == []
+    first = _coach(SUZUKA, focus=[9], session_type=15)
+    assert _feed(first, lap, overrides={"session_type": 15}) == []
 
-    second = _coach(SUZUKA, focus=[9], session_type=10)
+    second = _coach(SUZUKA, focus=[9], session_type=15)
     later = _suzuka(2, effects=_early_brake(SUZUKA, 9))
-    messages = _messages(_feed(second, later, overrides={"session_type": 10}))
+    messages = _messages(_feed(second, later, overrides={"session_type": 15}))
     assert [message.corner for message in messages] == [9]
 
 

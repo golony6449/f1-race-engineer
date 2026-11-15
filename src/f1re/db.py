@@ -19,9 +19,10 @@ from pathlib import Path
 from typing import Any
 
 from f1re.tracks.outline import TrackOutline
+from f1re.udp.session_category import session_category
 
 # 지금 코드가 기대하는 스키마 버전.
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 DEFAULT_DB_RELPATH = Path("data") / "f1re.db"
 
@@ -184,6 +185,28 @@ def _migration_006_session_recordings(conn: sqlite3.Connection) -> None:
     )
 
 
+def _migration_007_reclassify_recordings(conn: sqlite3.Connection) -> None:
+    """F1 25 세션 종류 체계로 기존 녹화 범주를 다시 계산한다(SCRUM-131).
+
+    F1 23까지는 10~12가 레이스, 13이 타임 트라이얼이었으나 F1 25 공식 값은
+    10~14 스프린트 슛아웃, 15~17 레이스, 18 타임 트라이얼이다. `session_type`을
+    아는 행의 `category`만 `session_category()` 결과로 갱신한다. `local_path`·
+    `gcs_object` 등 파일 위치는 그대로 둔다. `session_type`이 없는 행은
+    판단 근거가 없으므로 건드리지 않는다.
+    """
+    rows = conn.execute(
+        """
+        SELECT id, session_type FROM session_recordings
+        WHERE session_type IS NOT NULL
+        """
+    ).fetchall()
+    for recording_id, session_type in rows:
+        conn.execute(
+            "UPDATE session_recordings SET category = ? WHERE id = ?",
+            (session_category(int(session_type)), recording_id),
+        )
+
+
 # (버전, 적용 함수). 버전은 1부터 연속이어야 한다.
 MIGRATIONS: tuple[tuple[int, Callable[[sqlite3.Connection], None]], ...] = (
     (1, _migration_001_sessions),
@@ -192,6 +215,7 @@ MIGRATIONS: tuple[tuple[int, Callable[[sqlite3.Connection], None]], ...] = (
     (4, _migration_004_reference_sets),
     (5, _migration_005_radio_dropped_reason),
     (6, _migration_006_session_recordings),
+    (7, _migration_007_reclassify_recordings),
 )
 
 

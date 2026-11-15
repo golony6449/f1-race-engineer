@@ -168,7 +168,7 @@ def _event_datagram(code: str, *, uid: int, frame: int = 1) -> bytes:
 
 
 def _session_datagram(
-    uid: int, *, session_type: int = 10, track_id: int = 13
+    uid: int, *, session_type: int = 15, track_id: int = 13
 ) -> bytes:
     """SESSION 패킷 데이터그램. 기본값(0)으로 채운 본문에 값만 덮어쓴다."""
     definition = FORMATS[PACKET_FORMAT].PACKETS[PacketId.SESSION]
@@ -523,7 +523,7 @@ async def test_engine_session_packet_fills_recording_category(
         manager = engine.recording_manager
         await _wait_until(lambda: manager.active_path is not None)
 
-        _send(port, _session_datagram(uid, session_type=10, track_id=13))
+        _send(port, _session_datagram(uid, session_type=15, track_id=13))
         reader = open_db(tmp_path / "f1re.db")
         try:
             await _wait_until(
@@ -545,7 +545,7 @@ async def test_engine_session_packet_fills_recording_category(
     assert len(worker.jobs) == 1
     job = worker.jobs[0]
     assert job.category == "race"
-    assert job.session_type == 10
+    assert job.session_type == 15
     assert job.track_id == 13
 
 

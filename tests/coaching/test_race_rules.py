@@ -38,8 +38,9 @@ from f1re.tracks.model import Corner, Track, load_outline, load_track
 from f1re.tracks.outline import TrackOutline
 
 SUZUKA_ID = 13
-SESSION_TYPE_RACE = 10
-SESSION_TYPE_TIME_TRIAL = 13
+# F1 25 공식 세션 종류(EA UDP 문서, SCRUM-131): 15=레이스, 18=타임 트라이얼.
+SESSION_TYPE_RACE = 15
+SESSION_TYPE_TIME_TRIAL = 18
 
 _TRACK = load_track(SUZUKA_ID)
 _OUTLINE = load_outline(SUZUKA_ID)
@@ -177,6 +178,7 @@ def test_other_car_comparison_ignores_player_only_fields() -> None:
 
 def test_time_trial_has_no_fastest_car() -> None:
     """타임 트라이얼은 AI 상대가 없어 다른 차 랩이 들어와도 최속차 기준을 안 둔다."""
+    assert NON_AI_SESSION_TYPES == frozenset({18})
     assert SESSION_TYPE_TIME_TRIAL in NON_AI_SESSION_TYPES
 
     references = ReferenceSet(TRACK.corners, session_type=SESSION_TYPE_TIME_TRIAL)

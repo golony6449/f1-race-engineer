@@ -64,7 +64,7 @@ def _packet(
 
 
 def _session_packet(
-    session_uid: int, session_type: int = 10, track_id: int = 7
+    session_uid: int, session_type: int = 15, track_id: int = 7
 ) -> Packet:
     return _packet(
         session_uid,
@@ -135,11 +135,11 @@ def test_splits_files_by_session_uid_and_tracks_category(
     assert manager.active_path == _active_path(root, "111_s1.f1rec")
 
     # SESSION 패킷(2Hz)이 늦게 도착하면 범주·세션 종류·서킷을 채운다.
-    manager.on_packet_bytes(2_000, b"session-111", _session_packet(111, 10, 7))
+    manager.on_packet_bytes(2_000, b"session-111", _session_packet(111, 15, 7))
     first = get_recording(conn, first["id"])
     assert first is not None
     assert first["category"] == "race"
-    assert first["session_type"] == 10
+    assert first["session_type"] == 15
     assert first["track_id"] == 7
 
     # 다른 UID가 오면 이전 파일을 session_switch로 마감하고 새로 연다.
@@ -154,7 +154,7 @@ def test_splits_files_by_session_uid_and_tracks_category(
     assert job.end_reason == "session_switch"
     assert job.ended_at_ns == 2_000
     assert job.category == "race"
-    assert job.session_type == 10
+    assert job.session_type == 15
     assert job.track_id == 7
     assert job.active_path == _active_path(root, "111_s1.f1rec")
 
@@ -183,10 +183,17 @@ def test_splits_files_by_session_uid_and_tracks_category(
         (4, "practice"),
         (5, "qualifying"),
         (9, "qualifying"),
-        (10, "race"),
-        (12, "race"),
-        (13, "time_trial"),
+        # F1 25: 10~14는 스프린트 슛아웃이며 녹화 범주는 예선이다.
+        (10, "qualifying"),
+        (12, "qualifying"),
+        (14, "qualifying"),
+        # F1 25: 15~17이 레이스다(F1 23의 10~12가 아니다).
+        (15, "race"),
+        (17, "race"),
+        # F1 25: 18이 타임 트라이얼이다(F1 23의 13이 아니다).
+        (18, "time_trial"),
         (0, "unknown"),
+        (19, "unknown"),
         (99, "unknown"),
     ],
 )

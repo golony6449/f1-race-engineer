@@ -66,7 +66,6 @@ from f1re.laps.traces import (
     DRIVER_OUT_LAP,
     LAP_DISTANCE_TOLERANCE_M,
     PIT_LANE_STATUSES,
-    RACE_SESSION_TYPES,
     LapTrace,
     Sample,
 )
@@ -77,6 +76,7 @@ from f1re.radio.queue import (
     RadioMessage,
     RadioQueue,
 )
+from f1re.udp.session_category import is_race_session
 from f1re.radio.templates import (
     ORDINAL_KEYS,
     PRELOAD_KEYS,
@@ -696,7 +696,7 @@ class Coach:
         session_type = _number(state.get("session_type"))
         if session_type is None:
             session_type = self._session_type
-        if session_type in RACE_SESSION_TYPES and lap == 1:
+        if is_race_session(session_type) and lap == 1:
             return False
         return True
 
@@ -705,7 +705,7 @@ class Coach:
         session_type = _number(state.get("session_type"))
         if session_type is None:
             session_type = self._session_type
-        return session_type is not None and int(session_type) in RACE_SESSION_TYPES
+        return is_race_session(session_type)
 
     def _make_sample(
         self, state: Mapping[str, Any], distance: float, now_ns: int

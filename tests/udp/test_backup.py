@@ -85,7 +85,7 @@ def _pending_job(
         segment=segment,
         started_at_ns=started_at_ns,
         category=category,
-        session_type=10,
+        session_type=15,
         track_id=track_id,
     )
     active_path = _write_active(
@@ -99,7 +99,7 @@ def _pending_job(
         end_reason=end_reason,
         ended_at_ns=started_at_ns + count * _STEP_NS,
         category=category,
-        session_type=10,
+        session_type=15,
         track_id=track_id,
     )
 

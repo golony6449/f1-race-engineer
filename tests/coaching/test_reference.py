@@ -281,7 +281,7 @@ def test_most_recent_lap_per_car_replaces_previous_lap() -> None:
 
 def test_time_trial_uses_best_self_lap_and_ignores_other_cars() -> None:
     """타임 트라이얼은 최근 랩 규칙 대신 내 최고 랩을 그대로 쓴다(SCRUM-94)."""
-    refs = ReferenceSet(TRACK.corners, session_type=13)
+    refs = ReferenceSet(TRACK.corners, session_type=18)
     fast = _trace(1)
     slow = _trace(2, driver=DriverProfile(pace=0.98, consistency=1.0))
     other = _trace(1, driver=DriverProfile(pace=1.05, consistency=1.0), car_index=1)

@@ -32,9 +32,14 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 from f1re.coaching.metrics import corner_duration_ms
-from f1re.laps.traces import RACE_SESSION_TYPES, LapTrace, Sample
+from f1re.laps.traces import LapTrace, Sample
 from f1re.tracks.model import Corner
 from f1re.tracks.outline import TrackOutline
+from f1re.udp.session_category import (
+    TIME_TRIAL_SESSION_TYPES,
+    is_race_session,
+    is_time_trial_session,
+)
 
 # `ReferenceSet.best_for`가 돌려주는 기준 출처.
 SOURCE_SELF = "self"
@@ -46,8 +51,9 @@ SOURCE_FASTEST_CAR = "fastest_car"
 # 기준 랩 저장(SQLite) 직렬화 형식 버전(작업 19).
 REFERENCE_PAYLOAD_VERSION = 1
 
-# 공식 세션 종류 중 AI 상대가 없는 세션. 13=Time Trial.
-NON_AI_SESSION_TYPES = frozenset({13})
+# 공식 세션 종류 중 AI 상대가 없는 세션. 값은 `udp.session_category`가 단일
+# 출처다(SCRUM-131). 기존 이름은 호환을 위해 유지한다.
+NON_AI_SESSION_TYPES = TIME_TRIAL_SESSION_TYPES
 
 
 class ReferenceSet:
@@ -133,7 +139,7 @@ class ReferenceSet:
         if corner_def is None:
             return None
 
-        if self._session_type in NON_AI_SESSION_TYPES:
+        if is_time_trial_session(self._session_type):
             best_self = self.best_lap(SOURCE_SELF)
             if best_self is None:
                 return None
@@ -174,7 +180,7 @@ class ReferenceSet:
                 laps.append(self._self_best)
             return min(laps, key=_lap_time_ms) if laps else None
         if source == SOURCE_FASTEST_CAR:
-            if self._session_type in NON_AI_SESSION_TYPES:
+            if is_time_trial_session(self._session_type):
                 return None
             laps = [
                 trace
@@ -204,7 +210,7 @@ class ReferenceSet:
         if not trace.valid or len(trace.samples) < 2:
             return False
         # 레이스 1랩(출발 혼전)은 `valid` 표시와 상관없이 뺀다.
-        if self._session_type in RACE_SESSION_TYPES and trace.lap == 1:
+        if is_race_session(self._session_type) and trace.lap == 1:
             return False
         return True
 

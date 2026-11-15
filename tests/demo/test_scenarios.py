@@ -530,7 +530,7 @@ def test_gp_packets_parse_and_have_20_cars() -> None:
     assert counts[PacketId.LAP_DATA] == 60
 
     session = _of(packets, PacketId.SESSION)[0].body
-    assert session["session_type"] == 10
+    assert session["session_type"] == 15
     assert session["game_mode"] == 1
     assert session["rule_set"] == 1
     assert session["total_laps"] == 1

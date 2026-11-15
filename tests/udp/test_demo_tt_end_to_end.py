@@ -130,7 +130,7 @@ async def test_demo_tt_end_to_end() -> None:
     snapshot = store.snapshot()
     assert snapshot["packets"]["session"]["track_id"] == SUZUKA_ID
     assert snapshot["packets"]["session"]["track_length"] == 5807
-    assert snapshot["packets"]["session"]["session_type"] == 13
+    assert snapshot["packets"]["session"]["session_type"] == 18
 
 
 async def test_recorded_demo_replays_through_same_pipeline(tmp_path: Path) -> None:

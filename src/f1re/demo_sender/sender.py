@@ -66,6 +66,10 @@ from f1re.udp.schema import (
     StructDef,
     StructField,
 )
+from f1re.udp.session_category import (
+    SESSION_TYPE_RACE,
+    SESSION_TYPE_TIME_TRIAL,
+)
 from f1re.udp.session_uid import demo_session_uid
 from f1re.udp.spec import (
     MENU_RATE_HZ,
@@ -79,9 +83,8 @@ from f1re.udp.spec import (
 BASE_RATE_HZ = DEFAULT_RATE_HZ
 TRACK_IDS: dict[str, int] = {"suzuka": 13, "monaco": 5}
 
-# 공식 열거형 값(EA F1 25 UDP 문서).
-SESSION_TYPE_RACE = 10
-SESSION_TYPE_TIME_TRIAL = 13
+# 공식 열거형 값(EA F1 25 UDP 문서). 세션 종류는 `udp.session_category`가
+# 단일 출처다(SCRUM-131).
 GAME_MODE_GRAND_PRIX = 1
 GAME_MODE_TIME_TRIAL = 2
 RULE_SET_RACE = 1

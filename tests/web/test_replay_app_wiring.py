@@ -85,7 +85,7 @@ def _add_recording(
             segment=segment,
             started_at_ns=BASE_NS,
             category="race",
-            session_type=10,
+            session_type=15,
             track_id=13,
         )
         db.finalize_recording(

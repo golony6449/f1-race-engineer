@@ -283,7 +283,7 @@ def test_finalize_job_is_frozen(tmp_path: Path) -> None:
         end_reason="inactivity_timeout",
         ended_at_ns=1_800_000_000_000_000_000,
         category="race",
-        session_type=10,
+        session_type=15,
         track_id=7,
     )
 

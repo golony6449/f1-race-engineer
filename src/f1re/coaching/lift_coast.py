@@ -40,7 +40,7 @@
 - `brake_temp`(브레이크 4개 중 최대) 또는 `brake_temps`(4개 목록)
 - `tyre_temp`(앞 타이어 최대) 또는 `tyre_temps`(패킷 순서 4개 목록,
   앞은 인덱스 2·3)
-- `session_type`: 공식 세션 종류(10~12가 레이스)
+- `session_type`: 공식 세션 종류(15~17이 레이스, 스프린트 레이스 포함)
 - `lap_num`·`lap_valid`·`in_pit`·`safety_car`·`vsc` 등은 `Coach`와 같다.
 
 `on_lap_completed(trace, now_ns)`는 연료 기록과 추천 갱신에 쓴다. 세션이 바뀌면
@@ -72,7 +72,6 @@ from f1re.laps.traces import (
     DRIVER_OUT_LAP,
     LAP_DISTANCE_TOLERANCE_M,
     PIT_LANE_STATUSES,
-    RACE_SESSION_TYPES,
     LapTrace,
     Sample,
 )
@@ -89,6 +88,7 @@ from f1re.radio.templates import (
     mood_for,
 )
 from f1re.tracks.model import Corner, Track
+from f1re.udp.session_category import is_race_session
 
 # 스로틀을 뗀 것으로 보는 값(설계·Jira: 스로틀 < 5%).
 DEFAULT_LIFT_THROTTLE = 0.05
@@ -120,7 +120,7 @@ DEFAULT_MAX_COASTING = 60
 DEFAULT_MAX_FUEL_LAPS = 20
 
 # 세션 종류를 모를 때 메시지를 내보내지 않는다(레이스에서만 지시).
-_RACE_TYPES = frozenset(RACE_SESSION_TYPES)
+# 레이스 판정은 `udp.session_category.is_race_session()`이 단일 출처다.
 
 
 @dataclass(frozen=True)
@@ -804,7 +804,7 @@ class LiftCoastCoach:
 
     def _is_race(self, state: Mapping[str, Any]) -> bool:
         session_type = self._session_type_of(state)
-        return session_type in _RACE_TYPES
+        return is_race_session(session_type)
 
     def _sampling_allowed(
         self, state: Mapping[str, Any], lap: int
@@ -1296,7 +1296,7 @@ class LiftCoastCoach:
             return
         # 레이스 1랩(출발 혼전)은 코칭·기준 랩에서 빼는 규칙을 추천에도 적용한다
         # (리뷰 포커스 4). 다음 유효 랩부터 추천한다.
-        if self._session_type in _RACE_TYPES and trace.lap == 1:
+        if is_race_session(self._session_type) and trace.lap == 1:
             return
         zones = rank_lift_zones(
             self._track,

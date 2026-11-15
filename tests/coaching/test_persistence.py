@@ -374,8 +374,8 @@ def test_keys_separate_wet_and_dry(tmp_path: Path) -> None:
 
 def test_condition_key_helpers() -> None:
     """세션 값이 저장 키로 바뀌는 규칙(모드·날씨·차)."""
-    assert mode_for_session_type(13) == MODE_TT
-    assert mode_for_session_type(10) == MODE_RACE_WEEKEND
+    assert mode_for_session_type(18) == MODE_TT
+    assert mode_for_session_type(15) == MODE_RACE_WEEKEND
     assert mode_for_session_type(None) == MODE_RACE_WEEKEND
     assert weather_for_code(0) == WEATHER_DRY
     assert weather_for_code(2) == WEATHER_DRY
@@ -386,7 +386,7 @@ def test_condition_key_helpers() -> None:
     assert car_key_for(None, MODE_RACE_WEEKEND) == "team:unknown"
 
     key = ReferenceKey.from_session(
-        track_id=SUZUKA_ID, session_type=13, weather_code=4, team_id=3
+        track_id=SUZUKA_ID, session_type=18, weather_code=4, team_id=3
     )
     assert key == _key(mode=MODE_TT, weather=WEATHER_WET, car_key="tt_equal")
 
@@ -436,20 +436,20 @@ def test_roundtrip_keeps_fastest_car_reference_and_player_values() -> None:
 
 def test_roundtrip_keeps_session_rules_from_race_and_time_trial() -> None:
     """SCRUM-67의 레이스 1랩 제외·타임 트라이얼 최속차 없음이 복원 후에도 산다."""
-    race = ReferenceSet(TRACK.corners, session_type=10)
+    race = ReferenceSet(TRACK.corners, session_type=15)
     race.update(_trace(2))
     loaded_race = reference_from_dict(reference_to_dict(race))
-    assert loaded_race.session_type == 10
+    assert loaded_race.session_type == 15
     # 복원한 기준 집합에 더 빠른 1랩을 넣어도 레이스 1랩은 여전히 빠진다.
     loaded_race.update(_trace(1, pace=1.02))
     best = loaded_race.best_lap(SOURCE_SELF)
     assert best is not None
     assert best.lap == 2
 
-    tt = ReferenceSet(TRACK.corners, session_type=13)
+    tt = ReferenceSet(TRACK.corners, session_type=18)
     tt.update(_trace(1))
     loaded_tt = reference_from_dict(reference_to_dict(tt))
-    assert loaded_tt.session_type == 13
+    assert loaded_tt.session_type == 18
     # 타임 트라이얼에서는 다른 차 랩이 들어와도 최속차 기준을 두지 않는다.
     loaded_tt.update(_trace(2, pace=1.05, car_index=1))
     assert loaded_tt.best_lap(SOURCE_FASTEST_CAR) is None

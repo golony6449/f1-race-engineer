@@ -406,7 +406,7 @@ def _packet(
 
 
 def _session_body(
-    track_id: int = SUZUKA_ID, session_type: int = 13
+    track_id: int = SUZUKA_ID, session_type: int = 18
 ) -> dict[str, Any]:
     return {
         "track_id": track_id,
@@ -451,7 +451,7 @@ def _reference_key() -> ReferenceKey:
     """데모·실제 테스트가 함께 쓰는 타임 트라이얼·맑음 기준 키."""
     return ReferenceKey.from_session(
         track_id=SUZUKA_ID,
-        session_type=13,
+        session_type=18,
         weather_code=0,
         team_id=None,
     )
@@ -460,7 +460,7 @@ def _reference_key() -> ReferenceKey:
 def _stored_reference(lap: int = 7, pace: float = 0.9) -> ReferenceSet:
     track = load_track(SUZUKA_ID)
     assert track is not None
-    references = ReferenceSet(track.corners, player_car_index=0, session_type=13)
+    references = ReferenceSet(track.corners, player_car_index=0, session_type=18)
     references.update(_lap_trace(lap=lap, pace=pace))
     return references
 
@@ -558,7 +558,7 @@ async def test_demo_session_does_not_save_learned_outline(
         pipeline._session_uid = uid
         pipeline._player_index = 0
         pipeline._track_id = 99  # 데이터 파일이 없는 서킷 → 학습 윤곽 경로
-        pipeline._session_type = 13
+        pipeline._session_type = 18
         pipeline._track_length = 5807.0
 
         await pipeline._process_laps([_lap_trace(lap=1)])

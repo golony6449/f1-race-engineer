@@ -103,7 +103,7 @@ class PacketBuilder:
     def session(self, **overrides: Any) -> bytes:
         body = _default_body(PacketId.SESSION)
         body.update(
-            weather=0, track_id=13, session_type=13, game_paused=0, total_laps=0
+            weather=0, track_id=13, session_type=18, game_paused=0, total_laps=0
         )
         body.update(overrides)
         return self.raw(PacketId.SESSION, body)
@@ -165,7 +165,7 @@ def _add_recording(
     session_uid: int = SESSION_UID,
     segment: int = 1,
     category: str = "race",
-    session_type: int | None = 10,
+    session_type: int | None = 15,
     track_id: int | None = 13,
     started_at_ns: int = 1_000,
     end_reason: str = "session_end",
@@ -308,7 +308,7 @@ def _race_recording(path: Path) -> Path:
     return _write_recording(
         path,
         [
-            (BASE_NS, builder.session(session_type=10, total_laps=10)),
+            (BASE_NS, builder.session(session_type=15, total_laps=10)),
             (BASE_NS + 20_000_000, builder.participants(player_team_id=0)),
             (BASE_NS + 40_000_000, builder.lap(lap=1, distance=100.0)),
             (BASE_NS + 60_000_000, builder.telemetry(speed=100, gear=3)),

@@ -109,7 +109,7 @@ def test_session_rows_upsert_progress_and_finish(tmp_path: Path) -> None:
             42,
             started_at_ns=1_000,
             track_id=13,
-            session_type=13,
+            session_type=18,
             recorded_file="a.f1rec",
         )
         # 나중 호출이 아는 값만 채우고 기존 값을 지우지 않는다.
@@ -120,7 +120,7 @@ def test_session_rows_upsert_progress_and_finish(tmp_path: Path) -> None:
         ).fetchone()
         assert row["started_at_ns"] == 1_000
         assert row["track_id"] == 13
-        assert row["session_type"] == 13
+        assert row["session_type"] == 18
         assert row["recorded_file"] == "a.f1rec"
 
         db.update_session_progress(
@@ -208,10 +208,10 @@ def _recording_row(
 
 def test_migration_006_session_recordings_schema(tmp_path: Path) -> None:
     """006이 계획 4.4의 컬럼·기본값·유니크 제약·인덱스를 만든다."""
-    assert db.SCHEMA_VERSION == 6
+    assert db.SCHEMA_VERSION == 7
     conn = db.open_db(tmp_path / "f1re.db")
     try:
-        assert db.schema_version(conn) == 6
+        assert db.schema_version(conn) == 7
         assert "session_recordings" in _table_names(conn)
 
         info = [
@@ -321,22 +321,109 @@ def test_migration_006_upgrades_existing_v5_database(tmp_path: Path) -> None:
 
     conn = db.open_db(path)
     try:
-        assert db.schema_version(conn) == db.SCHEMA_VERSION == 6
+        assert db.schema_version(conn) == db.SCHEMA_VERSION == 7
         assert [
             row["version"]
             for row in conn.execute(
                 "SELECT version FROM schema_version ORDER BY version"
             )
-        ] == [1, 2, 3, 4, 5, 6]
+        ] == [1, 2, 3, 4, 5, 6, 7]
         assert "session_recordings" in _table_names(conn)
         # 기존 행이 그대로 남는다.
         assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 1
         radio = conn.execute("SELECT * FROM radio_messages").fetchone()
         assert radio["text"] == "기존 무전"
         assert radio["dropped_reason"] == "expired"
-        # 다시 열어도 006이 중복 적용되지 않는다.
+        # 다시 열어도 006·007이 중복 적용되지 않는다.
         db.migrate(conn)
-        assert db.schema_version(conn) == 6
+        assert db.schema_version(conn) == 7
+    finally:
+        conn.close()
+
+
+def test_migration_007_reclassifies_recordings_with_f1_25_session_types(
+    tmp_path: Path,
+) -> None:
+    """F1 23 기준 범주를 F1 25 세션 종류(15=레이스, 18=TT)로 다시 계산한다."""
+    path = tmp_path / "f1re.db"
+    raw = sqlite3.connect(path)
+    raw.row_factory = sqlite3.Row
+    raw.execute(
+        """
+        CREATE TABLE schema_version (
+            version INTEGER PRIMARY KEY,
+            applied_at_ns INTEGER NOT NULL
+        )
+        """
+    )
+    for version, migration in db.MIGRATIONS[:6]:
+        migration(raw)
+        raw.execute(
+            "INSERT INTO schema_version (version, applied_at_ns) VALUES (?, ?)",
+            (version, version),
+        )
+    rows = [
+        # (uid, 기존 범주, session_type). 기존 범주는 F1 23 가정으로 분류된 값이다.
+        (1, "unknown", 15),   # F1 25 레이스 → race
+        (2, "unknown", 18),   # F1 25 타임 트라이얼 → time_trial
+        (3, "race", 10),      # F1 25 스프린트 슛아웃 → qualifying
+        (4, "practice", 5),   # 예선 → qualifying
+        (5, "unknown", None), # 세션 종류 없음 → 그대로
+        (6, "race", 19),      # 모르는 값 → unknown
+        (7, "unknown", 16),   # 레이스 2 → race
+    ]
+    raw.executemany(
+        """
+        INSERT INTO session_recordings (
+            session_uid, category, session_type, started_at_ns,
+            local_path, gcs_object
+        )
+        VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        [
+            (
+                uid,
+                category,
+                session_type,
+                1_000 + uid,
+                f"data/recordings/{category}/{uid}_s1.f1rec.zst",
+                f"{category}/{uid}_s1.f1rec.zst",
+            )
+            for uid, category, session_type in rows
+        ],
+    )
+    raw.commit()
+    assert db.schema_version(raw) == 6
+    raw.close()
+
+    conn = db.open_db(path)
+    try:
+        assert db.schema_version(conn) == 7
+        by_uid = {
+            row["session_uid"]: row
+            for row in conn.execute("SELECT * FROM session_recordings")
+        }
+        expected = {
+            1: "race",
+            2: "time_trial",
+            3: "qualifying",
+            4: "qualifying",
+            5: "unknown",
+            6: "unknown",
+            7: "race",
+        }
+        assert {
+            uid: row["category"] for uid, row in by_uid.items()
+        } == expected
+        # 파일 위치는 그대로 둔다(경로를 옮기지 않는다).
+        assert by_uid[1]["local_path"] == (
+            "data/recordings/unknown/1_s1.f1rec.zst"
+        )
+        assert by_uid[1]["gcs_object"] == "unknown/1_s1.f1rec.zst"
+        # 다시 열어도 007이 중복 적용되지 않는다(멱등).
+        db.migrate(conn)
+        assert db.schema_version(conn) == 7
+        assert by_uid[3]["category"] == "qualifying"
     finally:
         conn.close()
 

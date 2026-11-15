@@ -26,7 +26,8 @@ NOW = 1_000_000_000_000
 PLAYER = 0
 
 _SESSION = {
-    "session_type": 10,
+    # F1 25: 15 = 레이스(F1 23의 10이 아니다, SCRUM-131).
+    "session_type": 15,
     "total_laps": 50,
     "safety_car_status": 0,
     "num_red_flag_periods": 0,
@@ -258,11 +259,11 @@ def test_fuel_margin_is_not_subtracted_twice_from_recorded_sample() -> None:
     assert messages == []
 
 
-@pytest.mark.parametrize("session_type", [1, 5, 13])
+@pytest.mark.parametrize("session_type", [1, 5, 10, 18])
 def test_fuel_alert_suppressed_without_race_distance(
     session_type: int,
 ) -> None:
-    """FP(1)·Q(5)·TT(13)에는 레이스 거리가 없으므로 연료 부족을 말하지 않는다."""
+    """FP(1)·Q(5)·스프린트 슛아웃(10)·TT(18)에는 레이스 거리가 없다."""
     messages = _rules().evaluate(
         _snapshot(
             session={"session_type": session_type},
