@@ -416,6 +416,9 @@ class RacePipeline:
             self._advisor = None
             self._praise = None
             self._reaction = None
+            self._strategy = None
+            self._strategy_narrator = None
+            self._cancel_strategy_tasks()
             # 데모 세션은 학습 윤곽을 불러오지 않는다(SCRUM-93).
             outline_conn = (
                 None if is_demo_session_uid(self._session_uid) else self._conn
@@ -432,6 +435,9 @@ class RacePipeline:
             self._advisor = None
             self._praise = None
             self._reaction = None
+            self._strategy = None
+            self._strategy_narrator = None
+            self._cancel_strategy_tasks()
 
         weather = _int(body.get("weather"))
         if weather is not None:
@@ -504,6 +510,9 @@ class RacePipeline:
             self._advisor = None
             self._praise = None
             self._reaction = None
+            self._strategy = None
+            self._strategy_narrator = None
+            self._cancel_strategy_tasks()
 
     def _resolve_track(self) -> Track | None:
         """데이터 파일 트랙, 없으면 자동 탐지로 만든 트랙."""
