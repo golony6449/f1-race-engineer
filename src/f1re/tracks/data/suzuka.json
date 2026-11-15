@@ -5,111 +5,191 @@
  "corners": [
   {
    "number": 1,
+   "name": "1번 코너",
    "entry_m": 510.0,
    "apex_m": 580.19,
    "exit_m": 630.0
   },
   {
    "number": 2,
+   "name": "2번 코너",
    "entry_m": 645.0,
    "apex_m": 700.22,
    "exit_m": 810.0
   },
   {
    "number": 3,
+   "name": "S커브 1",
    "entry_m": 930.0,
    "apex_m": 990.28,
    "exit_m": 1030.0
   },
   {
    "number": 4,
+   "name": "S커브 2",
    "entry_m": 1035.0,
    "apex_m": 1095.3,
    "exit_m": 1155.0
   },
   {
    "number": 5,
+   "name": "S커브 3",
    "entry_m": 1190.0,
    "apex_m": 1260.34,
    "exit_m": 1320.0
   },
   {
    "number": 6,
+   "name": "역뱅크",
    "entry_m": 1340.0,
    "apex_m": 1470.38,
    "exit_m": 1520.0
   },
   {
    "number": 7,
+   "name": "던롭 커브",
    "entry_m": 1555.0,
    "apex_m": 1645.43,
    "exit_m": 2010.0
   },
   {
    "number": 8,
+   "name": "데그너 1",
    "entry_m": 2140.0,
    "apex_m": 2175.58,
    "exit_m": 2215.0
   },
   {
    "number": 9,
+   "name": "데그너 2",
    "entry_m": 2295.0,
    "apex_m": 2330.6,
    "exit_m": 2370.0
   },
   {
    "number": 10,
+   "name": "무명 우코너 (110R)",
    "entry_m": 2610.0,
    "apex_m": 2655.68,
    "exit_m": 2700.0
   },
   {
    "number": 11,
+   "name": "헤어핀",
    "entry_m": 2745.0,
    "apex_m": 2795.66,
    "exit_m": 2860.0
   },
   {
    "number": 12,
+   "name": "200R",
    "entry_m": 2900.0,
    "apex_m": 3075.67,
    "exit_m": 3510.0
   },
   {
    "number": 13,
+   "name": "스푼 커브 1",
    "entry_m": 3645.0,
    "apex_m": 3690.87,
    "exit_m": 3745.0
   },
   {
    "number": 14,
+   "name": "스푼 커브 2",
    "entry_m": 3795.0,
    "apex_m": 3840.89,
    "exit_m": 3900.0
   },
   {
    "number": 15,
+   "name": "130R",
    "entry_m": 4810.0,
    "apex_m": 4846.15,
    "exit_m": 4900.0
   },
   {
    "number": 16,
+   "name": "카시오 시케인 진입",
    "entry_m": 5240.0,
    "apex_m": 5266.28,
    "exit_m": 5298.0
   },
   {
    "number": 17,
+   "name": "카시오 시케인 탈출",
    "entry_m": 5300.0,
    "apex_m": 5321.23,
    "exit_m": 5352.0
   },
   {
    "number": 18,
+   "name": "최종 코너",
    "entry_m": 5356.0,
    "apex_m": 5406.22,
    "exit_m": 5620.0
+  }
+ ],
+ "drs_zones": [
+  {
+   "name": "메인 스트레이트",
+   "detection_start_m": 4900.0,
+   "detection_end_m": 5240.0,
+   "activation_start_m": 5620.0,
+   "activation_end_m": 510.0
+  }
+ ],
+ "overtaking_spots": [
+  {
+   "name": "카시오 시케인",
+   "attack_corners": [16, 17],
+   "difficulty": "low",
+   "prep_corners": [14, 15],
+   "attack_method": "백 스트레이트 슬립스트림으로 붙은 뒤 16번 인코스 늦은 브레이킹, 앞차가 인코스를 지키면 17번 인코스 스위치백",
+   "defense_line": "브레이킹 존 전에 우측 인코스를 커버하고 소시지 연석을 넘지 않게 안정적으로 브레이킹한 뒤 17번을 각지게 돌아 재추월을 막는다",
+   "drs": false,
+   "entry_window_m": [5090.0, 5140.0]
+  },
+  {
+   "name": "1번 코너",
+   "attack_corners": [1, 2],
+   "difficulty": "medium",
+   "prep_corners": [17, 18],
+   "attack_method": "메인 스트레이트 DRS로 앞차에 붙은 뒤 1번 인코스 늦은 브레이킹, 앞차가 아웃코스로 견제하면 2번 인코스 스위치백",
+   "defense_line": "브레이킹 존 전에 우측 인코스를 조기 선점하고, 바깥으로 밀리면 2번을 V자로 돌려 탈출 트랙션을 확보한다",
+   "drs": true,
+   "entry_window_m": [5800.0, 430.0]
+  },
+  {
+   "name": "헤어핀",
+   "attack_corners": [11],
+   "difficulty": "medium",
+   "prep_corners": [9],
+   "attack_method": "데그너 2 탈출 뒤 240 m 직선과 10번을 지나 11번 안쪽으로 다이브하거나 늦게 브레이킹하고, 아웃라인에서 크로스오버한다",
+   "defense_line": "좌측 인코스를 조기 커버하고 약간 늦은 에이펙스로 11번을 돌아 200R 가속을 확보한다",
+   "drs": false,
+   "entry_window_m": [2600.0, 2720.0]
+  },
+  {
+   "name": "스푼 커브",
+   "attack_corners": [13, 14],
+   "difficulty": "high",
+   "prep_corners": [11, 12],
+   "attack_method": "앞차가 실수할 때만 13번 아웃-인 스위치백을 노리고, 코너 안에서 무리하지 말고 14번 탈출 속도 차이로 910 m 백 스트레이트에서 승부한다",
+   "defense_line": "13번 첫 에이펙스를 무리하게 막지 말고 14번 두 번째 에이펙스 탈출 속도를 최우선으로 확보한다",
+   "drs": false,
+   "entry_window_m": [3500.0, 3645.0]
+  },
+  {
+   "name": "130R",
+   "attack_corners": [15],
+   "difficulty": "very_high",
+   "prep_corners": [14],
+   "attack_method": "타이어·ERS·슬립스트림 차이가 압도적일 때만 진입 전 아웃/인 추월을 시도하고, 그렇지 않으면 16번 카시오에서 승부한다",
+   "defense_line": "초고속 코너이므로 라인을 고정하고 브레이킹 중 움직이지 않으며 매끄러운 스티어링으로 다운포스를 유지한다",
+   "drs": false,
+   "avoid_reason": "300 km/h 이상으로 통과하는 초고속 코너라 추월 시도가 고위험이고, 기본적으로 공격을 권하지 않는다",
+   "entry_window_m": [4300.0, 4700.0]
   }
  ],
  "centerline": [
