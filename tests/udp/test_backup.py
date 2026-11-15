@@ -489,8 +489,84 @@ async def test_backup_worker_skips_when_transport_unavailable(
         row = db.get_recording(conn, job.recording_id)
         # rclone이 없어도 녹화와 로컬 파일은 그대로 보존된다.
         assert row["backup_status"] == "skipped"
+        assert row["backup_error"] == "rclone을 사용할 수 없습니다"
         assert row["local_exists"] == 1
         assert Path(row["local_path"]).is_file()
+    finally:
+        await worker.aclose()
+        conn.close()
+
+
+async def test_backup_worker_keeps_skipped_recording_out_of_local_prune(
+    tmp_path: Path,
+) -> None:
+    """SCRUM-132: skipped 녹화는 로컬 keep_local_count 정리에서 지워지지 않는다.
+
+    rclone 미설치로 `skipped`가 된 오래된 녹화가, 나중에 업로드된 최신 녹화들의
+    `keep_local_count` 정리와 섞여 삭제되면 안 된다. 업로드 성공이 확인된
+    녹화만 정리 대상이라는 DB 계약(``find_local_prune_targets``)을 워커
+    수준에서 다시 확인한다.
+    """
+    db_path = tmp_path / "f1re.db"
+    conn = db.open_db(db_path)
+    root = tmp_path / "recordings"
+    # 1단계: 업로더가 없어(rclone 미설치) 가장 오래된 녹화가 skipped로 남는다.
+    skipping = BackupWorker(
+        db_path, _config(tmp_path), transport=FakeTransport(available=False)
+    )
+    try:
+        await skipping.start()
+        skipped_job = _pending_job(
+            conn, root, session_uid=9001, started_at_ns=1_000_000_000
+        )
+        skipping.enqueue(skipped_job)
+        await asyncio.wait_for(skipping.join(), 10)
+    finally:
+        await skipping.aclose()
+
+    skipped_row = db.get_recording(conn, skipped_job.recording_id)
+    assert skipped_row["backup_status"] == "skipped"
+    assert skipped_row["backup_error"] == "rclone을 사용할 수 없습니다"
+    skipped_path = Path(skipped_row["local_path"])
+    assert skipped_path.is_file()
+
+    # 2단계: rclone이 준비된 워커가 더 최신 녹화 3개를 올리며 로컬 2개만 남긴다.
+    worker = BackupWorker(
+        db_path, _config(tmp_path, keep_local_count=2), transport=FakeTransport()
+    )
+    try:
+        await worker.start()
+        uploaded_jobs = [
+            _pending_job(
+                conn,
+                root,
+                session_uid=9100 + index,
+                started_at_ns=2_000_000_000 + index * 3_600_000_000_000,
+            )
+            for index in range(3)
+        ]
+        for job in uploaded_jobs:
+            worker.enqueue(job)
+        await asyncio.wait_for(worker.join(), 10)
+
+        # skipped 녹화는 업로드 확인이 없으므로 정리 후보가 아니고 그대로 남는다.
+        final = db.get_recording(conn, skipped_job.recording_id)
+        assert final["backup_status"] == "skipped"
+        assert final["backup_error"] == "rclone을 사용할 수 없습니다"
+        assert final["local_exists"] == 1
+        assert skipped_path.is_file()
+
+        # 업로드된 3개 중에서는 최신 2개만 로컬에 남는다.
+        uploaded_rows = {
+            row["id"]: row
+            for row in db.list_recordings(conn)
+            if row["backup_status"] == "uploaded"
+        }
+        assert len(uploaded_rows) == 3
+        assert sum(row["local_exists"] for row in uploaded_rows.values()) == 2
+        oldest_uploaded = db.get_recording(conn, uploaded_jobs[0].recording_id)
+        assert oldest_uploaded["local_exists"] == 0
+        assert not Path(oldest_uploaded["local_path"]).exists()
     finally:
         await worker.aclose()
         conn.close()

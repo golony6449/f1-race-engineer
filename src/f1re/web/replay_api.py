@@ -113,7 +113,7 @@ def create_replay_router(
             description="최대 개수",
         ),
     ) -> dict[str, Any]:
-        """최신순 녹화 목록. 화면 배지·보관 위치·다운로드 가능 여부를 함께 준다."""
+        """최신순 녹화 목록. 화면 배지·보관 위치·백업 사유·다운로드 가능 여부를 준다."""
         rows = _list_recording_rows(
             conn_factory, category=_clean_category(category), limit=limit
         )
@@ -293,6 +293,10 @@ def recording_payload(
     있는지**로 판정한다. 백업 워커가 정리한 뒤 DB 갱신이 늦었거나 반대로
     파일만 남은 경우에도 화면의 "로컬/클라우드" 표시와 다운로드 버튼이 실제
     동작과 어긋나지 않게 하기 위해서다.
+
+    `backup_error`는 `skipped`·`failed` 사유를 화면에 그대로 보여 주기 위한
+    값이다. `uploaded`면 보통 `None`이지만(업로드 성공 시 워커가 지운다),
+    이 함수는 DB 값을 숨기지 않고 그대로 내려 화면이 상태별로 판단하게 한다.
     """
     local_file = _existing_local_file(row.get("local_path"))
     has_remote = bool(row.get("gcs_object"))
@@ -313,6 +317,9 @@ def recording_payload(
         "file_size_bytes": _as_int(row.get("file_size_bytes")),
         "local_exists": local_file is not None,
         "backup_status": row.get("backup_status"),
+        # `skipped`·`failed`인 녹화의 사유(예: "rclone을 사용할 수 없습니다").
+        # 화면이 보관 위치 옆에 그대로 보여 줘 서버 설정 문제를 바로 알 수 있게 한다.
+        "backup_error": row.get("backup_error"),
         "downloadable": local_file is not None or has_remote,
     }
 
