@@ -51,7 +51,8 @@ logger = logging.getLogger(__name__)
 ACTIVE_DIRNAME = ".active"
 # pending/failed 재시도 주기. 서버가 켜져 있는 동안 자동으로 다시 올린다.
 DEFAULT_RETRY_INTERVAL_S = 60.0
-# `backup_error` 열에 남길 사유의 최대 길이. rclone stderr가 길어도 DB를 부풀리지 않는다.
+# `backup_error` 열에 남길 사유의 최대 길이. rclone stderr가 길어도 DB를
+# 부풀리지 않는다.
 BACKUP_ERROR_MAX_CHARS = 500
 # 세션 범주(설계 4.1). 폴더 이름으로 쓰이므로 목록 밖의 값은 `unknown`으로 낮춘다.
 CATEGORIES = frozenset({"practice", "qualifying", "race", "time_trial", "unknown"})
@@ -474,12 +475,24 @@ class BackupWorker:
             return
         local_path = Path(row["local_path"]) if row["local_path"] else None
         if local_path is None or not local_path.is_file():
-            if row["backup_status"] != "uploaded":
+            if row["backup_status"] == "uploaded":
+                # 업로드는 끝났고 로컬 파일만 사라진 경우. 보유 표시만 바로잡는다.
+                if row["local_exists"]:
+                    await self._db_call(
+                        db.mark_recording_local_deleted, recording_id
+                    )
+                return
+            await self._db_call(
+                db.mark_recording_backup,
+                recording_id,
+                backup_status="failed",
+                backup_error="로컬 녹화 파일이 없습니다",
+            )
+            if row["local_exists"]:
+                # 파일이 없으니 자동 재시도 대상(local_exists = 1)에 계속
+                # 남기지 않는다. 다음 주기에 같은 실패를 반복하지 않게 한다.
                 await self._db_call(
-                    db.mark_recording_backup,
-                    recording_id,
-                    backup_status="failed",
-                    backup_error="로컬 녹화 파일이 없습니다",
+                    db.mark_recording_local_deleted, recording_id
                 )
             return
         if row["backup_status"] == "uploaded":

@@ -396,6 +396,55 @@ async def test_backup_worker_retries_pending_recording_on_startup(
         conn.close()
 
 
+async def test_backup_worker_marks_missing_local_file_as_deleted(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "f1re.db"
+    conn = db.open_db(db_path)
+    root = tmp_path / "recordings"
+    active = _write_active(root, 5501, 1, 150)
+    target = root / "race" / "5501_s1.f1rec.zst"
+    compress_recording(active, target)
+    active.unlink()
+    recording_id = db.create_recording(
+        conn,
+        session_uid=5501,
+        segment=1,
+        started_at_ns=1_000_000_000,
+        category="race",
+    )
+    db.finalize_recording(
+        conn,
+        recording_id,
+        end_reason="session_end",
+        ended_at_ns=1_000_000_000,
+        packet_count=150,
+        duration_ms=0,
+        local_path=str(target),
+        local_exists=True,
+        file_size_bytes=target.stat().st_size,
+        backup_status="failed",
+    )
+    # 업로드 전에 로컬 파일이 외부에서 사라졌다.
+    target.unlink()
+    transport = FakeTransport()
+    worker = BackupWorker(db_path, _config(tmp_path), transport=transport)
+    try:
+        await worker.start()
+        await asyncio.wait_for(worker.join(), 10)
+
+        row = db.get_recording(conn, recording_id)
+        assert row["backup_status"] == "failed"
+        assert row["local_exists"] == 0
+        assert row["backup_error"] == "로컬 녹화 파일이 없습니다"
+        assert transport.uploads == []
+        # local_exists = 0이라 다음 자동 재시도 목록에는 잡히지 않는다.
+        assert db.list_pending_backup_recordings(conn) == []
+    finally:
+        await worker.aclose()
+        conn.close()
+
+
 async def test_backup_worker_skips_upload_when_gcs_disabled(tmp_path: Path) -> None:
     db_path = tmp_path / "f1re.db"
     conn = db.open_db(db_path)
