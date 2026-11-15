@@ -33,6 +33,82 @@
 - 좌표계는 게임 좌표와 맞추지 않았다. 데모 송신기(작업 4)가 같은 좌표를 쓰고, 실제 게임
   좌표와의 정렬은 작업 7에서 확인한다.
 
+### 선택 필드: 코너 이름·DRS 구간·추월 지점
+
+스즈카처럼 추월·방어 데이터가 있는 트랙은 아래 선택 필드를 더 쓴다. 모나코처럼 이
+필드가 없는 파일은 수정 없이 그대로 로드되며, `Track.drs_zones`와
+`Track.overtaking_spots`는 빈 튜플, `Corner.name`은 `None`이 된다.
+
+```json
+{
+  "corners": [
+    {"number": 16, "name": "카시오 시케인 진입", "entry_m": 5240.0,
+     "apex_m": 5266.28, "exit_m": 5298.0}
+  ],
+  "drs_zones": [
+    {
+      "name": "메인 스트레이트",
+      "detection_start_m": 4900.0,
+      "detection_end_m": 5240.0,
+      "activation_start_m": 5620.0,
+      "activation_end_m": 510.0
+    }
+  ],
+  "overtaking_spots": [
+    {
+      "name": "카시오 시케인",
+      "attack_corners": [16, 17],
+      "difficulty": "low",
+      "prep_corners": [14, 15],
+      "attack_method": "백 스트레이트 슬립스트림 뒤 16번 인코스 늦은 브레이킹",
+      "defense_line": "브레이킹 존 전 우측 인코스 커버, 17번 각지게",
+      "drs": false,
+      "entry_window_m": [5090.0, 5140.0]
+    }
+  ]
+}
+```
+
+- `corners[].name`(선택): 코너 통용 이름. 없으면 `None`. 빈 문자열·다른 타입은 오류다.
+- `drs_zones[]`(선택): DRS 구간 목록.
+  - `detection_start_m`~`detection_end_m`: DRS 사용권을 얻는 감지 창.
+  - `activation_start_m`~`activation_end_m`: DRS를 켤 수 있는 활성 창. 끝이 시작보다
+    작으면 결승선을 넘는 구간이다(스즈카 활성: 5,620 m → 결승선 0 m → 510 m).
+  - `name`(선택): 구간 이름. 비어 있으면 오류다.
+  - 스즈카의 감지·활성 거리는 `docs/research/suzuka-overtaking.md`의 추정값이다. 실제
+    F1 25 텔레메트리 `lap_distance`와 게임 HUD로 보정해야 한다.
+- `overtaking_spots[]`(선택): 주요 추월·주의 지점 목록.
+  - `attack_corners`: 공격 대상 코너 번호 목록. 번호 하나만 있을 때는
+    `attack_corner`(정수)로 써도 된다. 두 키를 같이 쓰면 오류다.
+  - `name`: 지점 이름. `difficulty`: `low`·`medium`·`high`·`very_high` 중 하나.
+    조사 문서의 하/중/상/최상을 이 값으로 옮기며, `하~중`처럼 걸친 표현은 더 쉬운
+    쪽(`low`)으로 적는다.
+  - `prep_corners`: 준비 코너 번호 목록.
+  - `attack_method`·`defense_line`: 공격 방법·방어 라인 요약.
+  - `drs`: 이 지점 공격이 DRS 활성 구간과 직접 이어지는지(`true`/`false`).
+  - `avoid_reason`(선택): 공격을 권하지 않는 이유.
+  - `entry_window_m`(선택): 공격·방어 무전을 내기 좋은 랩 거리 `[시작, 끝]`. 끝이
+    시작보다 작으면 결승선을 넘는다.
+- 모든 코너 번호 참조는 `corners`에 있는 번호여야 한다. 없는 번호, 빈 문자열, 잘못된
+  타입·난이도, 0~`length_m` 밖의 거리는 `TrackDataError`를 낸다.
+- 추월을 권하지 않는 유지 구간(스즈카 3~10·12·18번)은 `overtaking_spots`에 넣지 않고
+  아래 KB에 설명한다. 소비자는 `overtaking_spots`에 없는 구간을 기본적으로 공격
+  대상으로 보지 않는다.
+
+## 코너별 KB
+
+LLM 프롬프트와 규칙 엔진이 쓸 코너별 공략·방어 설명은 `src/f1re/tracks/kb/<슬러그>.md`에
+둔다. 트랙 ID와 파일 이름은 `kb/__init__.py`의 `_KB_FILES`에서 잇는다(현재 13 →
+`suzuka.md`).
+
+- 문서는 `## 코너 <번호>: <이름>` 형식의 2단계 제목으로 섹션을 나눈다. 섹션은 다음
+  `## ` 제목이나 문서 끝에서 끝난다.
+- 로더: `load_track_kb(track_id)` → `TrackKB | None`,
+  `load_corner_kb(track_id, corner_number)` → `str | None`,
+  `TrackKB.get_corner_section()`, `get_corner_sections()`, `render()`.
+- KB가 없는 트랙은 `None`을 돌려주며 오류가 아니다.
+- KB 마크다운은 패키지 데이터로 포함된다(`f1re.tracks.kb`).
+
 ## 트랙 ID·길이·코너 번호 출처
 
 - 트랙 ID: EA F1 25 공식 UDP 문서의 트랙 ID 표(스즈카 13, 모나코 5). PL이 전달한 값이다.

@@ -1,7 +1,8 @@
-"""서킷 데이터 파일을 읽어 `Track`·`Corner`로 만든다.
+"""서킷 데이터 파일을 읽어 `Track`·`Corner`·`DrsZone`·`OvertakingSpot`으로 만든다.
 
 데이터 파일은 `f1re/tracks/data/*.json`에 있고 패키지에 포함된다. 모르는 트랙 ID는
 예외 없이 `None`을 돌려준다(리뷰 포커스 5: 코너 데이터 없는 서킷에서도 동작).
+코너 이름·DRS 구간·추월 지점은 선택 필드다. 없는 트랙 파일도 그대로 읽는다.
 """
 
 from __future__ import annotations
@@ -43,6 +44,12 @@ class TrackDataError(ValueError):
     """서킷 데이터 파일이 없거나 형식이 잘못됐을 때."""
 
 
+#: `OvertakingSpot.difficulty`에 쓸 수 있는 값. 조사 문서의 하/중/상/최상을
+#: `low`/`medium`/`high`/`very_high`로 옮겼다. `하~중`처럼 두 단계에 걸친 표현은
+#: 더 쉬운 쪽(낮은 난이도)으로 적는다.
+OVERTAKING_DIFFICULTIES = ("low", "medium", "high", "very_high")
+
+
 @dataclass(frozen=True)
 class Corner:
     """공식 코너 하나. 거리 단위는 m, 랩 시작(결승선) 기준이다."""
@@ -52,16 +59,66 @@ class Corner:
     entry_m: float
     apex_m: float
     exit_m: float
+    name: str | None = None
+
+
+@dataclass(frozen=True)
+class DrsZone:
+    """DRS 한 구간.
+
+    `detection_*`은 DRS 사용권을 얻는 감지 창, `activation_*`은 DRS를 켤 수 있는
+    활성 창이다. 활성 창은 랩을 넘을 수 있어 `activation_end_m`이
+    `activation_start_m`보다 작으면 결승선을 지나 이어지는 구간을 뜻한다
+    (스즈카: 최종 코너 탈출 5,620 m → 결승선 → 1번 진입 510 m).
+    """
+
+    detection_start_m: float
+    detection_end_m: float
+    activation_start_m: float
+    activation_end_m: float
+    name: str | None = None
+
+    @property
+    def activation_wraps(self) -> bool:
+        """활성 창이 결승선을 넘는지."""
+        return self.activation_end_m < self.activation_start_m
+
+
+@dataclass(frozen=True)
+class OvertakingSpot:
+    """추월·방어를 설계할 때 쓰는 지점 하나.
+
+    `attack_corners`는 공격 대상 코너 번호, `prep_corners`는 그 전에 속도를 만드는
+    준비 코너 번호다. `entry_window_m`은 이 지점의 공격·방어 무전을 내기 좋은 랩
+    거리 창이며, 끝이 시작보다 작으면 결승선을 넘는다. `drs`는 이 지점의 공격이
+    DRS 활성 구간과 직접 이어지는지를 뜻한다.
+    """
+
+    name: str
+    attack_corners: tuple[int, ...]
+    difficulty: str
+    prep_corners: tuple[int, ...]
+    attack_method: str
+    defense_line: str
+    drs: bool = False
+    avoid_reason: str | None = None
+    entry_window_m: tuple[float, float] | None = None
 
 
 @dataclass(frozen=True)
 class Track:
-    """서킷 하나의 공식 코너 목록."""
+    """서킷 하나의 공식 코너 목록과 추월·DRS 정보.
+
+    `drs_zones`·`overtaking_spots`는 선택 데이터다. JSON에 없으면 빈 튜플이며,
+    기존처럼 `Track(track_id, name, length_m, corners)`로도 만들 수 있다.
+    """
 
     track_id: int
     name: str
     length_m: float
     corners: list[Corner]
+    drs_zones: tuple[DrsZone, ...] = ()
+    overtaking_spots: tuple[OvertakingSpot, ...] = ()
 
 
 def load_track(track_id: int) -> Track | None:
@@ -146,15 +203,21 @@ def _build_track(raw: dict[str, Any], filename: str) -> Track:
     previous_exit = 0.0
     for item in corners_raw:
         try:
-            corner = Corner(
-                number=int(item["number"]),
-                official=True,
-                entry_m=float(item["entry_m"]),
-                apex_m=float(item["apex_m"]),
-                exit_m=float(item["exit_m"]),
-            )
+            number = int(item["number"])
+            entry_m = float(item["entry_m"])
+            apex_m = float(item["apex_m"])
+            exit_m = float(item["exit_m"])
         except (KeyError, TypeError, ValueError) as exc:
             raise TrackDataError(f"{filename}: 코너 형식이 잘못됐습니다") from exc
+        corner_name = _optional_text(item.get("name"), f"{filename}: {number}번 코너 name")
+        corner = Corner(
+            number=number,
+            official=True,
+            entry_m=entry_m,
+            apex_m=apex_m,
+            exit_m=exit_m,
+            name=corner_name,
+        )
         if corner.number < 1:
             raise TrackDataError(f"{filename}: 코너 번호는 1 이상이어야 합니다")
         if not (0.0 <= corner.entry_m < corner.apex_m < corner.exit_m <= length_m):
@@ -166,7 +229,221 @@ def _build_track(raw: dict[str, Any], filename: str) -> Track:
         corners.append(corner)
         previous_exit = corner.exit_m
 
-    return Track(track_id=track_id, name=name, length_m=length_m, corners=corners)
+    corner_numbers = {corner.number for corner in corners}
+    drs_zones = _build_drs_zones(raw.get("drs_zones"), length_m, filename)
+    overtaking_spots = _build_overtaking_spots(
+        raw.get("overtaking_spots"), corner_numbers, length_m, filename
+    )
+
+    return Track(
+        track_id=track_id,
+        name=name,
+        length_m=length_m,
+        corners=corners,
+        drs_zones=drs_zones,
+        overtaking_spots=overtaking_spots,
+    )
+
+
+def _optional_text(value: Any, label: str) -> str | None:
+    """선택 문자열 필드를 읽는다. `None`이면 `None`, 빈 문자열·다른 타입은 오류."""
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value.strip():
+        raise TrackDataError(f"{label}이 비어 있거나 문자열이 아닙니다")
+    return value.strip()
+
+
+def _required_text(value: Any, label: str) -> str:
+    """필수 문자열 필드를 읽는다. 빈 문자열·다른 타입은 오류."""
+    if not isinstance(value, str) or not value.strip():
+        raise TrackDataError(f"{label}이 비어 있거나 문자열이 아닙니다")
+    return value.strip()
+
+
+def _number(value: Any, label: str) -> float:
+    """숫자 필드를 읽는다. `true`/`false`와 숫자 문자열은 받지 않는다."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise TrackDataError(f"{label}이 숫자가 아닙니다")
+    number = float(value)
+    if not math.isfinite(number):
+        raise TrackDataError(f"{label}이 유한한 숫자가 아닙니다")
+    return number
+
+
+def _check_distance_range(
+    start_m: float, end_m: float, length_m: float, label: str, *, wrap: bool
+) -> None:
+    """랩 거리 구간이 0~`length_m` 안에 있는지 확인한다.
+
+    `wrap=True`면 끝이 시작보다 작은(결승선을 넘는) 구간을 허용한다.
+    """
+    for value in (start_m, end_m):
+        if not math.isfinite(value) or not (0.0 <= value <= length_m):
+            raise TrackDataError(
+                f"{label} 거리 {value}가 0~{length_m:.1f}m 범위를 벗어났습니다"
+            )
+    if start_m == end_m:
+        raise TrackDataError(f"{label}의 시작과 끝이 같습니다")
+    if not wrap and start_m > end_m:
+        raise TrackDataError(f"{label}의 시작이 끝보다 큽니다")
+
+
+def _build_drs_zones(
+    raw: Any, length_m: float, filename: str
+) -> tuple[DrsZone, ...]:
+    """`drs_zones` 선택 필드를 읽는다. 없으면 빈 튜플."""
+    if raw is None:
+        return ()
+    if not isinstance(raw, list):
+        raise TrackDataError(f"{filename}: drs_zones가 목록이 아닙니다")
+
+    zones: list[DrsZone] = []
+    for index, item in enumerate(raw, start=1):
+        label = f"{filename}: {index}번째 DRS 구간"
+        if not isinstance(item, dict):
+            raise TrackDataError(f"{label}이 객체가 아닙니다")
+        try:
+            detection_start_raw = item["detection_start_m"]
+            detection_end_raw = item["detection_end_m"]
+            activation_start_raw = item["activation_start_m"]
+            activation_end_raw = item["activation_end_m"]
+        except (KeyError, TypeError) as exc:
+            raise TrackDataError(f"{label}에 필요한 거리 값이 없습니다") from exc
+        detection_start_m = _number(detection_start_raw, f"{label} detection_start_m")
+        detection_end_m = _number(detection_end_raw, f"{label} detection_end_m")
+        activation_start_m = _number(
+            activation_start_raw, f"{label} activation_start_m"
+        )
+        activation_end_m = _number(activation_end_raw, f"{label} activation_end_m")
+        _check_distance_range(
+            detection_start_m, detection_end_m, length_m, f"{label} 감지 구간", wrap=False
+        )
+        _check_distance_range(
+            activation_start_m,
+            activation_end_m,
+            length_m,
+            f"{label} 활성 구간",
+            wrap=True,
+        )
+        zones.append(
+            DrsZone(
+                detection_start_m=detection_start_m,
+                detection_end_m=detection_end_m,
+                activation_start_m=activation_start_m,
+                activation_end_m=activation_end_m,
+                name=_optional_text(item.get("name"), f"{label} name"),
+            )
+        )
+    return tuple(zones)
+
+
+def _build_overtaking_spots(
+    raw: Any, corner_numbers: set[int], length_m: float, filename: str
+) -> tuple[OvertakingSpot, ...]:
+    """`overtaking_spots` 선택 필드를 읽는다. 없으면 빈 튜플."""
+    if raw is None:
+        return ()
+    if not isinstance(raw, list):
+        raise TrackDataError(f"{filename}: overtaking_spots가 목록이 아닙니다")
+
+    spots: list[OvertakingSpot] = []
+    for index, item in enumerate(raw, start=1):
+        label = f"{filename}: {index}번째 추월 지점"
+        if not isinstance(item, dict):
+            raise TrackDataError(f"{label}이 객체가 아닙니다")
+        name = _required_text(item.get("name"), f"{label} name")
+        difficulty = _required_text(item.get("difficulty"), f"{label} difficulty")
+        if difficulty not in OVERTAKING_DIFFICULTIES:
+            allowed = ", ".join(OVERTAKING_DIFFICULTIES)
+            raise TrackDataError(
+                f"{label} difficulty '{difficulty}'는 허용 값({allowed})이 아닙니다"
+            )
+        attack_corners = _corner_numbers(
+            item,
+            label,
+            "attack_corners",
+            corner_numbers,
+            single_key="attack_corner",
+        )
+        prep_corners = _corner_numbers(item, label, "prep_corners", corner_numbers)
+        drs = item.get("drs")
+        if not isinstance(drs, bool):
+            raise TrackDataError(f"{label} drs는 true/false여야 합니다")
+        spots.append(
+            OvertakingSpot(
+                name=name,
+                attack_corners=attack_corners,
+                difficulty=difficulty,
+                prep_corners=prep_corners,
+                attack_method=_required_text(
+                    item.get("attack_method"), f"{label} attack_method"
+                ),
+                defense_line=_required_text(
+                    item.get("defense_line"), f"{label} defense_line"
+                ),
+                drs=drs,
+                avoid_reason=_optional_text(
+                    item.get("avoid_reason"), f"{label} avoid_reason"
+                ),
+                entry_window_m=_optional_window(
+                    item.get("entry_window_m"), length_m, f"{label} entry_window_m"
+                ),
+            )
+        )
+    return tuple(spots)
+
+
+def _corner_numbers(
+    item: dict[str, Any],
+    label: str,
+    key: str,
+    corner_numbers: set[int],
+    *,
+    single_key: str | None = None,
+) -> tuple[int, ...]:
+    """코너 번호 목록을 읽고 이 트랙의 코너인지 확인한다.
+
+    `single_key`는 `attack_corner`처럼 번호 하나를 받는 다른 이름이다. 두 키가
+    같이 있으면 어느 쪽을 쓸지 모호하므로 오류로 본다.
+    """
+    if single_key is not None and key in item and single_key in item:
+        raise TrackDataError(f"{label}에 {key}와 {single_key}가 함께 있습니다")
+    if key in item:
+        raw = item[key]
+        if not isinstance(raw, list):
+            raise TrackDataError(f"{label} {key}가 목록이 아닙니다")
+    elif single_key is not None and single_key in item:
+        raw = [item[single_key]]
+    else:
+        raise TrackDataError(f"{label}에 {key}가 없습니다")
+
+    numbers: list[int] = []
+    for value in raw:
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise TrackDataError(f"{label} {key}에 정수가 아닌 값이 있습니다")
+        if value not in corner_numbers:
+            raise TrackDataError(f"{label} {key}의 {value}번 코너가 트랙에 없습니다")
+        if value in numbers:
+            raise TrackDataError(f"{label} {key}에 {value}번 코너가 중복됩니다")
+        numbers.append(value)
+    if not numbers:
+        raise TrackDataError(f"{label} {key}가 비어 있습니다")
+    return tuple(numbers)
+
+
+def _optional_window(
+    value: Any, length_m: float, label: str
+) -> tuple[float, float] | None:
+    """선택 거리 창 `[시작_m, 끝_m]`을 읽는다. 끝이 작으면 결승선을 넘는다."""
+    if value is None:
+        return None
+    if not isinstance(value, (list, tuple)) or len(value) != 2:
+        raise TrackDataError(f"{label}은 [시작_m, 끝_m] 두 값이어야 합니다")
+    start_m = _number(value[0], f"{label} 시작")
+    end_m = _number(value[1], f"{label} 끝")
+    _check_distance_range(start_m, end_m, length_m, label, wrap=True)
+    return (start_m, end_m)
 
 
 # ---------------------------------------------------------------------------
