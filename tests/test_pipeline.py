@@ -10,10 +10,13 @@
 
 from __future__ import annotations
 
+import asyncio
 import dataclasses
 import random
 import time
 from typing import Any
+
+import pytest
 
 from f1re.config import AppConfig
 from f1re.coaching.coach import Coach
@@ -21,6 +24,7 @@ from f1re.coaching.reference import SOURCE_FASTEST_CAR
 from f1re.demo_sender.driving import DriverProfile, generate_lap
 from f1re.laps.traces import LapTrace, Sample
 from f1re.pipeline import RacePipeline
+from f1re.radio.llm import FALLBACK_TIMEOUT, LLMResult
 from f1re.radio.queue import RadioQueue
 from f1re.state.store import StateStore
 from f1re.tracks.model import load_outline, load_track
@@ -89,6 +93,7 @@ def _session_body(
     session_type: int = 18,
     *,
     total_laps: int = 0,
+    safety_car_status: int = 0,
 ) -> dict[str, Any]:
     return {
         "track_id": track_id,
@@ -96,7 +101,7 @@ def _session_body(
         "weather": 0,
         "track_length": 5807.0,
         "total_laps": total_laps,
-        "safety_car_status": 0,
+        "safety_car_status": safety_car_status,
         "game_paused": 0,
     }
 
@@ -444,5 +449,340 @@ async def test_flashback_marks_lap_invalid() -> None:
             time.time_ns(),
         )
         assert "flashback" in pipeline._invalid_reasons
+    finally:
+        await pipeline.aclose()
+
+
+# ---------------------------------------------------------------------------
+# 서킷 기반 공격·방어 전략 무전(SCRUM-130)
+
+
+class _StrategyStubGenerator:
+    """LLM 무전 생성기를 흉내 내는 가짜. `gate`로 비블로킹을 확인한다."""
+
+    def __init__(
+        self,
+        *,
+        text: str | None = "카시오 시케인 공격! 16번 인코스 늦게!",
+        used_fallback: bool = False,
+        fallback_reason: str | None = None,
+        gate: asyncio.Event | None = None,
+    ) -> None:
+        self.text = text
+        self.used_fallback = used_fallback
+        self.fallback_reason = fallback_reason
+        self.gate = gate
+        self.calls: list[dict[str, Any]] = []
+        self.closed = False
+
+    async def generate(
+        self,
+        kind: str,
+        facts: Any,
+        *,
+        kb_text: str = "",
+        mood: Any = "calm",
+        fallback_text: str,
+    ) -> LLMResult:
+        self.calls.append(
+            {
+                "kind": kind,
+                "facts": facts,
+                "kb_text": kb_text,
+                "mood": mood,
+                "fallback_text": fallback_text,
+            }
+        )
+        if self.gate is not None:
+            await self.gate.wait()
+        return LLMResult(
+            text=self.text if self.text is not None else fallback_text,
+            used_fallback=self.used_fallback,
+            fallback_reason=self.fallback_reason,
+            latency_ms=1,
+            model="stub",
+        )
+
+    async def aclose(self) -> None:
+        self.closed = True
+
+
+def _race_lap_data_body(
+    *,
+    lap: int = 2,
+    distance: float = 5100.0,
+    gap_ahead_s: float | None = 0.6,
+    gap_behind_s: float | None = None,
+    player_position: int = 10,
+) -> dict[str, Any]:
+    """스즈카 카시오 시케인 무전 창(5090~5140m)의 22대 Lap Data."""
+    entries: list[dict[str, Any]] = []
+    for _ in range(22):
+        entries.append(
+            {
+                "current_lap_num": lap,
+                "lap_distance": 0.0,
+                "car_position": 0,
+                "total_distance": 0.0,
+                "current_lap_invalid": 0,
+                "driver_status": 4,
+                "pit_status": 0,
+                "result_status": 2,
+            }
+        )
+    player_total = (lap - 1) * 5807.0 + distance
+    entries[0].update(
+        {
+            "lap_distance": distance,
+            "car_position": player_position,
+            "total_distance": player_total,
+        }
+    )
+    if gap_ahead_s is not None:
+        gap_ms = int(round(gap_ahead_s * 1000.0))
+        entries[0]["delta_to_car_in_front_minutes_part"] = gap_ms // 60_000
+        entries[0]["delta_to_car_in_front_ms_part"] = gap_ms % 60_000
+        entries[1].update(
+            {
+                "lap_distance": distance + 5.0,
+                "car_position": player_position - 1,
+                "total_distance": player_total + 100.0,
+            }
+        )
+    if gap_behind_s is not None:
+        entries[2].update(
+            {
+                "lap_distance": max(0.0, distance - 5.0),
+                "car_position": player_position + 1,
+                "total_distance": max(0.0, player_total - 100.0),
+            }
+        )
+        gap_ms = int(round(gap_behind_s * 1000.0))
+        entries[2]["delta_to_car_in_front_minutes_part"] = gap_ms // 60_000
+        entries[2]["delta_to_car_in_front_ms_part"] = gap_ms % 60_000
+    return {"lap_data": entries}
+
+
+def _race_pipeline(
+    clock: _Clock,
+    radio: _Radio,
+    *,
+    llm_generator: Any | None = None,
+    session_type: int = 15,
+    safety_car_status: int = 0,
+) -> RacePipeline:
+    """레이스 주말로 코치·전략을 만든 파이프라인(참가자 팀까지 채운다)."""
+    pipeline = RacePipeline(
+        StateStore(),
+        radio,
+        None,
+        config=AppConfig(),
+        clock=clock,
+        llm_generator=llm_generator,
+    )
+    pipeline.on_packet(
+        _packet(
+            PacketId.SESSION,
+            _session_body(
+                SUZUKA_ID,
+                session_type=session_type,
+                total_laps=20,
+                safety_car_status=safety_car_status,
+            ),
+        ),
+        clock(),
+    )
+    participants = [{"team_id": 1}] + [{"team_id": 2}] * 21
+    pipeline.on_packet(
+        _packet(PacketId.PARTICIPANTS, {"participants": participants}),
+        clock(),
+    )
+    return pipeline
+
+
+def _strategy_messages(radio: _Radio, side: str | None = None) -> list[Any]:
+    return [
+        message
+        for message in radio.queue.pending()
+        if message.evidence.get("strategy_side") is not None
+        and (side is None or message.evidence["strategy_side"] == side)
+    ]
+
+
+async def test_pipeline_emits_strategy_attack_radio_in_race() -> None:
+    """스즈카 레이스 카시오 창에서 앞차 0.6초면 공격 무전이 큐로 나간다."""
+    clock = _Clock()
+    radio = _Radio(clock)
+    pipeline = _race_pipeline(clock, radio)
+    await pipeline.start()
+    try:
+        pipeline.on_packet(
+            _packet(PacketId.LAP_DATA, _race_lap_data_body()), clock()
+        )
+        pipeline._evaluate_overtake()
+
+        attacks = _strategy_messages(radio, "attack")
+        assert len(attacks) == 1
+        message = attacks[0]
+        assert message.kind == "overtake"
+        assert "카시오 시케인" in message.text
+        assert message.evidence["spot"] == "카시오 시케인"
+        assert message.evidence["llm_used_fallback"] is True
+        assert message.corner == 16
+    finally:
+        await pipeline.aclose()
+
+
+async def test_pipeline_emits_strategy_defense_radio_in_race() -> None:
+    """뒤차가 1.0초 이내면 카시오 방어 무전이 나간다."""
+    clock = _Clock()
+    radio = _Radio(clock)
+    pipeline = _race_pipeline(clock, radio)
+    await pipeline.start()
+    try:
+        pipeline.on_packet(
+            _packet(
+                PacketId.LAP_DATA,
+                _race_lap_data_body(gap_ahead_s=5.0, gap_behind_s=0.7),
+            ),
+            clock(),
+        )
+        pipeline._evaluate_overtake()
+
+        defenses = _strategy_messages(radio, "defense")
+        assert len(defenses) == 1
+        assert defenses[0].kind == "overtake"
+        assert "방어" in defenses[0].text
+        assert defenses[0].evidence["spot"] == "카시오 시케인"
+    finally:
+        await pipeline.aclose()
+
+
+@pytest.mark.parametrize(
+    ("session_type", "safety_car_status"),
+    [(18, 0), (1, 0), (15, 1), (15, 2)],
+    ids=["타임트라이얼", "연습", "SC", "VSC"],
+)
+async def test_pipeline_skips_strategy_outside_race_or_under_sc(
+    session_type: int, safety_car_status: int
+) -> None:
+    clock = _Clock()
+    radio = _Radio(clock)
+    pipeline = _race_pipeline(
+        clock,
+        radio,
+        session_type=session_type,
+        safety_car_status=safety_car_status,
+    )
+    await pipeline.start()
+    try:
+        pipeline.on_packet(
+            _packet(PacketId.LAP_DATA, _race_lap_data_body()), clock()
+        )
+        pipeline._evaluate_overtake()
+
+        assert _strategy_messages(radio) == []
+    finally:
+        await pipeline.aclose()
+
+
+async def test_pipeline_counts_attack_and_defense_separately_per_lap() -> None:
+    clock = _Clock()
+    radio = _Radio(clock)
+    pipeline = _race_pipeline(clock, radio)
+    await pipeline.start()
+    try:
+        pipeline.on_packet(
+            _packet(PacketId.LAP_DATA, _race_lap_data_body(gap_ahead_s=0.5)),
+            clock(),
+        )
+        pipeline._evaluate_overtake()
+        assert len(_strategy_messages(radio, "attack")) == 1
+
+        clock.advance(0.2)
+        pipeline.on_packet(
+            _packet(
+                PacketId.LAP_DATA,
+                _race_lap_data_body(gap_ahead_s=5.0, gap_behind_s=0.5),
+            ),
+            clock(),
+        )
+        pipeline._evaluate_overtake()
+        assert len(_strategy_messages(radio, "defense")) == 1
+
+        clock.advance(0.2)
+        pipeline.on_packet(
+            _packet(
+                PacketId.LAP_DATA,
+                _race_lap_data_body(gap_ahead_s=0.4, gap_behind_s=0.4),
+            ),
+            clock(),
+        )
+        pipeline._evaluate_overtake()
+        assert len(_strategy_messages(radio)) == 2
+    finally:
+        await pipeline.aclose()
+
+
+async def test_pipeline_llm_does_not_block_and_uses_generated_text() -> None:
+    """LLM 응답을 기다리는 동안 10Hz 판단이 막히지 않는다(별도 태스크)."""
+    clock = _Clock()
+    radio = _Radio(clock)
+    gate = asyncio.Event()
+    stub = _StrategyStubGenerator(gate=gate)
+    pipeline = _race_pipeline(clock, radio, llm_generator=stub)
+    await pipeline.start()
+    try:
+        pipeline.on_packet(
+            _packet(PacketId.LAP_DATA, _race_lap_data_body()), clock()
+        )
+        pipeline._evaluate_overtake()
+        await asyncio.sleep(0)
+
+        # LLM이 대기 중이어도 판단은 끝났고, 무전은 아직 큐에 없다.
+        assert stub.calls and stub.calls[0]["kind"] == "overtake.attack"
+        assert _strategy_messages(radio) == []
+
+        gate.set()
+        for _ in range(5):
+            await asyncio.sleep(0)
+            if _strategy_messages(radio):
+                break
+
+        messages = _strategy_messages(radio)
+        assert len(messages) == 1
+        assert messages[0].text == "카시오 시케인 공격! 16번 인코스 늦게!"
+        assert messages[0].evidence["llm_used_fallback"] is False
+        assert stub.calls[0]["facts"]["spot"] == "카시오 시케인"
+        assert "## 코너 14:" in stub.calls[0]["kb_text"]
+    finally:
+        await pipeline.aclose()
+    assert stub.closed
+
+
+async def test_pipeline_llm_failure_falls_back_to_template() -> None:
+    """LLM이 타임아웃으로 대체 문장을 주면 그 문장이 무전으로 나간다."""
+    clock = _Clock()
+    radio = _Radio(clock)
+    stub = _StrategyStubGenerator(
+        text=None, used_fallback=True, fallback_reason=FALLBACK_TIMEOUT
+    )
+    pipeline = _race_pipeline(clock, radio, llm_generator=stub)
+    await pipeline.start()
+    try:
+        pipeline.on_packet(
+            _packet(PacketId.LAP_DATA, _race_lap_data_body()), clock()
+        )
+        pipeline._evaluate_overtake()
+        for _ in range(5):
+            await asyncio.sleep(0)
+            if _strategy_messages(radio):
+                break
+
+        messages = _strategy_messages(radio, "attack")
+        assert len(messages) == 1
+        assert messages[0].text == stub.calls[0]["fallback_text"]
+        assert messages[0].evidence["llm_fallback_reason"] == FALLBACK_TIMEOUT
+        assert "카시오 시케인" in messages[0].text
     finally:
         await pipeline.aclose()
