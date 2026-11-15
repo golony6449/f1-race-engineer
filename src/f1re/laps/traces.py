@@ -24,12 +24,14 @@ Lap Data의 랩 번호가 커지면 이전 랩을 `LapTrace`로 마감해 돌려
 from __future__ import annotations
 
 import math
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
+from f1re.tracks.model import Corner
 from f1re.tracks.outline import TrackOutline
 from f1re.udp.parser import Packet
-from f1re.udp.session_category import RACE_SESSION_TYPES
+from f1re.udp.session_category import RACE_SESSION_TYPES, is_race_session
 from f1re.udp.spec import PacketId
 
 # 세션 종류(공식 열거형): 15=R, 16=R2, 17=R3(스프린트 레이스 포함). 이 세션의
@@ -51,6 +53,11 @@ _SAFETY_CAR_STATUSES = {1: "safety_car", 2: "vsc"}
 
 # 같은 랩 안에서 이만큼(m) 넘게 뒤로 가면 플래시백으로 본다(StateStore와 같은 값).
 LAP_DISTANCE_TOLERANCE_M = 1.0
+
+# 접전(traffic) 판정: 앞차 또는 뒤차와의 시간 간격이 이 값(초) 이하이면 접전으로
+# 본다(SCRUM-124). 레이스 세션에서만 표시하며, 접전 코너는 코칭·기준 랩·집중
+# 코너 계산에서 뺀다.
+TRAFFIC_GAP_S = 1.0
 
 # 이유가 여러 개면 이 순서로 하나를 고른다(앞쪽이 더 근본적인 사유).
 INVALID_REASON_ORDER: tuple[str, ...] = (
@@ -79,6 +86,11 @@ class Sample:
     F1 25 값은 0 아스팔트, 1 연석, 2 콘크리트, 3 바위, 4 자갈, 5 진흙, 6 모래,
     7 잔디, 8 물, 9 자갈길, 10 금속, 11 요철이다. 옛 기준 랩이나 노면이 없는
     입력은 None이다(SCRUM-93).
+
+    `in_traffic`은 이 샘플 시점에 앞차 또는 뒤차와 `TRAFFIC_GAP_S`(1초) 이내로
+    붙어 있었는지다. `position_changed`는 직전 샘플 뒤로 순위(`car_position`)가
+    바뀌었는지다. 둘 다 레이스 세션에서만 채우며(SCRUM-124), 접전 코너를 골라
+    코칭·기준 랩·집중 코너 계산에서 빼는 데 쓴다.
     """
 
     dist_m: float
@@ -93,6 +105,8 @@ class Sample:
     wheel_slip: tuple[float, ...] | None = None
     fuel_kg: float | None = None
     surface: tuple[int, ...] | None = None
+    in_traffic: bool = False
+    position_changed: bool = False
 
 
 @dataclass
@@ -104,6 +118,84 @@ class LapTrace:
     valid: bool
     invalid_reason: str | None
     samples: list[Sample]
+
+
+def _delta_to_front_s(entry: Mapping[str, Any]) -> float | None:
+    """Lap Data의 앞차와의 시간 간격(초). 없으면 None."""
+    minutes = _as_int(entry.get("delta_to_car_in_front_minutes_part"))
+    milliseconds = _as_int(entry.get("delta_to_car_in_front_ms_part"))
+    if minutes is None and milliseconds is None:
+        return None
+    return max(0, minutes or 0) * 60.0 + max(0, milliseconds or 0) / 1000.0
+
+
+def _running_on_track(entry: Mapping[str, Any]) -> bool:
+    """차가 실제 주행 중인가(차고·인랩·아웃랩·피트·리타이어 제외)."""
+    result_status = _as_int(entry.get("result_status"))
+    if result_status is not None and result_status != 2:
+        return False
+    driver_status = _as_int(entry.get("driver_status"))
+    return driver_status not in {
+        0,
+        DRIVER_IN_LAP,
+        DRIVER_OUT_LAP,
+        DRIVER_IN_PIT,
+    }
+
+
+def battle_traffic(
+    entries: Sequence[Mapping[str, Any]],
+    car_index: int,
+    *,
+    gap_s: float = TRAFFIC_GAP_S,
+) -> bool:
+    """그 차가 앞차 또는 뒤차와 `gap_s`(기본 1초) 이내로 붙어 있는가.
+
+    `entries`는 Lap Data 패킷의 차량별 항목이다. 앞차 간격은 그 차의
+    `delta_to_car_in_front`를 쓰고, 뒤차 간격은 순위가 바로 뒤인 차의
+    `delta_to_car_in_front`(그 차 기준 앞차 = 이 차)를 쓴다. 랩이 겹친 차
+    (총 주행거리가 더 큰 차)와 차고·피트·리타이어 차는 뒤차로 보지 않는다.
+    """
+    if not 0 <= car_index < len(entries):
+        return False
+    entry = entries[car_index]
+    if not isinstance(entry, Mapping):
+        return False
+    position = _as_int(entry.get("car_position"))
+    if position is None or position <= 0:
+        return False
+
+    if position > 1:
+        gap = _delta_to_front_s(entry)
+        if gap is not None and gap <= gap_s:
+            return True
+
+    behind: Mapping[str, Any] | None = None
+    for item in entries:
+        if isinstance(item, Mapping) and _as_int(item.get("car_position")) == position + 1:
+            behind = item
+            break
+    if behind is None or not _running_on_track(behind):
+        return False
+    own_total = _as_float(entry.get("total_distance"))
+    behind_total = _as_float(behind.get("total_distance"))
+    if own_total is not None and behind_total is not None and behind_total > own_total:
+        # 순위는 바로 뒤지만 실제로는 랩이 앞선 차다(랩 다운/업 상황).
+        return False
+    gap = _delta_to_front_s(behind)
+    return gap is not None and gap <= gap_s
+
+
+def corner_has_traffic(samples: Sequence[Sample], corner: Corner) -> bool:
+    """코너 구간(진입~탈출) 안에 접전 샘플이나 순위 변동이 있었는가.
+
+    레이스 세션이 아닐 때의 제외 여부는 호출자가 판단한다(비레이스는 미적용).
+    """
+    return any(
+        (sample.in_traffic or sample.position_changed)
+        and corner.entry_m <= sample.dist_m <= corner.exit_m
+        for sample in samples
+    )
 
 
 @dataclass
@@ -138,6 +230,12 @@ class LapTraceRecorder:
         self._motion_ex: dict[int, tuple[float, ...]] = {}
         self._fuel_kg: dict[int, float] = {}
         self._current: dict[int, _LapBuffer] = {}
+
+        # 접전 판정(SCRUM-124). 내 차의 최신 Lap Data 상태를 샘플에 붙인다.
+        # 순위 변동은 다음 텔레메트리 샘플 하나에만 표시하고 지운다.
+        self._player_in_traffic = False
+        self._player_position: int | None = None
+        self._position_changed = False
 
     def set_outline(self, outline: TrackOutline | None) -> None:
         """중심선 윤곽을 바꾼다. 첫 유효 랩에서 윤곽을 배운 뒤 붙인다(SCRUM-84)."""
@@ -195,6 +293,8 @@ class LapTraceRecorder:
         if not isinstance(entries, list):
             return completed
 
+        self._update_traffic(entries)
+
         for car_index, entry in enumerate(entries):
             if not isinstance(entry, dict):
                 continue
@@ -231,6 +331,32 @@ class LapTraceRecorder:
             current.last_distance = distance
             self._lap_data[car_index] = entry
         return completed
+
+    def _update_traffic(self, entries: Sequence[Mapping[str, Any]]) -> None:
+        """내 차의 접전 여부와 순위 변동을 갱신한다(SCRUM-124).
+
+        비레이스 세션에서는 접전 판정을 하지 않는다. 순위가 바뀌면 다음
+        텔레메트리 샘플 하나에 `position_changed`를 붙인다.
+        """
+        index = self._player_car_index
+        if (
+            not is_race_session(self._session_type)
+            or index is None
+            or not 0 <= index < len(entries)
+        ):
+            self._player_in_traffic = False
+            return
+
+        self._player_in_traffic = battle_traffic(entries, index)
+        entry = entries[index]
+        if not isinstance(entry, Mapping):
+            return
+        position = _as_int(entry.get("car_position"))
+        if position is None:
+            return
+        if self._player_position is not None and position != self._player_position:
+            self._position_changed = True
+        self._player_position = position
 
     def _flag_lap_data(self, current: _LapBuffer, entry: dict[str, Any]) -> None:
         """Lap Data 필드에서 랩 무효 사유를 표시한다."""
@@ -311,6 +437,9 @@ class LapTraceRecorder:
             sample = self._make_sample(car_index, entry, lap_entry)
             if sample is not None:
                 buffer.samples.append(sample)
+                if car_index == self._player_car_index:
+                    # 순위 변동 표시는 샘플 하나에만 붙인다.
+                    self._position_changed = False
 
     def _make_sample(
         self,
@@ -345,6 +474,8 @@ class LapTraceRecorder:
             wheel_slip=self._motion_ex.get(car_index) if is_player else None,
             fuel_kg=self._fuel_kg.get(car_index) if is_player else None,
             surface=_surface_tuple(telemetry.get("surface_type")),
+            in_traffic=self._player_in_traffic if is_player else False,
+            position_changed=self._position_changed if is_player else False,
         )
 
     def _position(self, car_index: int, dist_m: float) -> tuple[float, float]:
@@ -433,6 +564,9 @@ class LapTraceRecorder:
         self._paused = False
         self._player_car_index = None
         self._max_frame = None
+        self._player_in_traffic = False
+        self._player_position = None
+        self._position_changed = False
         return completed
 
 

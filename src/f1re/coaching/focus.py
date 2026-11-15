@@ -5,6 +5,10 @@
 - 최근 몇 랩(기본 3랩)에서 기준 랩 대비 시간을 가장 많이 잃는 코너 4~5개(기본 5개)를
   집중 코너로 정한다. 무효 랩(아웃랩·피트·무효·SC/VSC·레이스 1랩)과 다른 차의 랩은
   산정에서 뺀다(리뷰 포커스 4).
+- 레이스 세션에서는 **접전 코너(SCRUM-124)** 의 손실을 산정에서 뺀다. 앞/뒤차
+  1초 이내이거나 코너 안에서 순위가 바뀐 랩·코너다. 한 랩의 한 코너만 접전이면
+  그 코너 손실만 빼고 나머지 코너는 그대로 쓴다. 최근 랩이 모두 접전인 코너는
+  손실을 모르므로 목록에서 뺀다. 비레이스 세션은 제외하지 않는다.
 - 집중 코너의 최신 랩 손실이 문턱값(`min_loss_ms`) 아래로 내려가면 목록에서 빼고
   다음으로 손실이 큰 코너를 넣는다. 그때 `FocusChange(reason="improved")`를 한 번
   돌려주며, 무전 문장("3번 좋아졌어. 다음은 7번 보자.")은 `coaching.coach.Coach`가 만든다.
@@ -30,7 +34,7 @@ from typing import Any
 
 from f1re.coaching.reference import ReferenceSet
 from f1re.config import AppConfig
-from f1re.laps.traces import LapTrace
+from f1re.laps.traces import LapTrace, corner_has_traffic
 from f1re.tracks.model import Corner
 from f1re.udp.session_category import is_race_session
 
@@ -256,7 +260,16 @@ class FocusSet:
             )
 
         self._focus = selected
-        self._last_loss = dict(latest_losses)
+        # 접전 등으로 이번에 계산하지 못한 코너는 직전 값을 남긴다. 그래야 다음
+        # 깨끗한 랩에서 실제로 개선됐을 때 개선 알림을 놓치지 않는다(SCRUM-124).
+        self._last_loss = {
+            **{
+                number: loss
+                for number, loss in self._last_loss.items()
+                if number not in latest_losses
+            },
+            **latest_losses,
+        }
         return changes
 
     # --- 내부 -------------------------------------------------------------
@@ -290,7 +303,11 @@ class FocusSet:
             values = [
                 corner_loss_ms(self._points(trace), reference_points, corner)
                 for trace in self._recent
+                if not self._traffic_excluded(trace, corner)
             ]
+            if not values:
+                # 최근 랩이 모두 그 코너에서 접전이었다. 손실을 모르므로 뺀다.
+                continue
             result[corner.number] = int(round(sum(values) / len(values)))
         return result
 
@@ -303,6 +320,8 @@ class FocusSet:
         points = self._points(trace)
         result: dict[int, int] = {}
         for corner in self._corners:
+            if self._traffic_excluded(trace, corner):
+                continue
             reference = references.get(corner.number)
             if reference is None:
                 continue
@@ -310,6 +329,16 @@ class FocusSet:
                 points, self._points(reference[0]), corner
             )
         return result
+
+    def _traffic_excluded(self, trace: LapTrace, corner: Corner) -> bool:
+        """레이스 세션에서 그 랩·코너가 접전이었으면 손실 계산에서 뺀다(SCRUM-124).
+
+        접전 중의 속도·조향·라인 차이는 내 실수가 아니므로 집중 코너 선정과
+        개선 판정에 섞지 않는다. 비레이스 세션은 그대로 계산한다.
+        """
+        return is_race_session(self._session_type) and corner_has_traffic(
+            trace.samples, corner
+        )
 
     def _points(self, trace: LapTrace) -> tuple[tuple[float, float], ...]:
         key = id(trace)
