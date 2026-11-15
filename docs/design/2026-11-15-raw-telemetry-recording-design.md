@@ -116,8 +116,8 @@ min_packets = 100
 [recording.gcs]
 enabled = true
 rclone_remote = "gcs"
-bucket = "f1-race-engineer-backup"
-prefix = "recordings"
+bucket = "f1-race-engineer"
+prefix = "telemetry-raw"
 rclone_config = "~/.config/rclone/rclone.conf"
 ```
 
