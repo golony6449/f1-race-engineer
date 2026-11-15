@@ -30,8 +30,9 @@ from typing import Any
 
 from f1re.coaching.reference import ReferenceSet
 from f1re.config import AppConfig
-from f1re.laps.traces import RACE_SESSION_TYPES, LapTrace
+from f1re.laps.traces import LapTrace
 from f1re.tracks.model import Corner
+from f1re.udp.session_category import is_race_session
 
 # 집중 코너로 볼 최소 평균 손실(ms). 이보다 작으면 코칭할 가치가 없다고 본다.
 # 같은 값을 "개선됐다"의 문턱으로도 쓴다.
@@ -142,7 +143,7 @@ class FocusSet:
     @property
     def min_valid_laps(self) -> int:
         """집중 코너 산정을 시작하는 유효 랩 수(레이스 세션 규칙 반영)."""
-        if self._session_type in RACE_SESSION_TYPES:
+        if is_race_session(self._session_type):
             return max(self._config.min_valid_laps, RACE_FOCUS_MIN_VALID_LAPS)
         return self._config.min_valid_laps
 
@@ -267,7 +268,7 @@ class FocusSet:
             if not trace.valid or len(trace.samples) < 2:
                 continue
             # 레이스 1랩(출발 혼전)은 기록 표시와 상관없이 산정에서 뺀다.
-            if self._session_type in RACE_SESSION_TYPES and trace.lap == 1:
+            if is_race_session(self._session_type) and trace.lap == 1:
                 continue
             self._recent.append(trace)
         # 오래된 랩은 산정에서 빼되, 시각 표 캐시는 그대로 둔다(세션 규모라 작다).

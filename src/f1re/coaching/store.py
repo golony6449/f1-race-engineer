@@ -42,6 +42,10 @@ from f1re.coaching.reference import (
     reference_from_dict,
     reference_to_dict,
 )
+from f1re.udp.session_category import (
+    TIME_TRIAL_SESSION_TYPE,
+    is_time_trial_session,
+)
 
 # 모드(설계 6.3). 타임 트라이얼과 레이스 주말(연습·예선·레이스)을 나눈다.
 MODE_TT = "tt"
@@ -53,8 +57,9 @@ WEATHER_DRY = "dry"
 WEATHER_WET = "wet"
 WEATHERS = frozenset({WEATHER_DRY, WEATHER_WET})
 
-# F1 25 Session 패킷의 session_type 13 = Time Trial.
-TIME_TRIAL_SESSION_TYPE = 13
+# F1 25 Session 패킷의 session_type 18 = Time Trial. 값은
+# `udp.session_category`가 단일 출처다(SCRUM-131). `TIME_TRIAL_SESSION_TYPE`은
+# 기존 import 호환을 위해 이 모듈에서도 노출한다.
 # Session 패킷 weather: 3=light rain, 4=heavy rain, 5=storm.
 _WET_WEATHER_FROM = 3
 
@@ -64,8 +69,8 @@ UNKNOWN_TEAM_CAR_KEY = "team:unknown"
 
 
 def mode_for_session_type(session_type: int | None) -> str:
-    """세션 종류를 저장 모드로 나눈다. 13(타임 트라이얼)만 `tt`다."""
-    if session_type is not None and int(session_type) == TIME_TRIAL_SESSION_TYPE:
+    """세션 종류를 저장 모드로 나눈다. 18(타임 트라이얼)만 `tt`다."""
+    if is_time_trial_session(session_type):
         return MODE_TT
     return MODE_RACE_WEEKEND
 

@@ -29,10 +29,13 @@ from typing import Any
 
 from f1re.tracks.outline import TrackOutline
 from f1re.udp.parser import Packet
+from f1re.udp.session_category import RACE_SESSION_TYPES
 from f1re.udp.spec import PacketId
 
-# 세션 종류(공식 열거형): 10=R, 11=R2, 12=R3. 이 세션의 1랩은 출발 혼전이다.
-RACE_SESSION_TYPES = frozenset({10, 11, 12})
+# 세션 종류(공식 열거형): 15=R, 16=R2, 17=R3(스프린트 레이스 포함). 이 세션의
+# 1랩은 출발 혼전이다. 값은 `udp.session_category`가 단일 출처다(SCRUM-131).
+# 기존 import(`from f1re.laps.traces import RACE_SESSION_TYPES`) 호환을 위해
+# 여기서 다시 노출한다.
 
 # Lap Data의 driver_status(공식 열거형).
 DRIVER_IN_LAP = 2

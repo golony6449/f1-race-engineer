@@ -20,17 +20,16 @@ from __future__ import annotations
 import math
 from typing import Any
 
-from f1re.laps.traces import RACE_SESSION_TYPES
+from f1re.udp.session_category import is_race_session
 
 
 def race_distance_known(session_type: Any, total_laps: Any) -> bool:
-    """레이스 세션이고 총 랩 수가 있어 남은 레이스 랩을 셀 수 있는가."""
+    """레이스 세션이고 총 랩 수가 있어 남은 레이스 랩을 셀 수 있는가.
+
+    레이스 판정(15~17)은 `udp.session_category`가 단일 출처다(SCRUM-131).
+    """
     total = _integer(total_laps)
-    return (
-        _integer(session_type) in RACE_SESSION_TYPES
-        and total is not None
-        and total > 0
-    )
+    return is_race_session(session_type) and total is not None and total > 0
 
 
 def remaining_race_laps(

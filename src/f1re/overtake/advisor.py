@@ -41,7 +41,6 @@ from dataclasses import dataclass
 from typing import Any
 
 from f1re.coaching.metrics import corner_metrics
-from f1re.coaching.reference import NON_AI_SESSION_TYPES
 from f1re.config import AppConfig
 from f1re.laps.traces import LapTrace
 from f1re.race_distance import remaining_race_laps
@@ -53,6 +52,7 @@ from f1re.radio.templates import (
     mood_for,
 )
 from f1re.tracks.model import Corner, Track, load_track
+from f1re.udp.session_category import is_time_trial_session
 
 # F1 25 ERS 저장소 최대 에너지(J). `web/app.py`와 같은 공식 규정값이다.
 ERS_STORE_MAX_J = 4_000_000.0
@@ -257,7 +257,7 @@ class OvertakeAdvisor:
             self._lap = view.lap
             self._messages_this_lap = 0
 
-        if view.session_type in NON_AI_SESSION_TYPES or view.safety_car:
+        if is_time_trial_session(view.session_type) or view.safety_car:
             self._ahead_index = view.ahead_index
             self._active = False
             return []
