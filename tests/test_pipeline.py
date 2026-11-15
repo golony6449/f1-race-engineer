@@ -339,9 +339,9 @@ async def test_pipeline_ignores_overtake_of_retired_or_pit_car() -> None:
             _packet(PacketId.PARTICIPANTS, {"participants": participants}),
             clock(),
         )
-        # 1번 차는 리타이어(result_status 6) 상태다.
+        # 1번 차는 리타이어(result_status 7) 상태다(driver_status는 주행 중으로 둬 result_status 필터를 검증).
         entries = _lap_data_body(lap=2)["lap_data"]
-        entries.append({"result_status": 6, "driver_status": 0})
+        entries.append({"result_status": 7, "driver_status": 4})
         pipeline.on_packet(
             _packet(PacketId.LAP_DATA, {"lap_data": entries}), clock()
         )

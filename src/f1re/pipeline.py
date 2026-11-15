@@ -689,8 +689,9 @@ class RacePipeline:
         entry = entries[car_index]
         if not isinstance(entry, dict):
             return True
-        # F1 25 result_status: 3 완주, 4 실격, 5 미분류, 6 리타이어.
-        if _int(entry.get("result_status")) in {3, 4, 5, 6}:
+        # F1 25 result_status: 0 무효, 1 비활성, 2 주행 중(Active), 3 완주, 4 DNF, 5 실격, 6 미분류, 7 리타이어.
+        result_status = _int(entry.get("result_status"))
+        if result_status is not None and result_status != 2:
             return False
         # driver_status: 0 차고, 2 인랩, 3 아웃랩, 7 피트.
         if _int(entry.get("driver_status")) in {
