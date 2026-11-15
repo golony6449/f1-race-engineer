@@ -45,6 +45,12 @@ SAMPLE_VALUES: dict[str, object] = {
     "seconds": 5,
     "next_corner": 7,
     "next_label": "7번",
+    # SCRUM-125: 반복 실수 강조·칭찬·추월 리액션 틀.
+    "lap_streak": 3,
+    "lap_s": "92.4",
+    "sector": 2,
+    "sector_s": "28.4",
+    "position": 8,
 }
 
 
