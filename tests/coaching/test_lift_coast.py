@@ -236,11 +236,14 @@ def _alert_overrides(lap: int, *, active: bool = True) -> dict:
     """
     if not active:
         return {
+            "total_laps": 50,
             "fuel_laps_margin": 1.0,
             "brake_temp": 400.0,
             "tyre_temps": [90.0, 90.0, 95.0, 95.0],
         }
-    overrides: dict = {}
+    # 세션 종류는 코치 생성자(기본 10=레이스)가 정한다. 연료 코칭은 레이스
+    # 거리(total_laps)가 있어야 하므로 여기서 총 랩 수를 준다(SCRUM-95).
+    overrides: dict = {"total_laps": 50}
     if lap >= 2:
         overrides["fuel_laps_margin"] = FUEL_MARGIN_LAPS
     if lap >= 3:
@@ -671,3 +674,55 @@ def test_api_route_is_registered_in_app() -> None:
 
     # `app.routes`는 포함된 라우터를 평평하게 펴지 않으므로 OpenAPI 스키마로 본다.
     assert "/api/lift-coast" in app.openapi()["paths"]
+
+
+# ---------------------------------------------------------------------------
+# 레이스 거리에 따른 연료 절약 코칭(SCRUM-95)
+
+
+def _need_after_sample(
+    *,
+    session_type: int,
+    total_laps: float | None,
+    fuel_margin: float = -3.0,
+) -> dict:
+    """샘플 하나로 연료 필요 상태를 갱신하고 스냅샷을 돌려준다."""
+    coach = _coach(session_type=session_type)
+    sample = _suzuka(1).samples[0]
+    overrides: dict = {"fuel_laps_margin": fuel_margin}
+    if total_laps is not None:
+        overrides["total_laps"] = total_laps
+    coach.on_sample(_state(sample, 1, **overrides), sample.dist_m, _BASE_NS)
+    return coach.state.snapshot()["need"]
+
+
+@pytest.mark.parametrize(
+    ("session_type", "total_laps"),
+    [
+        (1, 50.0),  # FP1
+        (5, 50.0),  # Q1
+        (13, 0.0),  # 타임 트라이얼
+        (10, 0.0),  # 레이스지만 레이스 거리 없음
+        (10, None),  # total_laps 필드 없음
+    ],
+)
+def test_fuel_need_ignored_without_race_distance(
+    session_type: int, total_laps: float | None
+) -> None:
+    """레이스 거리가 없으면 연료 여유가 위험해도 연료 사유로 코칭하지 않는다."""
+    need = _need_after_sample(session_type=session_type, total_laps=total_laps)
+
+    assert need["active"] is False
+    assert need["reasons"] == []
+    # 값 자체는 대시보드 표시용으로 남는다.
+    assert need["fuel_laps_margin"] == pytest.approx(-3.0)
+
+
+@pytest.mark.parametrize("total_laps", [5.0, 50.0])
+def test_fuel_need_active_in_race_with_distance(total_laps: float) -> None:
+    """단축 레이스(5랩)와 풀 레이스 모두 MFD 여유가 위험하면 연료 사유가 켜진다."""
+    need = _need_after_sample(session_type=10, total_laps=total_laps)
+
+    assert need["active"] is True
+    assert need["reasons"] == ["fuel_laps_margin"]
+    assert need["fuel_laps_margin"] == pytest.approx(-3.0)

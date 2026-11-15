@@ -32,10 +32,12 @@ const DISPLAY_UNITS = {
   W: { unit: "kW", scale: 1e-3 },
 };
 
+// `remaining_laps`는 게임 MFD의 연료 여유 랩(+/-)과 같은 값이라 여기서는
+// `laps_margin` 한 칸으로만 보여 준다(SCRUM-95). `remaining_race_laps`는
+// 레이스 세션에서만 값이 있고, FP·Q·TT에서는 비어 있다.
 const FUEL_CELLS = [
   ["remaining_kg", "남은 연료"],
   ["per_lap_kg", "랩당 소모"],
-  ["remaining_laps", "남은 랩"],
   ["remaining_race_laps", "레이스 남은 랩"],
   ["laps_margin", "연료 여유"],
 ];

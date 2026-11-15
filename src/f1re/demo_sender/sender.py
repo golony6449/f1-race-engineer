@@ -727,12 +727,16 @@ class DemoSender:
         remaining_laps = max(
             0.0, float(self._laps) - (run.lap - 1) - sample.dist_m / self._track.length_m
         )
+        # `m_fuelRemainingLaps`는 게임 MFD에 보이는 **남은 레이스 거리 대비
+        # 여유 랩(+/-)** 이다(SCRUM-95). 실제 연료 랩에서 남은 레이스 랩을 뺀다.
         if self._effects.fuel_margin_laps is not None:
-            fuel_remaining = max(0.0, remaining_laps - self._effects.fuel_margin_laps)
-            fuel = min(FUEL_CAPACITY_KG, fuel_remaining * FUEL_PER_LAP_KG)
+            # 시나리오는 `margin_laps`만큼 모자란 상황을 만든다.
+            fuel_laps = max(0.0, remaining_laps - self._effects.fuel_margin_laps)
         else:
-            fuel = max(0.0, FUEL_START_KG - FUEL_PER_LAP_KG * progress)
-            fuel_remaining = (fuel / FUEL_PER_LAP_KG) if FUEL_PER_LAP_KG else 0.0
+            fuel_kg = max(0.0, FUEL_START_KG - FUEL_PER_LAP_KG * progress)
+            fuel_laps = (fuel_kg / FUEL_PER_LAP_KG) if FUEL_PER_LAP_KG else 0.0
+        fuel_remaining = fuel_laps - remaining_laps
+        fuel = min(FUEL_CAPACITY_KG, fuel_laps * FUEL_PER_LAP_KG)
         tyre_age = (
             self._effects.tyre_age_override
             if self._effects.tyre_age_override is not None
@@ -1188,6 +1192,13 @@ class DemoSender:
             float(self._laps), (state.lap - 1) + state.lap_distance_m / self._track.length_m
         )
         fuel = max(0.0, FUEL_START_KG - FUEL_PER_LAP_KG * progress)
+        fuel_laps = (fuel / FUEL_PER_LAP_KG) if FUEL_PER_LAP_KG else 0.0
+        remaining_laps = max(
+            0.0,
+            float(self._laps)
+            - (state.lap - 1)
+            - state.lap_distance_m / self._track.length_m,
+        )
         entry.update(
             traction_control=0,
             anti_lock_brakes=0,
@@ -1196,7 +1207,8 @@ class DemoSender:
             pit_limiter_status=0,
             fuel_in_tank=fuel,
             fuel_capacity=FUEL_CAPACITY_KG,
-            fuel_remaining_laps=(fuel / FUEL_PER_LAP_KG) if FUEL_PER_LAP_KG else 0.0,
+            # AI 차도 게임과 같이 MFD의 여유 랩(+/-)을 보낸다(SCRUM-95).
+            fuel_remaining_laps=fuel_laps - remaining_laps,
             max_rpm=15_000,
             idle_rpm=4_000,
             max_gears=8,

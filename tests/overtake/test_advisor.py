@@ -559,6 +559,49 @@ def test_normal_overtake_uses_calm_wording() -> None:
     assert messages[0].evidence["mood"] == "calm"
 
 
+def test_short_race_last_laps_uses_hyped_wording() -> None:
+    """5랩 단축 레이스도 남은 랩 3 이하면 격앙 표현을 쓴다."""
+    advisor = _advisor()
+    snapshot = _snapshot(
+        gap_s=0.6,
+        lap=3,
+        player_status={"drs_allowed": 1, "drs_distance": 150},
+    )
+    snapshot["packets"]["session"]["total_laps"] = 5
+
+    messages = advisor.evaluate(snapshot, None, NOW_NS)
+
+    assert len(messages) == 1
+    assert messages[0].evidence["mood"] == "hyped"
+
+
+@pytest.mark.parametrize(
+    ("session_type", "total_laps"),
+    [
+        (1, 50),  # FP1: 레이스 세션이 아니다.
+        (5, 50),  # Q1: 레이스 세션이 아니다.
+        (SESSION_TYPE_RACE, 0),  # 레이스지만 total_laps가 없다.
+    ],
+)
+def test_no_last_lap_wording_without_race_distance(
+    session_type: int, total_laps: int
+) -> None:
+    """레이스 거리가 없으면 48랩째여도 '마지막 랩들'로 보지 않는다."""
+    advisor = _advisor()
+    snapshot = _snapshot(
+        gap_s=0.6,
+        lap=48,
+        session_type=session_type,
+        player_status={"drs_allowed": 1, "drs_distance": 150},
+    )
+    snapshot["packets"]["session"]["total_laps"] = total_laps
+
+    messages = advisor.evaluate(snapshot, None, NOW_NS)
+
+    assert len(messages) == 1
+    assert messages[0].evidence["mood"] == "calm"
+
+
 # ---------------------------------------------------------------------------
 # 무전 계층 연동 (설계 6.7)
 

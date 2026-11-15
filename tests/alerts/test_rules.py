@@ -25,7 +25,12 @@ from f1re.state.events import Event, EventKind
 NOW = 1_000_000_000_000
 PLAYER = 0
 
-_SESSION = {"total_laps": 50, "safety_car_status": 0, "num_red_flag_periods": 0}
+_SESSION = {
+    "session_type": 10,
+    "total_laps": 50,
+    "safety_car_status": 0,
+    "num_red_flag_periods": 0,
+}
 _LAP = {
     "current_lap_num": 10,
     "penalties": 0,
@@ -223,16 +228,73 @@ def test_damage_alerts() -> None:
 
 def test_fuel_short_alert() -> None:
     rules = _rules()
-    # 남은 레이스 랩 = 50 - 10 + 1 = 41, 남은 연료 랩 = 12 → 여유 -29랩
-    messages = rules.evaluate(_snapshot(status={"fuel_remaining_laps": 12.0}))
+    # 남은 레이스 랩 = 50 - 10 + 1 = 41. 게임 MFD 여유 랩이 -29랩이라는 뜻이다.
+    messages = rules.evaluate(_snapshot(status={"fuel_remaining_laps": -29.0}))
     assert len(messages) == 1
     assert messages[0].text in _urgent("safety.fuel_short", laps=29)
     assert messages[0].evidence["metric"] == "fuel_laps_margin"
     assert messages[0].evidence["value"] == pytest.approx(-29.0)
+    # 남은 레이스 랩은 근거로만 남는다(계산에 다시 빼지 않는다).
+    assert messages[0].evidence["remaining_race_laps"] == pytest.approx(41.0)
 
     # 정확히 0이면 아직 부족은 아니다(WARN). 말하지 않는다.
     exact = _rules()
-    assert exact.evaluate(_snapshot(status={"fuel_remaining_laps": 41.0})) == []
+    assert exact.evaluate(_snapshot(status={"fuel_remaining_laps": 0.0})) == []
+
+
+def test_fuel_margin_is_not_subtracted_twice_from_recorded_sample() -> None:
+    """실제 오경보 표본(SCRUM-95): MFD 여유 0.0랩, 남은 레이스 2랩.
+
+    예전에는 남은 레이스 랩 2를 또 빼서 -2랩이라고 말했다. 이제는 여유
+    0.0랩이므로 위험(DANGER)이 아니고 무전도 나가지 않는다.
+    """
+    rules = _rules()
+    messages = rules.evaluate(
+        _snapshot(
+            lap={"current_lap_num": 49},
+            status={"fuel_remaining_laps": 0.0},
+        )
+    )
+    assert messages == []
+
+
+@pytest.mark.parametrize("session_type", [1, 5, 13])
+def test_fuel_alert_suppressed_without_race_distance(
+    session_type: int,
+) -> None:
+    """FP(1)·Q(5)·TT(13)에는 레이스 거리가 없으므로 연료 부족을 말하지 않는다."""
+    messages = _rules().evaluate(
+        _snapshot(
+            session={"session_type": session_type},
+            status={"fuel_remaining_laps": -10.0},
+        )
+    )
+    assert messages == []
+
+
+def test_fuel_alert_suppressed_when_total_laps_is_zero() -> None:
+    """레이스 세션이라도 total_laps가 0이면 남은 레이스 랩을 알 수 없다."""
+    messages = _rules().evaluate(
+        _snapshot(
+            session={"total_laps": 0},
+            status={"fuel_remaining_laps": -10.0},
+        )
+    )
+    assert messages == []
+
+
+def test_fuel_alert_in_short_race_uses_mfd_margin() -> None:
+    """5랩 단축 레이스의 4랩째: 남은 2랩, MFD 여유 -1.5랩이면 위험하다."""
+    messages = _rules().evaluate(
+        _snapshot(
+            session={"total_laps": 5},
+            lap={"current_lap_num": 4},
+            status={"fuel_remaining_laps": -1.5},
+        )
+    )
+    assert len(messages) == 1
+    assert messages[0].text in _urgent("safety.fuel_short", laps=1.5)
+    assert messages[0].evidence["remaining_race_laps"] == pytest.approx(2.0)
 
 
 def test_no_alerts_without_player_car() -> None:
@@ -582,11 +644,11 @@ def test_followup_radio_survives_playback_and_priority() -> None:
     for message in lap3:
         assert queue.push(message)
 
-    # 랩 4: 연료 마이너스.
+    # 랩 4: 연료 마이너스(MFD 여유 -29랩).
     lap4 = rules.evaluate(
         _snapshot(
             damage={"tyres_wear": [88.0] * 4},
-            status={"fuel_remaining_laps": 12.0},
+            status={"fuel_remaining_laps": -29.0},
         )
     )
     assert len(lap4) == 1

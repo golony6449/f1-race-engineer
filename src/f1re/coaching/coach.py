@@ -70,6 +70,7 @@ from f1re.laps.traces import (
     LapTrace,
     Sample,
 )
+from f1re.race_distance import remaining_race_laps
 from f1re.radio.queue import (
     COACHING_TTL_NS,
     RadioKind,
@@ -958,13 +959,17 @@ def _surface(value: Any) -> tuple[int, ...] | None:
 def _remaining_laps_from_state(
     state: Mapping[str, Any], fallback: float | None
 ) -> float | None:
-    """남은 랩 수. `remaining_laps`가 없으면 총 랩·현재 랩으로 계산한다."""
+    """남은 랩 수. `remaining_laps`가 없으면 레이스 거리로 계산한다.
+
+    레이스가 아니거나 `total_laps`가 0·없으면 `None`이다(SCRUM-95).
+    """
     remaining = _number(state.get("remaining_laps"))
     if remaining is None:
-        total = _number(state.get("total_laps"))
-        lap = _number(state.get("lap_num", state.get("current_lap_num")))
-        if total is not None and lap is not None:
-            remaining = max(total - lap + 1.0, 0.0)
+        remaining = remaining_race_laps(
+            state.get("session_type"),
+            state.get("total_laps"),
+            state.get("lap_num", state.get("current_lap_num")),
+        )
     return remaining if remaining is not None else fallback
 
 

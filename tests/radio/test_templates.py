@@ -294,6 +294,10 @@ def test_mood_selection_rules() -> None:
     assert is_last_laps(3) is True
     assert is_last_laps(2.9) is True
     assert is_last_laps(4) is False
+    assert is_last_laps(1) is True
+    # 0 이하는 레이스 도중 나올 수 없다(레이스 거리 없음·total_laps 0).
+    assert is_last_laps(0) is False
+    assert is_last_laps(-1) is False
     assert is_last_laps(None) is False
 
 

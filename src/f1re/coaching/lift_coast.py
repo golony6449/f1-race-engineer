@@ -34,8 +34,9 @@
 `on_sample(car_state, dist_m, now_ns)`의 `car_state`는 `coaching.coach.Coach`와
 같은 키를 쓰고, 리프트 판단에 다음 키를 더 읽는다(모두 선택).
 
-- `fuel_laps_margin`: 남은 연료 랩 - 남은 레이스 랩. 없으면
-  `fuel_remaining_laps`와 `remaining_race_laps`의 차이로 계산한다.
+- `fuel_laps_margin`: 게임 MFD의 연료 여유 랩(남은 레이스 거리 대비 +/-).
+  없으면 `fuel_remaining_laps`를 그대로 쓴다(SCRUM-95). 레이스 거리가 없는
+  세션에서는 이 사유로 지시하지 않는다.
 - `brake_temp`(브레이크 4개 중 최대) 또는 `brake_temps`(4개 목록)
 - `tyre_temp`(앞 타이어 최대) 또는 `tyre_temps`(패킷 순서 4개 목록,
   앞은 인덱스 2·3)
@@ -74,6 +75,11 @@ from f1re.laps.traces import (
     RACE_SESSION_TYPES,
     LapTrace,
     Sample,
+)
+from f1re.race_distance import (
+    fuel_laps_margin,
+    race_distance_known,
+    remaining_race_laps,
 )
 from f1re.radio.queue import RadioKind, RadioMessage, RadioQueue
 from f1re.radio.templates import (
@@ -992,14 +998,19 @@ class LiftCoastCoach:
         self, state: Mapping[str, Any], now_ns: int
     ) -> list[RadioMessage]:
         """위험 지표를 갱신하고, 여유가 돌아오면 "리프트 그만"을 한 번 낸다."""
-        fuel = _number(state.get("fuel_laps_margin"))
+        # `fuel_laps_margin`은 게임 MFD 값 그대로다. 남은 레이스 랩을 다시
+        # 빼지 않는다(SCRUM-95).
+        fuel = fuel_laps_margin(state.get("fuel_laps_margin"))
         if fuel is None:
-            remaining = _number(state.get("fuel_remaining_laps"))
-            race_laps = _number(state.get("remaining_race_laps"))
-            if remaining is not None and race_laps is not None:
-                fuel = remaining - race_laps
+            fuel = fuel_laps_margin(state.get("fuel_remaining_laps"))
         if fuel is not None:
             self._fuel_margin = fuel
+
+        # 레이스 거리가 없는 세션(FP·Q·TT, total_laps 0·없음)에서는 연료
+        # 절약 코칭을 하지 않는다. 값 자체는 화면 표시용으로 남긴다.
+        race_known = race_distance_known(
+            self._session_type_of(state), _number(state.get("total_laps"))
+        )
 
         brake = _number(state.get("brake_temp"))
         if brake is None:
@@ -1012,7 +1023,11 @@ class LiftCoastCoach:
             self._front_tyre_temp = tyre
 
         severities = {
-            "fuel_laps_margin": severity("fuel_laps_margin", self._fuel_margin),
+            "fuel_laps_margin": (
+                severity("fuel_laps_margin", self._fuel_margin)
+                if race_known
+                else Severity.NO_DATA
+            ),
             "brake_temp": severity("brake_temp", self._brake_temp),
             "tyre_temp": severity("tyre_temp", self._front_tyre_temp),
         }
@@ -1428,13 +1443,17 @@ def _number(value: Any, default: float | None = None) -> float | None:
 def _remaining_laps_from_state(
     state: Mapping[str, Any], fallback: float | None
 ) -> float | None:
-    """남은 랩 수. `remaining_laps`가 없으면 총 랩·현재 랩으로 계산한다."""
+    """남은 랩 수. `remaining_laps`가 없으면 레이스 거리로 계산한다.
+
+    레이스가 아니거나 `total_laps`가 0·없으면 `None`이다(SCRUM-95).
+    """
     remaining = _number(state.get("remaining_laps"))
     if remaining is None:
-        total = _number(state.get("total_laps"))
-        lap = _number(state.get("lap_num", state.get("current_lap_num")))
-        if total is not None and lap is not None:
-            remaining = max(total - lap + 1.0, 0.0)
+        remaining = remaining_race_laps(
+            state.get("session_type"),
+            state.get("total_laps"),
+            state.get("lap_num", state.get("current_lap_num")),
+        )
     return remaining if remaining is not None else fallback
 
 

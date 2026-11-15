@@ -43,7 +43,8 @@ from typing import Any
 from f1re.coaching.metrics import corner_metrics
 from f1re.coaching.reference import NON_AI_SESSION_TYPES
 from f1re.config import AppConfig
-from f1re.laps.traces import RACE_SESSION_TYPES, LapTrace
+from f1re.laps.traces import LapTrace
+from f1re.race_distance import remaining_race_laps
 from f1re.radio.queue import RadioKind, RadioMessage, RadioQueue
 from f1re.radio.templates import (
     CLOSE_OVERTAKE_GAP_S,
@@ -612,11 +613,8 @@ def _view(snapshot: Mapping[str, Any] | None) -> _View:
     session_type = _integer(session.get("session_type"))
     lap = _integer(player_entry.get("current_lap_num"))
     total_laps = _integer(session.get("total_laps"))
-    remaining_laps = (
-        max(total_laps - lap + 1, 0)
-        if total_laps is not None and lap is not None
-        else None
-    )
+    # 레이스가 아니거나 total_laps가 0·없으면 마지막 랩 판정을 하지 않는다.
+    remaining_laps = remaining_race_laps(session_type, total_laps, lap)
 
     return _View(
         session_uid=_integer(source.get("session_uid")),
@@ -632,9 +630,7 @@ def _view(snapshot: Mapping[str, Any] | None) -> _View:
         lap=lap,
         distance=_number(player_entry.get("lap_distance")) or 0.0,
         gap_s=_gap_seconds(player_entry) if ahead_index is not None else None,
-        last_laps=(
-            session_type in RACE_SESSION_TYPES and is_last_laps(remaining_laps)
-        ),
+        last_laps=is_last_laps(remaining_laps),
     )
 
 

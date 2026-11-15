@@ -24,7 +24,7 @@ from f1re.demo_sender.scenarios import (
     load_scenarios,
     parse_scenarios,
 )
-from f1re.demo_sender.sender import DemoSender, main
+from f1re.demo_sender.sender import FUEL_PER_LAP_KG, DemoSender, main
 from f1re.tracks.model import Corner, Track, load_outline, load_track
 from f1re.tracks.outline import TrackOutline
 from f1re.udp.parser import Packet, parse_packet
@@ -690,10 +690,22 @@ def test_fuel_short_makes_negative_margin() -> None:
         [_event(1, "fuel_short", margin_laps=2.0)], laps=5, duration_s=1.0
     )
     status = _of(packets, PacketId.CAR_STATUS)[0].body["car_status_data"][0]
-    # 1랩 시작: 남은 레이스 5랩, 연료는 2랩 모자라 3랩 분량이어야 한다.
-    assert status["fuel_remaining_laps"] < 5.0 - 1.0
-    assert status["fuel_remaining_laps"] <= 3.01
-    assert status["fuel_in_tank"] <= 3.0 * 1.8 + 0.1
+    # 1랩 시작: 남은 레이스 5랩, 연료는 2랩 모자라 MFD 여유 -2랩이다.
+    # `fuel_remaining_laps`는 이제 실제 연료 랩(3랩)이 아니라 여유 랩이다.
+    assert status["fuel_remaining_laps"] == pytest.approx(-2.0, abs=0.05)
+    assert status["fuel_in_tank"] == pytest.approx(
+        3.0 * FUEL_PER_LAP_KG, abs=0.1
+    )
+
+
+def test_default_fuel_remaining_laps_is_mfd_margin() -> None:
+    """기본 주행도 `fuel_remaining_laps` = 남은 연료 랩 - 남은 레이스 랩이다."""
+    packets = _run([], mode="gp", laps=5, duration_s=1.0)
+    status = _of(packets, PacketId.CAR_STATUS)[0].body["car_status_data"][0]
+
+    assert status["fuel_remaining_laps"] == pytest.approx(
+        status["fuel_in_tank"] / FUEL_PER_LAP_KG - 5.0, abs=0.05
+    )
 
 
 def test_drs_and_tyre_age_scenario() -> None:
