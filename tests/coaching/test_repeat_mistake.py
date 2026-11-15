@@ -13,9 +13,10 @@ from collections.abc import Iterable
 
 import pytest
 
-from f1re.coaching.coach import REPEAT_STREAK_LAPS, Coach
+from f1re.coaching.coach import REPEAT_STREAK_LAPS, Coach, CoachConfig
 from f1re.coaching.focus import FocusConfig
 from f1re.coaching.reference import ReferenceSet
+from f1re.config import CoachingSensitivityConfig
 from f1re.demo_sender.driving import DriverProfile, Sample as DrivingSample, generate_lap
 from f1re.demo_sender.scenarios import corner_effects, parse_scenarios
 from f1re.laps.traces import LapTrace, Sample
@@ -30,6 +31,17 @@ _SUZUKA_OUTLINE = load_outline(SUZUKA_ID)
 assert _SUZUKA is not None and _SUZUKA_OUTLINE is not None
 SUZUKA: Track = _SUZUKA
 OUTLINE = _SUZUKA_OUTLINE
+
+# 반복 실수 규칙 자체를 확인하기 위해 옛 민감도·손실 하한을 쓴다. 데모 효과는
+# 코너 손실이 0에 가까워 SCRUM-124 기본값(브레이크 8m, 100ms 하한)에서는 무전이
+# 나가지 않는다. 새 기본값·접전 제외는 test_traffic_and_sensitivity.py가 확인한다.
+_RELAXED_SENSITIVITY = CoachingSensitivityConfig(
+    brake_diff_m=3.0,
+    turn_in_diff_m=3.0,
+    min_speed_diff_kmh=2.0,
+    # 옛 동작처럼 손실 하한을 두지 않는다(빠른 코너도 원인 확인용으로 발화).
+    min_corner_loss_ms=-10_000,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -105,6 +117,7 @@ def _coach(track: Track = SUZUKA, *, focus: Iterable[int] = (9,), **kwargs) -> C
     references = ReferenceSet(track.corners)
     # 기준은 다른 차(1번)의 가장 최근 랩이다(SCRUM-94).
     references.update(_trace(track, 99))
+    kwargs.setdefault("config", CoachConfig(sensitivity=_RELAXED_SENSITIVITY))
     coach = Coach(
         track,
         references=references,
@@ -127,6 +140,8 @@ def _state(sample: Sample, lap: int) -> dict:
         "x": sample.x,
         "z": sample.z,
         "surface": sample.surface,
+        "in_traffic": sample.in_traffic,
+        "position_changed": sample.position_changed,
         "lap_num": lap,
     }
 

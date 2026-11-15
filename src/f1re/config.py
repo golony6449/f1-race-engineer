@@ -15,6 +15,27 @@ class ConfigError(Exception):
 
 
 @dataclass(frozen=True)
+class CoachingSensitivityConfig:
+    """코너 코칭 원인 판정 민감도(SCRUM-124).
+
+    브레이크·턴인 지점 차이는 3~6m 같은 사소한 오차로 코칭하지 않도록 8m를
+    기본값으로 둔다. 정점 최저속도는 4km/h, 스로틀 재개 8m, 조향 수정 2회,
+    라인 이탈 1.5m를 쓴다. `min_corner_loss_ms`(100ms)보다 손실이 작은 코너는
+    원인 문턱을 넘어도 코칭하지 않는다.
+
+    값의 근거는 2026-11-15 실제 F1 25 레이스 녹화(`recording-6.f1rec`) 분석이다.
+    """
+
+    brake_diff_m: float = 8.0
+    turn_in_diff_m: float = 8.0
+    min_speed_diff_kmh: float = 4.0
+    throttle_diff_m: float = 8.0
+    steer_corrections: int = 2
+    line_dev_m: float = 1.5
+    min_corner_loss_ms: int = 100
+
+
+@dataclass(frozen=True)
 class TTSConfig:
     """Qwen TTS 클라이언트 설정."""
 
@@ -131,6 +152,10 @@ class AppConfig:
     overtake_gap_s: float = 1.0
     overtake_per_lap: int = 1
     udp_port: int = 20777
+    # 코너 코칭 민감도(SCRUM-124). 기존 위치 인자 호출과 호환되도록 맨 뒤에 둔다.
+    coaching: CoachingSensitivityConfig = dataclasses.field(
+        default_factory=CoachingSensitivityConfig
+    )
 
 
 def repo_root() -> Path:
@@ -165,6 +190,7 @@ def load_config(path: str | Path | None = None) -> AppConfig:
     radio_values = raw.get("radio", {})
     recording_values = raw.get("recording", {})
     llm_values = raw.get("llm", {})
+    coaching_values = raw.get("coaching", {})
     if (
         not isinstance(global_values, dict)
         or not isinstance(tts_values, dict)
@@ -172,9 +198,10 @@ def load_config(path: str | Path | None = None) -> AppConfig:
         or not isinstance(radio_values, dict)
         or not isinstance(recording_values, dict)
         or not isinstance(llm_values, dict)
+        or not isinstance(coaching_values, dict)
     ):
         raise ConfigError(
-            "[global], [tts], [web], [radio], [recording], [llm]는 "
+            "[global], [tts], [web], [radio], [recording], [llm], [coaching]는 "
             "표(table)여야 합니다"
         )
 
@@ -184,11 +211,12 @@ def load_config(path: str | Path | None = None) -> AppConfig:
         radio=_build(RadioConfig, radio_values, "radio"),
         recording=_build_recording(recording_values),
         llm=_build(LLMConfig, llm_values, "llm"),
+        coaching=_build(CoachingSensitivityConfig, coaching_values, "coaching"),
         **_known_fields(
             AppConfig,
             global_values,
             "global",
-            skip={"tts", "web", "radio", "recording", "llm"},
+            skip={"tts", "web", "radio", "recording", "llm", "coaching"},
         ),
     )
     _validate(config)
@@ -281,3 +309,21 @@ def _validate(config: AppConfig) -> None:
         raise ConfigError("llm.max_tokens는 1 이상이어야 합니다")
     if not math.isfinite(llm.temperature) or not 0.0 <= llm.temperature <= 2.0:
         raise ConfigError("llm.temperature는 0.0~2.0이어야 합니다")
+
+    # 코너 코칭 민감도(SCRUM-124).
+    coaching = config.coaching
+    for name in ("brake_diff_m", "turn_in_diff_m", "throttle_diff_m"):
+        value = getattr(coaching, name)
+        if not math.isfinite(value) or value <= 0:
+            raise ConfigError(f"coaching.{name}은 0보다 큰 유한한 수여야 합니다")
+    if (
+        not math.isfinite(coaching.min_speed_diff_kmh)
+        or coaching.min_speed_diff_kmh < 0
+    ):
+        raise ConfigError("coaching.min_speed_diff_kmh는 0 이상이어야 합니다")
+    if coaching.steer_corrections < 1:
+        raise ConfigError("coaching.steer_corrections는 1 이상이어야 합니다")
+    if not math.isfinite(coaching.line_dev_m) or coaching.line_dev_m < 0:
+        raise ConfigError("coaching.line_dev_m은 0 이상이어야 합니다")
+    if coaching.min_corner_loss_ms < 0:
+        raise ConfigError("coaching.min_corner_loss_ms는 0 이상이어야 합니다")

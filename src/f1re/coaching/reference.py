@@ -13,6 +13,11 @@
 - 무효 랩(`LapTrace.valid is False`)은 어떤 경우에도 기준이 되지 않는다
   (리뷰 포커스 4: 아웃랩·피트·무효·SC/VSC·레이스 1랩). 세션 종류를 알면
   레이스 세션의 1랩(출발 혼전)도 `valid` 표시와 상관없이 뺀다.
+- 레이스 세션에서는 **접전 코너(SCRUM-124)** 랩을 그 코너의 기준 후보에서 뺀다.
+  앞/뒤차 1초 이내이거나 코너 안에서 순위가 바뀐 샘플이 있는 랩이다. 코너 하나만
+  접전이면 랩 전체를 버리지 않고 그 코너 후보에서만 제외해, 나머지 코너의
+  기준 정보는 그대로 쓴다. 비레이스 세션(타임 트라이얼·연습·예선)은 제외하지
+  않는다.
 - 최근 랩만 후보로 두므로 `prune()`은 차마다 가장 최근 유효 랩 하나만 남긴다
   (메모리 절약). 저장·요약에 쓰는 `best_lap()`은 코칭 비교와 달리 차마다 가장
   빠른 랩(최고 기록)을 따로 기억해 돌려준다.
@@ -32,7 +37,7 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 from f1re.coaching.metrics import corner_duration_ms
-from f1re.laps.traces import LapTrace, Sample
+from f1re.laps.traces import LapTrace, Sample, corner_has_traffic
 from f1re.tracks.model import Corner
 from f1re.tracks.outline import TrackOutline
 from f1re.udp.session_category import (
@@ -134,6 +139,7 @@ class ReferenceSet:
         출처는 내 차면 `"self"`, 다른 차면 `"recent_car"`다. 이번 세션에 쓸 랩이
         하나도 없을 때만 저장된 기준을 쓰며, 그때 다른 차 랩의 출처는
         `"fastest_car"`다. 같은 시간이면 내 차 랩, 그다음 낮은 차 인덱스를 쓴다.
+        레이스 세션에서는 그 코너가 접전이었던 랩을 후보에서 뺀다(SCRUM-124).
         """
         corner_def = self._corners.get(corner)
         if corner_def is None:
@@ -151,6 +157,14 @@ class ReferenceSet:
             if self.has_session_laps
             else self._stored_candidates()
         )
+        # 레이스 세션의 접전 코너는 그 코너의 기준 랩으로 쓰지 않는다(SCRUM-124).
+        # 코너 하나만 접전이면 랩 전체를 버리지 않고 그 코너 후보에서만 뺀다.
+        if is_race_session(self._session_type):
+            candidates = [
+                item
+                for item in candidates
+                if not corner_has_traffic(item[0].samples, corner_def)
+            ]
         if not candidates:
             return None
         return min(
@@ -407,6 +421,11 @@ def _sample_to_dict(sample: Sample) -> dict[str, Any]:
         data["fuel_kg"] = round(float(sample.fuel_kg), 3)
     if sample.surface is not None:
         data["surface"] = [int(value) for value in sample.surface]
+    # 접전 표시(SCRUM-124)는 있을 때만 저장해 기준 랩 JSON을 조금이라도 줄인다.
+    if sample.in_traffic:
+        data["in_traffic"] = True
+    if sample.position_changed:
+        data["position_changed"] = True
     return data
 
 
@@ -424,6 +443,8 @@ def _sample_from_dict(data: Mapping[str, Any]) -> Sample:
         wheel_slip=_as_wheel_slip(data.get("wheel_slip")),
         fuel_kg=_as_optional_float(data.get("fuel_kg")),
         surface=_as_surface(data.get("surface")),
+        in_traffic=bool(data.get("in_traffic", False)),
+        position_changed=bool(data.get("position_changed", False)),
     )
 
 

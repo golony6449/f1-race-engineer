@@ -4,10 +4,18 @@
 
 - 코너 탈출 지점(랩 거리 `Corner.exit_m`)을 처음 지나는 샘플에서 그 코너를 판단한다.
   집중 코너면 손실이 작아도 근거가 있으면 말하고, 아니면 손실이 `big_loss_ms`
-  (기본 0.3초) 이상이거나 트랙을 벗어났을 때만 말한다.
+  (기본 0.3초) 이상이거나 트랙을 벗어났을 때만 말한다. 단, 코너 손실이 0.1초
+  미만이면 집중 코너여도 말하지 않는다(SCRUM-124, 아래 참고).
 - 원인은 하나만 고른다(`pick_cause`). 트랙 이탈 > 브레이크 > 턴인 > 조향 수정 >
   정점 속도 > 스로틀 > 라인 순으로, 문턱값을 넘는 첫 원인을 쓴다. 근거가 약하면
   아무 말도 하지 않는다("도움 안 되는 말" 금지, 설계 2장).
+- **민감도와 손실 하한**(SCRUM-124): 브레이크·턴인 지점 차이 문턱은 8m라 3~6m
+  차이로는 말하지 않는다. 원인 문턱을 넘어도 코너 손실이
+  `min_corner_loss_ms`(100ms) 미만이면 말하지 않는다. 문턱 기본값은
+  `config/default.toml`의 `[coaching]`에서 읽는다.
+- **접전 코너 제외**(SCRUM-124): 레이스 세션에서 코너 구간 중 앞/뒤차와 1초
+  이내였거나 순위가 바뀐 코너는 코칭하지 않는다. 접전 중의 속도·조향·라인
+  차이는 내 실수가 아니기 때문이다. 비레이스 세션에는 적용하지 않는다.
 - 코칭 무전은 코너 탈출 직후 곧바로 큐에 넣는다(SCRUM-94, 사용자). 다음 직선으로
   미루지 않는다. 코칭 무전의 5초 유효 시간과 "새 코칭이 오면 옛 코칭 버리기"는
   `radio.queue.RadioQueue`가 맡는다. `defer_until_straight`는 리프트 앤 코스트
@@ -65,7 +73,7 @@ from f1re.coaching.metrics import (
     default_coaching_thresholds,
 )
 from f1re.coaching.reference import ReferenceSet, trace_outline
-from f1re.config import AppConfig
+from f1re.config import AppConfig, CoachingSensitivityConfig
 from f1re.laps.traces import (
     DRIVER_IN_LAP,
     DRIVER_IN_PIT,
@@ -75,6 +83,7 @@ from f1re.laps.traces import (
     PIT_LANE_STATUSES,
     LapTrace,
     Sample,
+    corner_has_traffic,
 )
 from f1re.race_distance import remaining_race_laps
 from f1re.radio.queue import (
@@ -98,19 +107,26 @@ from f1re.tracks.model import Corner, Track
 from f1re.tracks.outline import TrackOutline
 
 # ---------------------------------------------------------------------------
-# 원인 고르기 규칙(구현자가 정한 값, 데모 리플레이로 다듬는다)
+# 원인 고르기 규칙(SCRUM-124로 민감도를 낮췄다)
+#
+# 기본값은 `config/default.toml`의 `[coaching]`과 같다. 실제 값은 `Coach`가
+# 설정에서 받은 `CoachingSensitivityConfig`를 `pick_cause`에 넘겨 쓴다.
+# 아래 상수는 그 기본값을 밖에서 참고할 수 있게 노출한 것이다.
 
-# 브레이크·턴인 지점 차이 문턱(m). 이보다 작으면 그 원인으로 말하지 않는다.
-MIN_BRAKE_DIFF_M = 3.0
-MIN_TURN_IN_DIFF_M = 3.0
+# 브레이크·턴인 지점 차이 문턱(m). 3~6m 차이는 실제 레이스에서 대부분 0.1초
+# 미만의 손실이었고(녹화 분석), 그런 사소한 오차로 말하지 않도록 8m를 쓴다.
+MIN_BRAKE_DIFF_M = CoachingSensitivityConfig().brake_diff_m
+MIN_TURN_IN_DIFF_M = CoachingSensitivityConfig().turn_in_diff_m
 # 정점(최저) 속도 차이 문턱(km/h).
-MIN_MIN_SPEED_DIFF_KMH = 2.0
+MIN_MIN_SPEED_DIFF_KMH = CoachingSensitivityConfig().min_speed_diff_kmh
 # 스로틀을 다시 밟은 지점 차이 문턱(m).
-MIN_THROTTLE_DIFF_M = 8.0
+MIN_THROTTLE_DIFF_M = CoachingSensitivityConfig().throttle_diff_m
 # 조향 수정 횟수 차이 문턱(회).
-MIN_STEER_CORRECTIONS = 2
+MIN_STEER_CORRECTIONS = CoachingSensitivityConfig().steer_corrections
 # 기준 궤적에서 더 벗어난 거리 문턱(m).
-MIN_LINE_DEV_M = 1.5
+MIN_LINE_DEV_M = CoachingSensitivityConfig().line_dev_m
+# 코너 손실이 이보다 작으면(ms) 원인 문턱을 넘어도 코칭하지 않는다.
+MIN_CORNER_LOSS_MS = CoachingSensitivityConfig().min_corner_loss_ms
 
 # 무전 템플릿 키.
 CAUSE_BRAKE_LATE = "brake_late"
@@ -171,12 +187,18 @@ class Cause:
         return _CAUSE_TEMPLATES[self.key]
 
 
-def pick_cause(metrics: CornerMetrics, reference: CornerMetrics) -> Cause | None:
+def pick_cause(
+    metrics: CornerMetrics,
+    reference: CornerMetrics,
+    sensitivity: CoachingSensitivityConfig | None = None,
+) -> Cause | None:
     """지표 두 개를 비교해 시간 손실에 가장 크게 작용한 원인 하나를 고른다.
 
     설계 6.4의 예("브레이크가 늦고 정점 라인이 밖으로 밀렸으면 브레이크 늦음")처럼
     여러 원인이 겹치면 앞 순서의 원인을 쓴다. 문턱을 넘는 원인이 없으면 `None`.
+    `sensitivity`를 주면 설정 파일의 문턱을 쓴다(SCRUM-124).
     """
+    limits = sensitivity or CoachingSensitivityConfig()
     # 트랙 이탈은 그 자체로 가장 큰 사고이므로 맨 앞에 둔다. 무전은 거리(미터)를
     # 말하지 않고 바퀴 4개가 모두 나갔다는 사실만 전한다(SCRUM-93).
     if metrics.off_track:
@@ -194,7 +216,7 @@ def pick_cause(metrics: CornerMetrics, reference: CornerMetrics) -> Cause | None
 
     if metrics.brake_start_m is not None and reference.brake_start_m is not None:
         diff = metrics.brake_start_m - reference.brake_start_m
-        if diff >= MIN_BRAKE_DIFF_M:
+        if diff >= limits.brake_diff_m:
             meters = max(1, int(round(diff)))
             return Cause(
                 key=CAUSE_BRAKE_LATE,
@@ -207,7 +229,7 @@ def pick_cause(metrics: CornerMetrics, reference: CornerMetrics) -> Cause | None
                     "reference_brake_start_m": round(reference.brake_start_m, 1),
                 },
             )
-        if diff <= -MIN_BRAKE_DIFF_M:
+        if diff <= -limits.brake_diff_m:
             meters = max(1, int(round(-diff)))
             return Cause(
                 key=CAUSE_BRAKE_EARLY,
@@ -223,7 +245,7 @@ def pick_cause(metrics: CornerMetrics, reference: CornerMetrics) -> Cause | None
 
     if metrics.turn_in_m is not None and reference.turn_in_m is not None:
         diff = metrics.turn_in_m - reference.turn_in_m
-        if diff <= -MIN_TURN_IN_DIFF_M:
+        if diff <= -limits.turn_in_diff_m:
             meters = max(1, int(round(-diff)))
             return Cause(
                 key=CAUSE_TURN_IN_EARLY,
@@ -236,7 +258,7 @@ def pick_cause(metrics: CornerMetrics, reference: CornerMetrics) -> Cause | None
                     "reference_turn_in_m": round(reference.turn_in_m, 1),
                 },
             )
-        if diff >= MIN_TURN_IN_DIFF_M:
+        if diff >= limits.turn_in_diff_m:
             meters = max(1, int(round(diff)))
             return Cause(
                 key=CAUSE_TURN_IN_LATE,
@@ -251,7 +273,7 @@ def pick_cause(metrics: CornerMetrics, reference: CornerMetrics) -> Cause | None
             )
 
     extra_corrections = metrics.steer_corrections - reference.steer_corrections
-    if extra_corrections >= MIN_STEER_CORRECTIONS:
+    if extra_corrections >= limits.steer_corrections:
         return Cause(
             key=CAUSE_STEER_CORRECTIONS,
             amount=float(extra_corrections),
@@ -266,7 +288,7 @@ def pick_cause(metrics: CornerMetrics, reference: CornerMetrics) -> Cause | None
         )
 
     speed_drop = reference.min_speed - metrics.min_speed
-    if speed_drop >= MIN_MIN_SPEED_DIFF_KMH:
+    if speed_drop >= limits.min_speed_diff_kmh:
         kmh = max(1, int(round(speed_drop)))
         return Cause(
             key=CAUSE_MIN_SPEED_LOW,
@@ -285,7 +307,7 @@ def pick_cause(metrics: CornerMetrics, reference: CornerMetrics) -> Cause | None
         and reference.throttle_on_m is not None
     ):
         diff = metrics.throttle_on_m - reference.throttle_on_m
-        if diff >= MIN_THROTTLE_DIFF_M:
+        if diff >= limits.throttle_diff_m:
             meters = max(1, int(round(diff)))
             return Cause(
                 key=CAUSE_LATE_THROTTLE,
@@ -301,7 +323,7 @@ def pick_cause(metrics: CornerMetrics, reference: CornerMetrics) -> Cause | None
             )
 
     extra_line = metrics.max_line_dev_m - reference.max_line_dev_m
-    if extra_line >= MIN_LINE_DEV_M:
+    if extra_line >= limits.line_dev_m:
         meters = max(1, int(round(extra_line)))
         return Cause(
             key=CAUSE_LINE_WIDE,
@@ -421,6 +443,10 @@ class CoachConfig:
     brake_lead_m: float = 40.0
     # 개선 알림 무전 유효 시간(초).
     improvement_ttl_s: float = 10.0
+    # 원인 판정 민감도·손실 하한(SCRUM-124). `config/default.toml`의 `[coaching]`.
+    sensitivity: CoachingSensitivityConfig = field(
+        default_factory=CoachingSensitivityConfig
+    )
 
     def __post_init__(self) -> None:
         if self.focus_corner_count < 1:
@@ -441,6 +467,7 @@ class CoachConfig:
             focus_recent_laps=config.focus_recent_laps,
             big_loss_ms=int(round(config.big_loss_s * 1000.0)),
             defer_s=config.defer_s,
+            sensitivity=config.coaching,
         )
 
 
@@ -592,9 +619,12 @@ class Coach:
         messages: list[RadioMessage] = []
         previous = self._last_dist
         mood = mood_for(last_laps=self._in_last_laps)
+        race = self._is_race(state)
         if previous is not None and distance >= previous:
             for corner in self._crossed_exits(previous, distance):
-                messages.extend(self._coach_corner(corner, sample, now, mood))
+                messages.extend(
+                    self._coach_corner(corner, sample, now, mood, race=race)
+                )
         self._last_dist = distance
         return messages
 
@@ -768,6 +798,8 @@ class Coach:
             x=float(x),
             z=float(z),
             surface=_surface(state.get("surface")),
+            in_traffic=bool(state.get("in_traffic")),
+            position_changed=bool(state.get("position_changed")),
         )
 
     def _crossed_exits(self, previous: float, distance: float) -> list[Corner]:
@@ -786,9 +818,16 @@ class Coach:
         sample: Sample,
         now_ns: int,
         mood: Mood = Mood.CALM,
+        *,
+        race: bool = False,
     ) -> list[RadioMessage]:
         self._crossed.add(corner.number)
         if len(self._samples) < 2:
+            return []
+        # 레이스 접전 코너는 코칭하지 않는다(SCRUM-124). 접전 중의 속도·조향·라인
+        # 차이는 내 실수가 아니므로 비교 자체를 하지 않고 연속 실수 횟수도 끊는다.
+        if race and corner_has_traffic(self._samples, corner):
+            self._reset_streak(corner.number)
             return []
         reference = self._reference_for(corner.number)
         if reference is None:
@@ -815,6 +854,12 @@ class Coach:
             corner,
         )
 
+        # 손실 0.1초 미만은 원인 문턱을 넘어도 말하지 않는다(SCRUM-124). 집중
+        # 코너라도 예외가 아니다. 연속 실수 횟수는 여기서도 끊는다.
+        if loss_ms < self._config.sensitivity.min_corner_loss_ms:
+            self._reset_streak(corner.number)
+            return []
+
         focused = self._focus.contains(corner.number)
         if (
             not focused
@@ -824,7 +869,7 @@ class Coach:
             # 코너가 개선돼 코칭 조건을 넘지 못했다. 연속 실수 횟수를 끊는다.
             self._reset_streak(corner.number)
             return []
-        cause = pick_cause(metrics, reference_metrics)
+        cause = pick_cause(metrics, reference_metrics, self._config.sensitivity)
         if cause is None:
             # 근거가 약하면 말하지 않는다(설계 2장 "도움 안 되는 말" 금지).
             # 코너가 좋아졌다는 뜻이므로 연속 실수 횟수도 끊는다.
@@ -860,7 +905,7 @@ class Coach:
 
         직전 코칭이 같은 원인이고 바로 앞 랩이면 이어 세고, 그 밖에는 1부터
         다시 센다. 다른 원인이 나오거나 코너를 한 랩 건너뛰면(개선·무효 랩·
-        피트 등) 자동으로 초기화된다.
+        피트·접전 제외·손실 하한 미달 등) 자동으로 초기화된다.
         """
         previous_key = self._cause_key.get(corner)
         previous_lap = self._cause_lap.get(corner)
@@ -1133,6 +1178,7 @@ __all__ = [
     "CAUSE_STEER_CORRECTIONS",
     "CAUSE_TURN_IN_EARLY",
     "CAUSE_TURN_IN_LATE",
+    "MIN_CORNER_LOSS_MS",
     "REPEAT_STREAK_LAPS",
     "Cause",
     "Coach",

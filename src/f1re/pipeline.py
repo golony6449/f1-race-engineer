@@ -29,6 +29,10 @@
   자동 탐지 경로), `ReferenceStore.load_compatible`(트랙·모드·날씨·차)로
   저장된 기준·집중 코너를 불러오고, 코칭 문장을 `VoiceCache.prefetch`로 미리
   만든다. 랩 완료·세션 끝·엔진 OFF에 `ReferenceStore.save`로 저장한다.
+- **접전 코너**(SCRUM-124): 레이스 세션에서 Lap Data의 앞/뒤차 간격(1초 이내)과
+  순위 변동을 코치 입력 샘플에 표시한다. `LapTraceRecorder`도 같은 값으로 완료
+  랩 샘플에 표시해, 접전 코너는 코칭·기준 랩·집중 코너 계산에서 빠진다. 비레이스
+  세션(타임 트라이얼·연습·예선)은 판정하지 않는다.
 - **세션 재시작·플래시백**(리뷰 포커스 1): `sessionUID`가 바뀌면 코치·기준·
   집중 코너·기록기를 모두 새로 만든다. 프레임 되감기·랩 거리 후진·FLBK는 그
   랩을 무효로 표시해 코칭·기준 랩에 쓰지 않는다. 프로그램은 멈추지 않는다.
@@ -81,6 +85,7 @@ from f1re.laps.traces import (
     PIT_LANE_STATUSES,
     LapTrace,
     LapTraceRecorder,
+    battle_traffic,
 )
 from f1re.overtake.advisor import OvertakeAdvisor, OvertakeConfig
 from f1re.overtake.reaction import OvertakeReactionTracker, ReactionContext
@@ -209,6 +214,12 @@ class RacePipeline:
         self._player_last_distance: float | None = None
         self._invalid_reasons: set[str] = set()
         self._max_frame: int | None = None
+
+        # 접전 판정(SCRUM-124): 레이스에서 앞/뒤차 1초 이내이거나 순위가 바뀐
+        # 샘플을 코치 입력에 표시한다. 순위 변동은 샘플 하나에만 붙인다.
+        self._player_in_traffic = False
+        self._player_position: int | None = None
+        self._position_changed = False
 
         self._pending_traces: list[LapTrace] = []
         self._traces_by_car: dict[int, list[LapTrace]] = {}
@@ -385,6 +396,9 @@ class RacePipeline:
         self._player_lap_number = None
         self._player_last_distance = None
         self._invalid_reasons.clear()
+        self._player_in_traffic = False
+        self._player_position = None
+        self._position_changed = False
         self._ref_path_cache.clear()
         self._ref_points_cache.clear()
         self._ref_metrics_cache.clear()
@@ -438,6 +452,10 @@ class RacePipeline:
             self._strategy = None
             self._strategy_narrator = None
             self._cancel_strategy_tasks()
+            # 접전 판정은 레이스 세션에서만 한다(SCRUM-124).
+            self._player_in_traffic = False
+            self._player_position = None
+            self._position_changed = False
 
         weather = _int(body.get("weather"))
         if weather is not None:
@@ -681,6 +699,20 @@ class RacePipeline:
             return
         self._player_lap = entry
 
+        # 접전 판정(SCRUM-124): 레이스에서만 앞/뒤차 간격과 순위 변동을 본다.
+        if is_race_session(self._session_type):
+            self._player_in_traffic = battle_traffic(entries, index)
+            position = _int(entry.get("car_position"))
+            if position is not None:
+                if (
+                    self._player_position is not None
+                    and position != self._player_position
+                ):
+                    self._position_changed = True
+                self._player_position = position
+        else:
+            self._player_in_traffic = False
+
         lap = _int(entry.get("current_lap_num"))
         if lap is not None and lap > 0:
             if self._player_lap_number is None or lap > self._player_lap_number:
@@ -803,6 +835,8 @@ class RacePipeline:
             coach.on_sample(car_state, distance, now)
         if lift is not None:
             lift.on_sample(car_state, distance, now)
+        # 순위 변동 표시는 샘플 하나에만 붙인다(SCRUM-124).
+        self._position_changed = False
 
     def _car_state(self, telemetry: Mapping[str, Any]) -> dict[str, Any] | None:
         """Car Telemetry·Lap Data·Status·Motion을 코치 입력 하나로 묶는다."""
@@ -850,6 +884,8 @@ class RacePipeline:
             "surface": _surface_types(telemetry.get("surface_type")),
             "lap_valid": not invalid,
             "invalid_reason": next(iter(self._invalid_reasons), None),
+            "in_traffic": self._player_in_traffic,
+            "position_changed": self._position_changed,
             "in_pit": _int(lap.get("pit_status")) in (1, 2),
             "driver_status": _int(lap.get("driver_status")),
             "pit_status": _int(lap.get("pit_status")),

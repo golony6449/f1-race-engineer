@@ -24,7 +24,8 @@ from pathlib import Path
 import pytest
 
 from f1re import db
-from f1re.coaching.coach import Coach
+from f1re.coaching.coach import Coach, CoachConfig
+from f1re.config import CoachingSensitivityConfig
 from f1re.coaching.focus import FocusConfig, FocusSet
 from f1re.coaching.reference import (
     SOURCE_FASTEST_CAR,
@@ -181,6 +182,16 @@ def _coach(reference: ReferenceSet | None, focus: tuple[int, ...]) -> Coach:
         TRACK,
         references=reference or ReferenceSet(TRACK.corners),
         focus_config=FocusConfig(count=5, recent_laps=3),
+        # 이 테스트는 저장 기준으로 1랩부터 코칭이 나가는지만 본다. 데모 효과는
+        # 손실이 작아 SCRUM-124 기본값에서는 발화하지 않으므로 옛 민감도를 쓴다.
+        config=CoachConfig(
+            sensitivity=CoachingSensitivityConfig(
+                brake_diff_m=3.0,
+                turn_in_diff_m=3.0,
+                min_speed_diff_kmh=2.0,
+                min_corner_loss_ms=-10_000,
+            )
+        ),
     )
     if focus:
         coach.seed_focus(focus)
