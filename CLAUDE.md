@@ -9,3 +9,4 @@ F1 25 UDP 텔레메트리 기반 한국어 AI 레이스 엔지니어.
 - 공개 레포다. 비밀값·키 값, 상용 앱 분석 자료는 넣지 않는다. 비밀값은 공용 시크릿 모듈(`~/.claude/bin/claude_secrets.py`)의 `get()`으로만 읽는다.
 - 주석·문서·커밋 메시지는 한국어. 브랜치 `feature/SCRUM-<번호>`, PR 제목 앞에 `[SCRUM-<번호>]`.
 - 테스트: `uv run pytest`
+- 서킷 지식(코너·직선·DRS·추월 지점 등 무전용 레이아웃 정보)은 레포 `kb/` 폴더에 있다. 목록은 `kb/README.md`, 서킷별 문서는 `kb/circuits/<서킷>.md`(예: `kb/circuits/suzuka.md`). 추월·코칭 무전 기능을 만들거나 고칠 때 먼저 읽는다.
