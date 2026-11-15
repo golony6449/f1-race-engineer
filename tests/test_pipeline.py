@@ -288,7 +288,7 @@ def _telemetry_body() -> dict[str, Any]:
     return {"car_telemetry_data": entries}
 
 
-def _race_pipeline() -> RacePipeline:
+def _traffic_pipeline() -> RacePipeline:
     pipeline = RacePipeline(StateStore(), _Radio(), None, config=AppConfig())
     pipeline._session_uid = 1
     pipeline._player_index = 0
@@ -299,7 +299,7 @@ def _race_pipeline() -> RacePipeline:
 
 def test_lap_data_marks_traffic_when_car_ahead_within_one_second() -> None:
     """앞차와 1초 이내면 코치 입력 샘플에 접전 표시가 붙는다."""
-    pipeline = _race_pipeline()
+    pipeline = _traffic_pipeline()
     pipeline._on_lap_data(
         {"lap_data": _entries(_lap_entry(position=8, gap_ms=600))}
     )
@@ -313,7 +313,7 @@ def test_lap_data_marks_traffic_when_car_ahead_within_one_second() -> None:
 def test_lap_data_marks_traffic_when_car_behind_within_one_second() -> None:
     """바로 뒤 차가 1초 이내면(그 차의 앞차 간격) 접전으로 본다."""
     behind = _lap_entry(index=1, position=9, gap_ms=700)
-    pipeline = _race_pipeline()
+    pipeline = _traffic_pipeline()
     pipeline._on_lap_data(
         {
             "lap_data": _entries(
@@ -326,7 +326,7 @@ def test_lap_data_marks_traffic_when_car_behind_within_one_second() -> None:
 
 
 def test_lap_data_does_not_mark_traffic_outside_one_second() -> None:
-    pipeline = _race_pipeline()
+    pipeline = _traffic_pipeline()
     pipeline._on_lap_data(
         {"lap_data": _entries(_lap_entry(position=8, gap_ms=1200))}
     )
@@ -336,7 +336,7 @@ def test_lap_data_does_not_mark_traffic_outside_one_second() -> None:
 
 def test_lap_data_does_not_mark_traffic_outside_race() -> None:
     """타임 트라이얼 등 비레이스 세션은 간격이 가까워도 접전으로 보지 않는다."""
-    pipeline = _race_pipeline()
+    pipeline = _traffic_pipeline()
     pipeline._session_type = 18
     pipeline._on_lap_data(
         {"lap_data": _entries(_lap_entry(position=8, gap_ms=600))}
@@ -347,7 +347,7 @@ def test_lap_data_does_not_mark_traffic_outside_race() -> None:
 
 def test_lap_data_position_change_marks_next_sample() -> None:
     """코너 안 순위 변동을 다음 코치 입력 샘플 하나에 표시한다."""
-    pipeline = _race_pipeline()
+    pipeline = _traffic_pipeline()
     pipeline._on_lap_data(
         {"lap_data": _entries(_lap_entry(position=8, gap_ms=5000))}
     )
