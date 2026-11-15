@@ -5,16 +5,19 @@
                [--web-host HOST] [--web-port PORT] [--no-web]
                [--engine on|off]
 
-`--replay`가 있으면 녹화 파일을 같은 파이프라인(녹화 → 파싱 → 상태 → 사건)에
-흘려보내고, 없으면 UDP 20777(설정값)에서 게임 패킷을 받는다. 세션 시작·종료는
-SQLite `sessions` 표에 남긴다.
+`--replay`가 있으면 녹화 파일(`.f1rec` 또는 압축된 `.f1rec.zst`)을 같은
+파이프라인(녹화 → 파싱 → 상태 → 사건)에 흘려보내고, 없으면 UDP 20777(설정값)에서
+게임 패킷을 받는다. 세션 시작·종료는 SQLite `sessions` 표에 남긴다.
 
-실시간 수신(`--replay` 없음)에서는 같은 프로세스가 uvicorn 웹 대시보드도 띄운다
+실시간 수신에서는 같은 프로세스가 uvicorn 웹 대시보드도 띄운다
 (기본 `[web]` 설정, `0.0.0.0:8093`). 화면은 서버 API를 읽기만 한다(설계 6.9).
 웹 서버는 항상 뜨고, 게임 중에만 필요한 런타임(엔진)은 화면의 설정 모달이나
 `POST /api/engine`으로 켜고 끈다(SCRUM-82). 마지막 상태는
 `data/engine-state.json`에 남으며, 파일이 없으면 OFF로 시작한다.
 `--engine on|off`는 그 시작 상태를 덮어쓴다.
+엔진 ON 동안에는 `[recording]` 설정에 따라 세션별 원본(`.active/*.f1rec`)을
+자동 녹화한다(SCRUM-106). `--record DIR`의 수동 녹화는 자동 녹화와 함께
+동작하므로 개발·디버깅용으로 그대로 쓸 수 있다.
 리플레이는 개발·테스트용이라 웹 서버를 띄우지 않는다.
 """
 
@@ -28,7 +31,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from f1re.config import ConfigError, load_config
+from f1re.config import ConfigError, load_config, resolve_asset_path
 from f1re.db import open_db
 from f1re.engine import (
     ENGINE_OFF,
@@ -52,6 +55,10 @@ from f1re.udp.receiver import process_datagram
 # 세션 유지 시간(`--duration`)을 확인하는 주기(초).
 _WAIT_INTERVAL_S = 1.0
 
+# 웹 서버 lifespan(백업 워커 기동)이 끝나기를 기다리는 최대 시간(초).
+# 이 시간 안에 뜨지 못해도(포트 사용 중 등) 엔진은 그대로 켠다.
+_WEB_STARTUP_WAIT_S = 5.0
+
 
 def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
@@ -68,10 +75,18 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         "--port", type=int, default=None, help="UDP 포트(기본: 설정 파일, 20777)"
     )
     serve.add_argument(
-        "--record", type=Path, default=None, metavar="DIR", help="원본 녹화 폴더"
+        "--record",
+        type=Path,
+        default=None,
+        metavar="DIR",
+        help="개발용 수동 원본 녹화 폴더(자동 세션 녹화와 함께 동작)",
     )
     serve.add_argument(
-        "--replay", type=Path, default=None, metavar="FILE", help="리플레이할 .f1rec"
+        "--replay",
+        type=Path,
+        default=None,
+        metavar="FILE",
+        help="리플레이할 .f1rec 또는 .f1rec.zst",
     )
     serve.add_argument(
         "--db", type=Path, default=None, metavar="PATH", help="SQLite 파일 경로"
@@ -257,6 +272,12 @@ async def _run_live(
         initial_state=start_state,
     )
     web_server = _start_web_server(engine, web)
+    # 백업 워커(lifespan)가 `.active/` 복구를 끝낸 뒤에 엔진을 켠다. 엔진이
+    # 먼저 켜져 새 녹화를 쓰기 시작하면 기동 복구가 그 파일을 미완성으로
+    # 압축할 수 있다(SCRUM-106).
+    await _wait_web_server_ready(web_server)
+    if config.recording.enabled:
+        print(f"자동 세션 녹화: {resolve_asset_path(config.recording.dir)}")
     try:
         if start_state == ENGINE_ON:
             try:
@@ -325,6 +346,25 @@ def _start_web_server(
     else:
         print(f"웹 대시보드: http://{_browse_host(host)}:<빈 포트>")
     return server, task
+
+
+async def _wait_web_server_ready(
+    web_server: tuple[Any, asyncio.Task[None]] | None,
+) -> None:
+    """웹 서버 lifespan(백업 워커 기동·복구)이 끝나기를 잠깐 기다린다.
+
+    uvicorn의 `started`는 lifespan 시작이 끝난 뒤에 선다. 서버가 뜨지 못하면
+    (포트 사용 중 등) 기다리지 않고 돌아가 엔진은 그대로 켠다.
+    """
+    if web_server is None:
+        return
+    server, task = web_server
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + _WEB_STARTUP_WAIT_S
+    while not server.started:
+        if task.done() or loop.time() > deadline:
+            return
+        await asyncio.sleep(0.01)
 
 
 async def _stop_web_server(

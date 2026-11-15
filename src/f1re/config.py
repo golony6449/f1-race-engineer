@@ -59,12 +59,48 @@ class RadioConfig:
 
 
 @dataclass(frozen=True)
+class RecordingGcsConfig:
+    """녹화 파일 GCS 백업 설정(설계 4.3). 업로드는 시스템 `rclone` CLI가 한다.
+
+    기본값은 GCS를 끈 상태다. `[recording.gcs]` 섹션이 없는 설정 파일로
+    실행하면 로컬 녹화만 하고 업로드는 시도하지 않는다.
+    """
+
+    enabled: bool = False
+    rclone_remote: str = "gcs"
+    bucket: str = ""
+    prefix: str = "f1-race-engineer/recordings"
+    rclone_config: str = "~/.config/rclone/rclone.conf"
+
+
+@dataclass(frozen=True)
+class RecordingConfig:
+    """세션별 원시 텔레메트리 자동 녹화 설정(설계 4.3).
+
+    `keep_local_count`는 GCS 업로드가 끝난 녹화 중 로컬에 남길 최신 개수,
+    `keep_cache_count`는 GCS 온디맨드 복원 캐시(`.cache/`)의 상한이다.
+    `inactivity_timeout_s` 동안 패킷이 없으면 녹화를 마감하고, 같은 세션이
+    다시 시작되면 `segment`를 늘려 새 파일로 이어 받는다.
+    """
+
+    enabled: bool = True
+    dir: str = "data/recordings"
+    keep_local_count: int = 5
+    keep_cache_count: int = 3
+    inactivity_timeout_s: float = 600.0
+    exclude_demo: bool = True
+    min_packets: int = 100
+    gcs: RecordingGcsConfig = dataclasses.field(default_factory=RecordingGcsConfig)
+
+
+@dataclass(frozen=True)
 class AppConfig:
     """앱 전체 설정. `[global]` 섹션 값은 평평하게 둔다."""
 
     tts: TTSConfig = dataclasses.field(default_factory=TTSConfig)
     web: WebConfig = dataclasses.field(default_factory=WebConfig)
     radio: RadioConfig = dataclasses.field(default_factory=RadioConfig)
+    recording: RecordingConfig = dataclasses.field(default_factory=RecordingConfig)
     focus_corner_count: int = 5
     focus_recent_laps: int = 3
     big_loss_s: float = 0.3
@@ -104,20 +140,28 @@ def load_config(path: str | Path | None = None) -> AppConfig:
     tts_values = raw.get("tts", {})
     web_values = raw.get("web", {})
     radio_values = raw.get("radio", {})
+    recording_values = raw.get("recording", {})
     if (
         not isinstance(global_values, dict)
         or not isinstance(tts_values, dict)
         or not isinstance(web_values, dict)
         or not isinstance(radio_values, dict)
+        or not isinstance(recording_values, dict)
     ):
-        raise ConfigError("[global], [tts], [web], [radio]는 표(table)여야 합니다")
+        raise ConfigError(
+            "[global], [tts], [web], [radio], [recording]는 표(table)여야 합니다"
+        )
 
     config = AppConfig(
         tts=_build(TTSConfig, tts_values, "tts"),
         web=_build(WebConfig, web_values, "web"),
         radio=_build(RadioConfig, radio_values, "radio"),
+        recording=_build_recording(recording_values),
         **_known_fields(
-            AppConfig, global_values, "global", skip={"tts", "web", "radio"}
+            AppConfig,
+            global_values,
+            "global",
+            skip={"tts", "web", "radio", "recording"},
         ),
     )
     _validate(config)
@@ -126,6 +170,17 @@ def load_config(path: str | Path | None = None) -> AppConfig:
 
 def _build(cls: type, values: dict[str, Any], section: str) -> Any:
     return cls(**_known_fields(cls, values, section))
+
+
+def _build_recording(values: dict[str, Any]) -> RecordingConfig:
+    """`[recording]`과 그 아래 `[recording.gcs]` 표를 데이터클래스로 만든다."""
+    fields = _known_fields(RecordingConfig, values, "recording")
+    gcs_values = values.get("gcs")
+    if gcs_values is not None:
+        if not isinstance(gcs_values, dict):
+            raise ConfigError("[recording.gcs]는 표(table)여야 합니다")
+        fields["gcs"] = _build(RecordingGcsConfig, gcs_values, "recording.gcs")
+    return RecordingConfig(**fields)
 
 
 def _known_fields(
@@ -166,3 +221,21 @@ def _validate(config: AppConfig) -> None:
         raise ConfigError("radio.safety_ttl_s는 0보다 큰 유한한 수여야 합니다")
     if not math.isfinite(config.radio.box_ttl_s) or config.radio.box_ttl_s <= 0:
         raise ConfigError("radio.box_ttl_s는 0보다 큰 유한한 수여야 합니다")
+
+    # 자동 녹화 설정(설계 4.3). 잘못된 값은 녹화 시작 전에 막는다.
+    recording = config.recording
+    if not recording.dir.strip():
+        raise ConfigError("recording.dir이 비어 있습니다")
+    if recording.keep_local_count < 1:
+        raise ConfigError("recording.keep_local_count는 1 이상이어야 합니다")
+    if recording.keep_cache_count < 0:
+        raise ConfigError("recording.keep_cache_count는 0 이상이어야 합니다")
+    if (
+        not math.isfinite(recording.inactivity_timeout_s)
+        or recording.inactivity_timeout_s <= 0
+    ):
+        raise ConfigError(
+            "recording.inactivity_timeout_s는 0보다 큰 유한한 수여야 합니다"
+        )
+    if recording.min_packets < 1:
+        raise ConfigError("recording.min_packets는 1 이상이어야 합니다")

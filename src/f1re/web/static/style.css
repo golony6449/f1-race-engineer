@@ -933,7 +933,9 @@ body {
 #dashboard[hidden],
 .statusbar[hidden],
 .engine-off[hidden],
-.engine-modal[hidden] {
+.engine-modal[hidden],
+.recordings-modal[hidden],
+.replay-bar[hidden] {
   display: none;
 }
 
@@ -1119,5 +1121,418 @@ body {
     bottom: 12px;
     width: 50px;
     height: 50px;
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/* 다시 보기 (설계 4.6, SCRUM-101) */
+
+/*
+  화면 모서리의 다시 보기 버튼. 엔진 ON/OFF와 무관하게 항상 보이도록
+  우측 아래 설정 버튼 왼쪽에 고정한다.
+*/
+.recordings-fab {
+  position: fixed;
+  right: 88px;
+  bottom: 30px;
+  z-index: 40;
+  padding: 9px 20px;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text);
+  cursor: pointer;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.45);
+}
+
+.recordings-fab:hover {
+  border-color: var(--muted);
+}
+
+.recordings-fab:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* 엔진 OFF 안내 안의 같은 진입점. */
+.engine-off-button {
+  margin-top: 16px;
+  padding: 9px 20px;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text);
+  cursor: pointer;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+}
+
+.engine-off-button:hover {
+  border-color: var(--muted);
+}
+
+/*
+  재생 컨트롤 바. 리플레이 모드에서만 보이고, 스크롤해도 위에 붙어 있는다.
+  재생/일시정지 · 배속 · 시크 · 현재 시각/전체 길이 · 실시간 복귀를 한 줄에
+  두고 좁은 화면에서는 줄바꿈한다.
+*/
+.replay-bar {
+  position: sticky;
+  top: 8px;
+  z-index: 30;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  align-items: center;
+  padding: 8px 12px;
+  margin-bottom: 10px;
+  background: rgba(20, 25, 34, 0.96);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.35);
+}
+
+.replay-info {
+  display: flex;
+  flex: 1 1 240px;
+  gap: 8px;
+  align-items: center;
+  min-width: 0;
+}
+
+.replay-badge {
+  flex: none;
+  padding: 2px 10px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  color: var(--accent);
+  border: 1px solid var(--accent);
+  border-radius: 999px;
+}
+
+.replay-title {
+  overflow: hidden;
+  font-size: 12px;
+  color: var(--muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.replay-toggle,
+.speed-button,
+.replay-live {
+  flex: none;
+  padding: 5px 12px;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+  cursor: pointer;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+}
+
+.replay-toggle:hover,
+.speed-button:hover,
+.replay-live:hover {
+  border-color: var(--muted);
+}
+
+.replay-toggle:focus-visible,
+.speed-button:focus-visible,
+.replay-live:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.replay-speeds {
+  display: flex;
+  gap: 4px;
+}
+
+.speed-button.on {
+  color: var(--accent);
+  background: rgba(225, 6, 0, 0.14);
+  border-color: var(--accent);
+}
+
+.replay-seek {
+  flex: 1 1 180px;
+  min-width: 120px;
+  accent-color: var(--accent);
+}
+
+.replay-time {
+  flex: none;
+  font-size: 12px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.replay-live {
+  color: var(--warn);
+}
+
+/* ------------------------------------------------------------------ */
+/* 세션 목록 모달 */
+
+.recordings-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 70;
+  display: grid;
+  padding: 16px;
+  place-items: center;
+}
+
+.recordings-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(3, 6, 10, 0.72);
+}
+
+.recordings-panel {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  width: min(760px, 100%);
+  max-height: min(84vh, 820px);
+  padding: 18px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  box-shadow: 0 18px 40px rgba(0, 0, 0, 0.55);
+}
+
+.recordings-head {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.recordings-head h2 {
+  margin: 0;
+  font-size: 18px;
+  letter-spacing: 0.02em;
+}
+
+.recordings-close {
+  padding: 5px 14px;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+  cursor: pointer;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+}
+
+.recordings-close:hover {
+  border-color: var(--muted);
+}
+
+.recordings-filter {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 12px 0 6px;
+}
+
+.filter-chip {
+  padding: 4px 12px;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+  cursor: pointer;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+}
+
+.filter-chip:hover {
+  border-color: var(--muted);
+}
+
+.filter-chip.on {
+  color: var(--accent);
+  background: rgba(225, 6, 0, 0.14);
+  border-color: var(--accent);
+}
+
+.recordings-status {
+  margin: 6px 0;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.recordings-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 0;
+  margin: 0;
+  overflow-y: auto;
+  list-style: none;
+}
+
+.recording-item {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+
+.recording-head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: baseline;
+}
+
+.recording-date {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.recording-track {
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.recording-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.category-badge,
+.segment-badge,
+.end-reason-badge {
+  padding: 1px 9px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--muted);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+}
+
+/* 종류 배지: 연습·예선·레이스·타임 트라이얼을 색으로 구분한다. */
+.category-practice {
+  color: #7dd3fc;
+  border-color: #7dd3fc;
+}
+
+.category-qualifying {
+  color: #ffd166;
+  border-color: #ffd166;
+}
+
+.category-race {
+  color: #ff8a80;
+  border-color: #ff8a80;
+}
+
+.category-time_trial {
+  color: #c4b5fd;
+  border-color: #c4b5fd;
+}
+
+/* 부 배지는 2부처럼 이어진 세션을 표시한다. */
+.segment-badge {
+  color: var(--text);
+  border-color: var(--muted);
+}
+
+/* 종료 사유 배지. 정상 종료는 정상 색, 만료·복구는 눈에 띄게 둔다. */
+.end-reason-session_end {
+  color: var(--ok);
+  border-color: var(--ok);
+}
+
+.end-reason-inactivity_timeout {
+  color: var(--warn);
+  border-color: var(--warn);
+}
+
+.end-reason-recovered {
+  color: #4d8dff;
+  border-color: #4d8dff;
+}
+
+.recording-meta {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.recording-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.recording-download {
+  padding: 3px 12px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+  text-decoration: none;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+}
+
+.recording-download:hover {
+  border-color: var(--muted);
+}
+
+.recording-download.disabled {
+  color: var(--muted);
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.recording-play {
+  padding: 4px 14px;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text);
+  cursor: pointer;
+  background: rgba(225, 6, 0, 0.18);
+  border: 1px solid var(--accent);
+  border-radius: 999px;
+}
+
+.recording-play:hover:not(:disabled) {
+  background: rgba(225, 6, 0, 0.3);
+}
+
+.recording-play:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+@media (max-width: 720px) {
+  /* 좁은 화면에서는 재생 바가 두 줄로 접히고 시크 바가 전체 폭을 쓴다. */
+  .replay-seek {
+    flex-basis: 100%;
+  }
+
+  .recordings-fab {
+    right: 12px;
+    bottom: 72px;
   }
 }
