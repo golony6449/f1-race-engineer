@@ -30,11 +30,25 @@ from f1re.udp.spec import PACKET_FORMAT, Header, PacketId
 SUZUKA_ID = 13
 
 
-class _Radio:
-    """무전 큐만 있는 대역. 테스트는 큐 내용을 직접 보지 않는다."""
+class _Clock:
+    """시험에서 시간을 앞당길 수 있는 시계."""
 
     def __init__(self) -> None:
-        self.queue = RadioQueue()
+        self.now = time.time_ns()
+
+    def __call__(self) -> int:
+        return self.now
+
+    def advance(self, seconds: float) -> int:
+        self.now += int(seconds * 10**9)
+        return self.now
+
+
+class _Radio:
+    """무전 큐만 있는 대역."""
+
+    def __init__(self, clock: _Clock | None = None) -> None:
+        self.queue = RadioQueue(clock=clock or time.time_ns)
 
     def ensure_started(self) -> None:
         pass
@@ -70,22 +84,30 @@ def _packet(
     )
 
 
-def _session_body(track_id: int, session_type: int = 18) -> dict[str, Any]:
+def _session_body(
+    track_id: int,
+    session_type: int = 18,
+    *,
+    total_laps: int = 0,
+) -> dict[str, Any]:
     return {
         "track_id": track_id,
         "session_type": session_type,
         "weather": 0,
         "track_length": 5807.0,
+        "total_laps": total_laps,
         "safety_car_status": 0,
         "game_paused": 0,
     }
 
 
-def _demo_lap_trace(lap: int = 2) -> LapTrace:
+def _demo_lap_trace(lap: int = 2, *, pace: float = 1.0) -> LapTrace:
     track = load_track(SUZUKA_ID)
     outline = load_outline(SUZUKA_ID)
     assert track is not None and outline is not None
-    samples = generate_lap(track, outline, DriverProfile(), lap, random.Random(0))
+    samples = generate_lap(
+        track, outline, DriverProfile(pace=pace), lap, random.Random(0)
+    )
     return LapTrace(
         car_index=0,
         lap=lap,
@@ -183,6 +205,203 @@ def test_add_reference_lap_updates_fastest_car_reference() -> None:
     assert fastest is not None and fastest.car_index == 3
     assert coach.references.best_lap("self") is None
     assert coach.focus.corners == ()
+
+
+def _lap_data_body(*, lap: int = 2, position: int = 8) -> dict[str, Any]:
+    entry = {
+        "current_lap_num": lap,
+        "lap_distance": 1000.0,
+        "car_position": position,
+        "total_distance": (lap - 1) * 5807.0 + 1000.0,
+        "delta_to_car_in_front_minutes_part": 0,
+        "delta_to_car_in_front_ms_part": 600,
+        "current_lap_invalid": 0,
+        "driver_status": 4,
+        "pit_status": 0,
+    }
+    return {"lap_data": [entry]}
+
+
+async def test_pipeline_pushes_praise_for_personal_best() -> None:
+    """완료 랩이 개인 최고를 갱신하면 칭찬 무전이 큐로 나간다(SCRUM-125)."""
+    clock = _Clock()
+    radio = _Radio(clock)
+    pipeline = RacePipeline(
+        StateStore(), radio, None, config=AppConfig(), clock=clock
+    )
+    await pipeline.start()
+    try:
+        pipeline.on_packet(
+            _packet(
+                PacketId.SESSION, _session_body(SUZUKA_ID, session_type=18)
+            ),
+            clock(),
+        )
+        pipeline.on_packet(
+            _packet(PacketId.LAP_DATA, _lap_data_body(lap=18)), clock()
+        )
+        assert pipeline._praise is not None
+
+        # 첫 유효 랩은 기준만 세운다.
+        await pipeline._process_laps([_demo_lap_trace(lap=17, pace=0.98)])
+        assert [
+            message
+            for message in radio.queue.pending()
+            if message.evidence.get("praise")
+        ] == []
+
+        # 더 빠른 랩은 개인 최고 → 칭찬 무전 하나.
+        await pipeline._process_laps([_demo_lap_trace(lap=18, pace=1.0)])
+        praises = [
+            message
+            for message in radio.queue.pending()
+            if message.evidence.get("praise")
+        ]
+        assert len(praises) == 1
+        assert praises[0].evidence["praise"] == "personal_best"
+        assert praises[0].kind == "improvement"
+    finally:
+        await pipeline.aclose()
+
+
+async def test_pipeline_reacts_to_player_overtake_in_race() -> None:
+    """레이스에서 내 OVTK 사건이 오면 잠시 뒤 추월 리액션이 큐로 나간다."""
+    clock = _Clock()
+    radio = _Radio(clock)
+    pipeline = RacePipeline(
+        StateStore(), radio, None, config=AppConfig(), clock=clock
+    )
+    await pipeline.start()
+    try:
+        pipeline.on_packet(
+            _packet(
+                PacketId.SESSION,
+                _session_body(SUZUKA_ID, session_type=15, total_laps=20),
+            ),
+            clock(),
+        )
+        # 레이스 주말 기준 키에는 팀이 필요하다. 참가자 패킷으로 채운다.
+        participants = [{"team_id": 1}] + [{"team_id": 2}] * 21
+        pipeline.on_packet(
+            _packet(PacketId.PARTICIPANTS, {"participants": participants}),
+            clock(),
+        )
+        pipeline.on_packet(
+            _packet(PacketId.LAP_DATA, _lap_data_body(lap=2)), clock()
+        )
+        assert pipeline._reaction is not None
+
+        pipeline._on_event(
+            {
+                "event_string_code": "OVTK",
+                "event_details": {
+                    "overtaking_vehicle_idx": 0,
+                    "being_overtaken_vehicle_idx": 1,
+                },
+            },
+            clock(),
+        )
+        assert pipeline._reaction.pending_count == 1
+
+        clock.advance(3.0)
+        pipeline._evaluate_overtake()
+
+        reactions = [
+            message
+            for message in radio.queue.pending()
+            if message.evidence.get("reaction")
+        ]
+        assert len(reactions) == 1
+        assert reactions[0].kind == "overtake"
+        assert reactions[0].evidence["reaction"] == "single"
+    finally:
+        await pipeline.aclose()
+
+
+async def test_pipeline_ignores_overtake_of_retired_or_pit_car() -> None:
+    """순위만 올라간 경우(리타이어·피트)에는 추월 리액션을 하지 않는다."""
+    clock = _Clock()
+    radio = _Radio(clock)
+    pipeline = RacePipeline(
+        StateStore(), radio, None, config=AppConfig(), clock=clock
+    )
+    await pipeline.start()
+    try:
+        pipeline.on_packet(
+            _packet(
+                PacketId.SESSION,
+                _session_body(SUZUKA_ID, session_type=15, total_laps=20),
+            ),
+            clock(),
+        )
+        participants = [{"team_id": 1}] + [{"team_id": 2}] * 21
+        pipeline.on_packet(
+            _packet(PacketId.PARTICIPANTS, {"participants": participants}),
+            clock(),
+        )
+        # 1번 차는 리타이어(result_status 7) 상태다(driver_status는 주행 중으로 둬 result_status 필터를 검증).
+        entries = _lap_data_body(lap=2)["lap_data"]
+        entries.append({"result_status": 7, "driver_status": 4})
+        pipeline.on_packet(
+            _packet(PacketId.LAP_DATA, {"lap_data": entries}), clock()
+        )
+        assert pipeline._reaction is not None
+
+        pipeline._on_event(
+            {
+                "event_string_code": "OVTK",
+                "event_details": {
+                    "overtaking_vehicle_idx": 0,
+                    "being_overtaken_vehicle_idx": 1,
+                },
+            },
+            clock(),
+        )
+
+        assert pipeline._reaction.pending_count == 0
+    finally:
+        await pipeline.aclose()
+
+
+async def test_pipeline_ignores_overtake_event_outside_race() -> None:
+    """비레이스 세션에서는 OVTK 사건을 받아도 리액션을 만들지 않는다."""
+    clock = _Clock()
+    radio = _Radio(clock)
+    pipeline = RacePipeline(
+        StateStore(), radio, None, config=AppConfig(), clock=clock
+    )
+    await pipeline.start()
+    try:
+        pipeline.on_packet(
+            _packet(
+                PacketId.SESSION, _session_body(SUZUKA_ID, session_type=18)
+            ),
+            clock(),
+        )
+        pipeline.on_packet(
+            _packet(PacketId.LAP_DATA, _lap_data_body(lap=2)), clock()
+        )
+        assert pipeline._reaction is not None
+
+        pipeline._on_event(
+            {
+                "event_string_code": "OVTK",
+                "event_details": {
+                    "overtaking_vehicle_idx": 0,
+                    "being_overtaken_vehicle_idx": 1,
+                },
+            },
+            clock(),
+        )
+
+        assert pipeline._reaction.pending_count == 0
+        assert [
+            message
+            for message in radio.queue.pending()
+            if message.evidence.get("reaction")
+        ] == []
+    finally:
+        await pipeline.aclose()
 
 
 async def test_flashback_marks_lap_invalid() -> None:
