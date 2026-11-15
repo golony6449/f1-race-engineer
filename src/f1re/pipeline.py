@@ -12,6 +12,10 @@
   샘플마다 `Coach.on_sample`로 코너 탈출 직후 무전을 만든다.
 - **리프트 앤 코스트**: 같은 샘플로 `LiftCoastCoach.on_sample`(SCRUM-71).
 - **추월**: 10Hz 태스크가 `OvertakeAdvisor.evaluate`(작업 18)를 부른다.
+- **서킷 전략 무전**(SCRUM-130): 추월 지점(`overtaking_spots`)이 있는 서킷에서는
+  `OvertakeStrategy`가 공격·방어 계획을 고르고 `StrategyNarrator`가 Qwen LLM
+  또는 템플릿 문장으로 무전을 만든다. LLM 호출은 별도 태스크라 10Hz 판단을
+  막지 않는다. 지점 데이터가 없는 트랙(모나코 등)은 기존 추월 안내만 쓴다.
 - **칭찬**(SCRUM-125): 완료 랩마다 `PraiseTracker.on_lap_completed`가 개인 최고
   랩·섹터 최고·순위 상승·클린 랩을 우선순위대로 하나만, 한 랩에 최대 한 번
   말한다(`RadioKind.IMPROVEMENT`). 퀄리파잉·스프린트 슛아웃은 짧은 문장이다.
@@ -80,8 +84,11 @@ from f1re.laps.traces import (
 )
 from f1re.overtake.advisor import OvertakeAdvisor, OvertakeConfig
 from f1re.overtake.reaction import OvertakeReactionTracker, ReactionContext
+from f1re.overtake.strategy import OvertakeStrategy, StrategyConfig, StrategyPlan
 from f1re.race_distance import fuel_laps_margin, remaining_race_laps
 from f1re.radio.queue import RadioQueue
+from f1re.radio.strategy import StrategyNarrator
+from f1re.tracks.kb import load_track_kb
 from f1re.tracks.learn import remember_outline, resolve_outline
 from f1re.tracks.model import (
     Corner,
@@ -136,12 +143,17 @@ class RacePipeline:
         *,
         config: AppConfig | None = None,
         clock: Callable[[], int] = time.time_ns,
+        llm_generator: Any | None = None,
     ) -> None:
         self._store = store
         self._radio = radio
         self._conn = conn
         self._config = config or AppConfig()
         self._clock = clock
+        # LLM 무전 생성기(SCRUM-130). 엔진이 `[llm] enabled`일 때 만들어 넘기며,
+        # 수명은 이 파이프라인이 맡는다(`aclose`에서 닫는다). `None`이면 서킷
+        # 전략 무전은 템플릿 문장만 쓴다(테스트·데모 기본 경로).
+        self._llm_generator = llm_generator
         queue = getattr(radio, "queue", None)
         self._radio_queue: RadioQueue = queue if queue is not None else RadioQueue()
 
@@ -168,6 +180,12 @@ class RacePipeline:
         self._praise: PraiseTracker | None = None
         # 추월 리액션(SCRUM-125): OVTK 사건을 모아 10Hz 판단 주기에 낸다.
         self._reaction: OvertakeReactionTracker | None = None
+        # 서킷 추월 지점 기반 공격·방어 전략(SCRUM-130). 지점 데이터가 있는
+        # 트랙에서만 만들고, 없으면 기존 `OvertakeAdvisor`가 그대로 말한다.
+        self._strategy: OvertakeStrategy | None = None
+        self._strategy_narrator: StrategyNarrator | None = None
+        # LLM 생성은 10Hz 주기를 막지 않도록 별도 태스크로 띄운다.
+        self._strategy_tasks: set[asyncio.Task[None]] = set()
         # Session 패킷의 섹터 경계(랩 거리). 없으면 랩 길이 3등분을 쓴다.
         self._sector2_m: float | None = None
         self._sector3_m: float | None = None
@@ -230,13 +248,18 @@ class RacePipeline:
         """대기 중인 랩을 마저 처리하고 기준 랩을 저장한 뒤 정리한다."""
         queue, self._lap_queue = self._lap_queue, None
         tasks, self._tasks = self._tasks, []
-        for task in tasks:
+        # 진행 중인 LLM 전략 무전 태스크도 함께 기다리지 않고 취소한다.
+        strategy_tasks = list(self._strategy_tasks)
+        self._strategy_tasks.clear()
+        for task in [*tasks, *strategy_tasks]:
             task.cancel()
-        for task in tasks:
+        for task in [*tasks, *strategy_tasks]:
             try:
                 await task
             except asyncio.CancelledError:
                 pass
+            except Exception:  # 백그라운드 태스크 오류가 종료를 막지 않게 한다.
+                logger.exception("백그라운드 태스크를 정리하는 중 오류")
         if queue is not None:
             # 종료 직전에 들어온 완료 랩도 버리지 않고 처리한다.
             while True:
@@ -251,6 +274,15 @@ class RacePipeline:
         self._save_reference()
         self._clear_session_state()
         self._advisor = None
+        # 이 파이프라인이 넘겨받은 LLM 생성기의 수명을 맡는다.
+        generator, self._llm_generator = self._llm_generator, None
+        if generator is not None:
+            close = getattr(generator, "aclose", None)
+            if close is not None:
+                try:
+                    await close()
+                except Exception:
+                    logger.warning("LLM 무전 생성기를 닫지 못했습니다")
 
     # ------------------------------------------------------------------
     # 수신 패킷
@@ -325,6 +357,9 @@ class RacePipeline:
         self._advisor_active = False
         self._praise = None
         self._reaction = None
+        self._strategy = None
+        self._strategy_narrator = None
+        self._cancel_strategy_tasks()
         self._sector2_m = None
         self._sector3_m = None
         self._key = None
@@ -359,6 +394,12 @@ class RacePipeline:
             self._corner_metrics = {}
             self._reference_info = {}
 
+    def _cancel_strategy_tasks(self) -> None:
+        """세션이 바뀌었을 때 진행 중인 LLM 전략 무전 태스크를 취소한다."""
+        for task in list(self._strategy_tasks):
+            task.cancel()
+        self._strategy_tasks.clear()
+
     def _on_session(self, body: dict[str, Any]) -> None:
         self._latest_session = body
         track_id = _int(body.get("track_id"))
@@ -375,6 +416,9 @@ class RacePipeline:
             self._advisor = None
             self._praise = None
             self._reaction = None
+            self._strategy = None
+            self._strategy_narrator = None
+            self._cancel_strategy_tasks()
             # 데모 세션은 학습 윤곽을 불러오지 않는다(SCRUM-93).
             outline_conn = (
                 None if is_demo_session_uid(self._session_uid) else self._conn
@@ -391,6 +435,9 @@ class RacePipeline:
             self._advisor = None
             self._praise = None
             self._reaction = None
+            self._strategy = None
+            self._strategy_narrator = None
+            self._cancel_strategy_tasks()
 
         weather = _int(body.get("weather"))
         if weather is not None:
@@ -463,6 +510,9 @@ class RacePipeline:
             self._advisor = None
             self._praise = None
             self._reaction = None
+            self._strategy = None
+            self._strategy_narrator = None
+            self._cancel_strategy_tasks()
 
     def _resolve_track(self) -> Track | None:
         """데이터 파일 트랙, 없으면 자동 탐지로 만든 트랙."""
@@ -560,6 +610,32 @@ class RacePipeline:
         )
         # 추월 리액션(SCRUM-125): OVTK 사건을 모아 레이스에서만 반응한다.
         self._reaction = OvertakeReactionTracker(queue=self._radio_queue)
+
+        # 서킷 추월 지점 기반 공격·방어 전략(SCRUM-130). 지점 데이터가 있는
+        # 트랙에서만 만들고, 없으면 기존 추월 안내(`OvertakeAdvisor`)만 쓴다.
+        # 데모 세션은 네트워크 없이 결정적으로 동작하도록 템플릿 문장만 쓴다.
+        self._strategy = None
+        self._strategy_narrator = None
+        if track.overtaking_spots:
+            kb = None
+            try:
+                kb = load_track_kb(track.track_id)
+            except Exception:  # KB 손상이 세션 시작을 막지 않게 한다.
+                logger.warning("서킷 KB를 읽지 못했습니다: %s", track.track_id)
+            generator = (
+                None
+                if is_demo_session_uid(self._session_uid)
+                else self._llm_generator
+            )
+            self._strategy = OvertakeStrategy(
+                track, StrategyConfig.from_app_config(self._config)
+            )
+            self._strategy_narrator = StrategyNarrator(
+                generator,
+                queue=self._radio_queue,
+                kb=kb,
+                clock=self._clock,
+            )
 
         # 트랙을 알기 전에 끝난 랩을 반영한다(코너 자동 탐지 직후 등).
         for trace in self._pending_traces:
@@ -1109,9 +1185,49 @@ class RacePipeline:
         now = int(self._clock())
         advisor.evaluate(snapshot, traces, now)
         self._advisor_active = advisor.active
+        # 서킷 추월 지점 기반 공격·방어 전략(SCRUM-130).
+        self._evaluate_strategy(snapshot, traces, now)
         # 추월 리액션(SCRUM-125): 같은 10Hz 주기에 대기 중인 OVTK 사건을 낸다.
         if self._reaction is not None:
             self._reaction.observe(self._reaction_context(), now)
+
+    def _evaluate_strategy(
+        self,
+        snapshot: Mapping[str, Any],
+        traces: Mapping[int, Sequence[LapTrace]],
+        now_ns: int,
+    ) -> None:
+        """전략 계획을 만들고, LLM이면 별도 태스크로, 아니면 즉시 무전을 낸다.
+
+        LLM 네트워크 호출(기본 타임아웃 1.5초)이 10Hz 추월 판단 주기를 막지
+        않도록 `announce_all()`은 asyncio 태스크로 띄운다. 템플릿만 쓸 때는
+        기다릴 것이 없으므로 같은 주기에서 바로 큐에 넣는다.
+        """
+        strategy = self._strategy
+        narrator = self._strategy_narrator
+        if strategy is None or narrator is None:
+            return
+        plans: list[StrategyPlan] = strategy.evaluate(snapshot, traces, now_ns)
+        if not plans:
+            return
+        if narrator.uses_llm:
+            task = asyncio.create_task(
+                narrator.announce_all(plans, now_ns=now_ns),
+                name="f1re-pipeline-strategy-radio",
+            )
+            self._strategy_tasks.add(task)
+            task.add_done_callback(self._strategy_task_done)
+        else:
+            narrator.announce_now(plans, now_ns=now_ns)
+
+    def _strategy_task_done(self, task: asyncio.Task[Any]) -> None:
+        """LLM 태스크를 목록에서 지우고, 예외가 있으면 로그만 남긴다."""
+        self._strategy_tasks.discard(task)
+        if task.cancelled():
+            return
+        error = task.exception()
+        if error is not None:
+            logger.error("전략 무전 태스크가 실패했습니다", exc_info=error)
 
     def _praise_context(self) -> PraiseContext:
         """랩 완료 시점의 칭찬 판단 정보(순위·세션 종류·총 랩)."""

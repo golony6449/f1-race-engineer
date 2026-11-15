@@ -596,13 +596,30 @@ class Engine:
     async def _build_pipeline(
         self, store: StateStore, radio: Any, conn: sqlite3.Connection
     ) -> Any:
-        """실서버 파이프라인을 만들어 시작한다. numpy 없는 모듈만 import한다."""
+        """실서버 파이프라인을 만들어 시작한다. numpy 없는 모듈만 import한다.
+
+        `[llm] enabled`면 Qwen 무전 생성기를 함께 만들어 넘긴다(SCRUM-130).
+        생성기의 수명은 파이프라인이 `aclose()`에서 맡는다. 파이프라인 생성이
+        실패하면 여기서 닫는다.
+        """
         from f1re.pipeline import RacePipeline
 
-        pipeline = RacePipeline(
-            store, radio, conn, config=self._config or AppConfig()
-        )
-        await pipeline.start()
+        config = self._config or AppConfig()
+        generator: Any | None = None
+        if config.llm.enabled:
+            from f1re.radio.llm import LLMRadioGenerator
+
+            generator = LLMRadioGenerator(config.llm)
+        try:
+            pipeline = RacePipeline(
+                store, radio, conn, config=config, llm_generator=generator
+            )
+            await pipeline.start()
+        except BaseException:
+            if generator is not None:
+                with contextlib.suppress(Exception):
+                    await generator.aclose()
+            raise
         return pipeline
 
     def _build_radio(self, store: StateStore, conn: sqlite3.Connection) -> Any:

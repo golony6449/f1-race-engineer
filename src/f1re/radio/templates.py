@@ -35,6 +35,13 @@ SCRUM-125 틀
   ``*_short`` 틀은 시간 슬롯 없이 더 짧다.
 - ``overtake.reaction``·``overtake.reaction_bundle``: 레이스에서 추월 직후
   내는 반응. 10초 창 안 2대 이상이면 묶음 틀 하나로 말한다.
+
+SCRUM-130 틀
+------------
+- ``strategy.attack``·``strategy.attack_drs``·``strategy.defense``: 서킷 추월
+  지점 기반 공격·방어 전략 무전. 지점 이름과 코너 묶음(``16번, 17번``)은 규칙
+  엔진(`overtake/strategy.py`)이 만들어 슬롯으로 넘긴다. LLM을 쓸 수 없을 때의
+  폴백 문장이기도 하다.
 """
 
 from __future__ import annotations
@@ -1052,6 +1059,66 @@ _TEMPLATES: tuple[Template, ...] = (
             ),
         ),
         needs_evidence=True,
+    ),
+    # --- 서킷 추월 지점 기반 공격·방어 (SCRUM-130) -------------------------
+    # 규칙 엔진(`overtake/strategy.py`)이 고른 지점·코너·간격을 짧은 문장으로
+    # 말한다. 지점 이름은 `spot`, 코너 묶음은 이미 "16번, 17번"처럼 만든 값을
+    # `attack`·`prep`에 받는다(공식/자동 탐지 코너 표기를 엔진이 맞춘다).
+    # LLM(Qwen)을 쓸 수 없을 때의 폴백 문장이기도 하다.
+    Template(
+        "strategy.attack",
+        RadioKind.OVERTAKE,
+        _moods(
+            calm=(
+                "{spot} 공격이야. 앞차랑 {gap}초. "
+                "{prep} 탈출 좋게, {attack} 인코스 늦게 브레이킹.",
+                "앞차랑 {gap}초. {spot} 간다. "
+                "{prep} 탈출 준비하고 {attack} 인코스.",
+            ),
+            hyped=(
+                "{spot} 공격이야! 앞차랑 {gap}초! "
+                "{prep} 탈출 좋게! {attack} 인코스 늦게!",
+                "{gap}초! {spot} 간다! {prep} 탈출! {attack} 인코스!",
+            ),
+        ),
+        needs_evidence=True,
+        note="서킷 추월 지점 공격(DRS 없음)",
+    ),
+    Template(
+        "strategy.attack_drs",
+        RadioKind.OVERTAKE,
+        _moods(
+            calm=(
+                "{spot} 공격이야. 앞차랑 {gap}초. "
+                "DRS 열리면 {attack} 인코스 늦게 브레이킹.",
+                "앞차랑 {gap}초. {spot} 간다. DRS 켜고 {attack} 인코스.",
+            ),
+            hyped=(
+                "{spot} 공격이야! 앞차랑 {gap}초! "
+                "DRS 열리면 {attack} 인코스 늦게!",
+                "{gap}초! {spot} 간다! DRS 켜고 {attack} 인코스!",
+            ),
+        ),
+        needs_evidence=True,
+        note="서킷 추월 지점 공격(DRS 연계)",
+    ),
+    Template(
+        "strategy.defense",
+        RadioKind.OVERTAKE,
+        _moods(
+            calm=(
+                "뒤차랑 {gap}초. {spot} 방어야. "
+                "{attack} 인코스 커버하고 각지게 돌아.",
+                "뒤차랑 {gap}초 붙었어. {spot} {attack} 인코스 먼저 커버해.",
+            ),
+            hyped=(
+                "뒤차랑 {gap}초! {spot} 방어! "
+                "{attack} 인코스 커버! 각지게!",
+                "{gap}초! 뒤가 붙었어! {spot} {attack} 인코스 커버!",
+            ),
+        ),
+        needs_evidence=True,
+        note="서킷 추월 지점 방어",
     ),
     # --- 추월 리액션 (레이스 전용, SCRUM-125) -----------------------------
     # 이미 앞차를 넘어선 직후에 말한다. 안내(위의 overtake.*)가 아니라 반응이므로
