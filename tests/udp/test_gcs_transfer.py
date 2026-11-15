@@ -343,8 +343,8 @@ async def test_rclone_transport_copies_to_gcs_object_with_copyto(
     config = RecordingGcsConfig(
         enabled=True,
         rclone_remote="gcs",
-        bucket="f1-race-engineer-backup",
-        prefix="/recordings/",
+        bucket="f1-race-engineer",
+        prefix="/telemetry-raw/",
         rclone_config="~/.config/rclone/rclone.conf",
     )
     transport = RcloneTransport(
@@ -361,7 +361,7 @@ async def test_rclone_transport_copies_to_gcs_object_with_copyto(
     assert args[-2] == str(local)
     assert (
         args[-1]
-        == "gcs:f1-race-engineer-backup/recordings/race/"
+        == "gcs:f1-race-engineer/telemetry-raw/race/"
         "20261115-120000_t1_123_s1.f1rec.zst"
     )
     config_index = args.index("--config")
@@ -373,7 +373,7 @@ async def test_rclone_transport_copies_to_gcs_object_with_copyto(
     target = tmp_path / "downloads" / "out.f1rec.zst"
     await transport.download("race/20261115-120000_t1_123_s1.f1rec.zst", target)
     assert calls[0][-2] == (
-        "gcs:f1-race-engineer-backup/recordings/race/"
+        "gcs:f1-race-engineer/telemetry-raw/race/"
         "20261115-120000_t1_123_s1.f1rec.zst"
     )
     assert calls[0][-1] == str(target)

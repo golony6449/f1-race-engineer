@@ -69,7 +69,7 @@ class RecordingGcsConfig:
     enabled: bool = False
     rclone_remote: str = "gcs"
     bucket: str = ""
-    prefix: str = "f1-race-engineer/recordings"
+    prefix: str = "telemetry-raw"
     rclone_config: str = "~/.config/rclone/rclone.conf"
 
 

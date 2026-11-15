@@ -23,8 +23,8 @@ def test_load_recording_config_defaults() -> None:
     # GCS 백업 기본값(설계 4.3). 홈서버에 rclone이 없어도 설정 자체는 이 값이다.
     assert config.recording.gcs.enabled is True
     assert config.recording.gcs.rclone_remote == "gcs"
-    assert config.recording.gcs.bucket == "f1-race-engineer-backup"
-    assert config.recording.gcs.prefix == "recordings"
+    assert config.recording.gcs.bucket == "f1-race-engineer"
+    assert config.recording.gcs.prefix == "telemetry-raw"
     assert config.recording.gcs.rclone_config == "~/.config/rclone/rclone.conf"
 
 

@@ -253,8 +253,10 @@ min_packets = 100
 [recording.gcs]
 enabled = true
 # rclone 원격 이름과 버킷(`<remote>:<bucket>/<prefix>/...`로 업로드)
+# 실제 경로: gcs:f1-race-engineer/telemetry-raw/<세션 종류>/<시작시각>_t<서킷>_<UID>_s<회차>.f1rec.zst
+# 같은 버킷의 ltx/ 는 Litestream(DB 복제) 몫이라 prefix를 겹치지 않게 둔다.
 rclone_remote = "gcs"
-bucket = "f1-race-engineer-backup"
-prefix = "recordings"
+bucket = "f1-race-engineer"
+prefix = "telemetry-raw"
 # rclone 설정 파일. 홈서버 계정 기준 경로다.
 rclone_config = "~/.config/rclone/rclone.conf"
