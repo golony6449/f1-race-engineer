@@ -4,10 +4,12 @@
 런타임만 켜고 끈다.
 
 - **ON**: 상태 저장소, SQLite 연결, 무전 서비스(경고·재생 루프, Qwen TTS,
-  음성 캐시), UDP 수신 소켓, 세션 진행 DB 반영 루프, 서킷 지도 상태를 만든다.
-- **OFF**: UDP 소켓을 닫고 루프를 모두 취소한 뒤, 상태 저장소·무전 큐·메모리
-  음성 캐시·서킷 지도·DB 연결의 참조를 끊고 `gc.collect()`를 부른다. 디스크의
-  음성 캐시 파일과 DB 파일은 지우지 않는다.
+  음성 캐시), UDP 수신 소켓, 세션 진행 DB 반영 루프, 서킷 지도 상태,
+  세션별 자동 원본 녹화기(`SessionRecordingManager`, SCRUM-106)를 만든다.
+- **OFF**: UDP 소켓을 닫고 루프를 모두 취소한 뒤, 활성 녹화를 `engine_off`로
+  마감해 백업 큐에 넘긴다(압축·업로드는 기다리지 않는다). 상태 저장소·무전
+  큐·메모리 음성 캐시·서킷 지도·DB 연결의 참조를 끊고 `gc.collect()`를 부른다.
+  디스크의 음성 캐시 파일과 DB 파일은 지우지 않는다.
 
 무거운 모듈(numpy를 쓰는 음성 캐시 등)은 `start()` 안에서만 import한다. 웹 앱과
 `main`의 시작 경로는 엔진이 꺼져 있어도 이 모듈만 가볍게 읽는다.
@@ -71,6 +73,106 @@ class Runtime:
     pipeline: Any | None = None
 
 
+class _BackupQueue:
+    """`BackupWorker`가 붙기 전 마감 작업을 잠시 모아 두는 큐 프록시.
+
+    엔진은 웹 서버 `lifespan`의 `BackupWorker`보다 먼저 켜질 수 있다. 자동
+    녹화기(`SessionRecordingManager`)는 생성할 때 마감 큐를 고정으로 받으므로,
+    이 프록시가 작업을 받아 두었다가 워커가 붙는 즉시 넘긴다. 워커가 끝내
+    붙지 않으면(예: `--no-web` 실행) 작업은 메모리에만 남고 `.active/`의 원본
+    파일은 그대로 보존되어 다음 기동의 복구 경로가 줍는다.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._worker: Any | None = None
+        self._waiting: list[Any] = []
+
+    def attach(self, worker: Any | None) -> None:
+        """워커를 연결하고, 그동안 모아 둔 마감 작업을 순서대로 넘긴다."""
+        with self._lock:
+            self._worker = worker
+            if worker is None:
+                return
+            waiting, self._waiting = self._waiting, []
+        for job in waiting:
+            self._enqueue_to(worker, job)
+
+    def enqueue(self, job: Any) -> None:
+        """마감 작업을 워커에 넘긴다. 워커가 없으면 모아 둔다(비블로킹)."""
+        with self._lock:
+            worker = self._worker
+            if worker is None:
+                self._waiting.append(job)
+                return
+        self._enqueue_to(worker, job)
+
+    @staticmethod
+    def _enqueue_to(worker: Any, job: Any) -> None:
+        try:
+            worker.enqueue(job)
+        except Exception:
+            # 큐 오류로 수신 루프·엔진 종료가 막히면 안 된다. 파일은
+            # `.active/`에 남아 다음 기동 복구가 다시 줍는다.
+            logger.exception("마감된 녹화를 백업 큐에 넣지 못했습니다")
+
+
+class _RawRecorderTap:
+    """원본 데이터그램을 수동 녹화(`--record`)와 자동 세션 녹화에 함께 넘긴다.
+
+    `f1re.udp.receiver.process_datagram`은 데이터그램마다
+    `recorder.write(recv_ns, data)`를 먼저 부르고, 파싱에 성공하면
+    `on_packet(packet, recv_ns)`를 나중에 부른다. 자동 녹화기는 세션 UID를
+    알아야 파일을 열 수 있으므로 `write`에서 원본 바이트를 한 개만 들고
+    있다가 `deliver`에서 파싱된 패킷과 합쳐 넘긴다. 파싱에 실패한
+    데이터그램은 다음 `write`에서 `packet=None`으로 흘려보내 원본을 잃지
+    않는다(수신 순서도 그대로다).
+    """
+
+    def __init__(self, manual: Any | None, manager: Any | None) -> None:
+        self._manual = manual
+        self._manager = manager
+        self._pending: tuple[int, bytes] | None = None
+
+    def write(self, recv_ns: int, data: bytes) -> None:
+        # 자동 녹화 쪽 바이트를 먼저 보관한다. 수동 writer가 실패해도
+        # process_datagram은 파싱을 계속하므로 자동 녹화는 원본을 잃지 않는다.
+        self.flush_pending()
+        if self._manager is not None:
+            self._pending = (recv_ns, data)
+        if self._manual is not None:
+            self._manual.write(recv_ns, data)
+
+    def deliver(self, packet: Any, recv_ns: int) -> None:
+        """파싱에 성공한 데이터그램의 원본을 자동 녹화기에 넘긴다."""
+        manager = self._manager
+        pending = self._pending
+        self._pending = None
+        if manager is None or pending is None or pending[0] != recv_ns:
+            return
+        self._record(manager, pending[0], pending[1], packet)
+
+    def flush_pending(self) -> None:
+        """파싱되지 않은 채 남은 원본 바이트를 자동 녹화기에 넘긴다."""
+        manager = self._manager
+        pending = self._pending
+        self._pending = None
+        if manager is None or pending is None:
+            return
+        self._record(manager, pending[0], pending[1], None)
+
+    @staticmethod
+    def _record(
+        manager: Any, recv_ns: int, data: bytes, packet: Any | None
+    ) -> None:
+        try:
+            manager.on_packet_bytes(recv_ns, data, packet)
+        except Exception:
+            # 녹화 실패가 60Hz 수신·엔진 종료를 막으면 안 된다. 다음 데이터그램
+            # 부터 새 세션을 다시 열 수 있고, 이미 쓴 레코드는 파일에 남는다.
+            logger.exception("자동 녹화 처리 중 오류(수신은 계속)")
+
+
 def default_engine_state_path() -> Path:
     """상태 파일 기본 경로(`<레포>/data/engine-state.json`)."""
     return repo_root() / ENGINE_STATE_RELPATH
@@ -126,6 +228,7 @@ class Engine:
         state_path: str | Path | None = None,
         persist_state: bool = True,
         radio_factory: Callable[[StateStore, Any], Any] | None = None,
+        backup_worker: Any | None = None,
     ) -> None:
         if runtime is None and initial_state not in ENGINE_STATES:
             raise ValueError(f"알 수 없는 엔진 상태: {initial_state!r}")
@@ -138,6 +241,13 @@ class Engine:
         self._state_path = state_path
         self._persist_state = persist_state and runtime is None
         self._radio_factory = radio_factory
+        # 마감 작업은 웹 서버 lifespan의 `BackupWorker`가 나중에 붙어도
+        # 잃지 않도록 프록시를 거쳐 넘긴다(SCRUM-106).
+        self._backup_queue = _BackupQueue()
+        self._backup_worker: Any | None = None
+        self._recording_manager: Any | None = None
+        self._recording_tap: _RawRecorderTap | None = None
+        self.attach_backup_worker(backup_worker)
 
         self._managed = runtime is None
         self._runtime = runtime
@@ -195,6 +305,30 @@ class Engine:
         """엔진 ON일 때만 사는 실서버 파이프라인(SCRUM-84). OFF면 `None`."""
         runtime = self.runtime
         return None if runtime is None else runtime.pipeline
+
+    @property
+    def recording_manager(self) -> Any | None:
+        """지금 자동 녹화 중인 `SessionRecordingManager`. 엔진 OFF면 `None`."""
+        return self._recording_manager
+
+    @property
+    def backup_worker(self) -> Any | None:
+        """자동 녹화 마감 작업을 받는 백업 워커(없으면 `None`)."""
+        return self._backup_worker
+
+    @backup_worker.setter
+    def backup_worker(self, worker: Any | None) -> None:
+        self.attach_backup_worker(worker)
+
+    def attach_backup_worker(self, worker: Any | None) -> None:
+        """웹 서버 lifespan이 만든 `BackupWorker`를 녹화 마감 큐에 연결한다.
+
+        엔진이 워커보다 먼저 켜져 있었어도, 그동안 모아 둔 마감 작업을 붙는
+        즉시 순서대로 넘긴다. `None`을 넘기면 연결만 끊고, 이후 마감 작업은
+        다시 프록시에 쌓인다(`.active/` 원본은 그대로 보존).
+        """
+        self._backup_worker = worker
+        self._backup_queue.attach(worker)
 
     @property
     def off_event(self) -> asyncio.Event:
@@ -258,6 +392,8 @@ class Engine:
                 runtime = self._runtime
                 transport = self._transport
                 tasks = list(self._tasks)
+                recording = self._recording_manager
+                tap = self._recording_tap
                 self._tasks = []
             # 열려 있던 WebSocket들이 engine-off 메시지를 보내고 닫을 틈을 준다.
             off_event.set()
@@ -284,8 +420,17 @@ class Engine:
                 if runtime.pipeline is not None:
                     with contextlib.suppress(Exception):
                         await runtime.pipeline.aclose()
-                # 마지막 세션 진행·종료를 DB에 남긴 뒤 연결을 닫는다.
-                _safe_persist(runtime, self._recorded_file)
+                # 마지막 세션 진행·종료를 DB에 남기고, 그 사건들을 녹화 마감에
+                # 먼저 반영한다(종료 직전 SESSION_END가 engine_off로 덮이지 않게).
+                events = _safe_persist(runtime, self._recorded_file)
+                if tap is not None:
+                    # 파싱 실패로 아직 넘기지 못한 마지막 데이터그램도 남긴다.
+                    tap.flush_pending()
+                if recording is not None:
+                    _safe_recording_events(recording, events)
+                    # 활성 파일만 닫아 큐에 넣고 즉시 돌아온다. 압축·업로드는
+                    # 백업 워커가 엔진이 꺼진 뒤에 마저 한다.
+                    _safe_close_recording(recording, "engine_off")
                 _safe_finalize(runtime, self._recorded_file)
                 with contextlib.suppress(Exception):
                     await runtime.radio.aclose()
@@ -296,6 +441,8 @@ class Engine:
             with self._state_lock:
                 self._runtime = None
                 self._transport = None
+                self._recording_manager = None
+                self._recording_tap = None
             if persist and self._persist_state:
                 write_engine_state(ENGINE_OFF, self._state_path)
             # 상태 저장소·무전 큐·메모리 음성 캐시·지도 객체를 실제로 회수한다.
@@ -329,6 +476,8 @@ class Engine:
         radio: Any | None = None
         transport: asyncio.DatagramTransport | None = None
         pipeline: Any | None = None
+        recording: Any | None = None
+        tap: _RawRecorderTap | None = None
         tasks: list[asyncio.Task[None]] = []
         try:
             store = StateStore()
@@ -336,10 +485,18 @@ class Engine:
             radio = self._build_radio(store, conn)
             radio.ensure_started()
 
+            # 세션별 자동 원본 녹화(SCRUM-106). 수신 루프는 이 관리자에게
+            # 원본 바이트를 넘기기만 하고 압축·업로드는 백업 워커가 한다.
+            recording = self._build_recording(conn)
+            if recording is not None or self._recorder is not None:
+                tap = _RawRecorderTap(self._recorder, recording)
+
             # 실서버 파이프라인(SCRUM-84): 랩 기록·코칭·추월·리프트 앤 코스트.
             pipeline = await self._build_pipeline(store, radio, conn)
             transport, _protocol = await self._start_receiver(
-                store, on_packet=pipeline.on_packet
+                store,
+                recorder=tap,
+                on_packet=self._packet_sink(pipeline, tap),
             )
             from f1re.web.map_api import TrackMap
 
@@ -367,6 +524,9 @@ class Engine:
             if pipeline is not None:
                 with contextlib.suppress(Exception):
                     await pipeline.aclose()
+            if recording is not None:
+                with contextlib.suppress(Exception):
+                    recording.close_active("engine_off")
             if radio is not None:
                 with contextlib.suppress(Exception):
                     await radio.aclose()
@@ -379,10 +539,41 @@ class Engine:
             self._runtime = runtime
             self._transport = transport
             self._tasks = tasks
+            self._recording_manager = recording
+            self._recording_tap = tap
             self._off_event = asyncio.Event()
             self._state = ENGINE_ON
         if self._persist_state:
             write_engine_state(ENGINE_ON, self._state_path)
+
+    def _build_recording(self, conn: sqlite3.Connection) -> Any | None:
+        """자동 원본 녹화기를 만든다. 설정에서 꺼져 있으면 `None`.
+
+        마감 큐로는 `BackupWorker` 대신 프록시(`_BackupQueue`)를 넘겨, 웹 서버
+        lifespan의 워커가 엔진보다 늦게 붙어도 작업을 잃지 않게 한다.
+        """
+        config = self._config or AppConfig()
+        if not config.recording.enabled:
+            return None
+        from f1re.udp.session_recorder import SessionRecordingManager
+
+        return SessionRecordingManager(conn, config.recording, self._backup_queue)
+
+    def _packet_sink(
+        self, pipeline: Any, tap: _RawRecorderTap | None
+    ) -> Callable[[Any, int], None]:
+        """파싱된 패킷을 실서버 파이프라인과 자동 녹화기에 차례로 넘긴다.
+
+        파이프라인을 먼저 부른다. 파이프라인은 자기 예외를 삼키므로 녹화 쪽
+        오류가 코칭·랩 기록을 막지 않는다.
+        """
+
+        def sink(packet: Any, recv_ns: int) -> None:
+            pipeline.on_packet(packet, recv_ns)
+            if tap is not None:
+                tap.deliver(packet, recv_ns)
+
+        return sink
 
     async def _build_pipeline(
         self, store: StateStore, radio: Any, conn: sqlite3.Connection
@@ -408,6 +599,7 @@ class Engine:
         self,
         store: StateStore,
         *,
+        recorder: Any | None = None,
         on_packet: Callable[[Any, int], None] | None = None,
     ) -> tuple[asyncio.DatagramTransport, Any]:
         from f1re.udp.receiver import start_receiver
@@ -416,20 +608,30 @@ class Engine:
             store,
             host=self._host,
             port=self._port,
-            recorder=self._recorder,
+            recorder=recorder,
             on_packet=on_packet,
         )
 
     async def _persist_loop(self, runtime: Runtime) -> None:
-        """세션 진행 상황을 1초마다 DB에 반영한다(예전 `main`의 루프)."""
+        """세션 진행 상황을 1초마다 DB에 반영하고 녹화 마감을 점검한다.
+
+        `persist_events`가 꺼내 간 사건 목록을 자동 녹화기에도 넘겨
+        `SESSION_END`를 `end_reason = 'session_end'`로 마감하고, 같은 주기로
+        무수신 타임아웃(`inactivity_timeout`)을 확인한다.
+        """
         while True:
             await asyncio.sleep(PERSIST_INTERVAL_S)
+            recording = self._recording_manager
+            events: list[Event] = []
             try:
-                persist_events(
+                events = persist_events(
                     runtime.conn, runtime.store, self._recorded_file
                 )
             except Exception:  # DB 오류 하나로 엔진이 멈추지 않게 한다.
                 logger.exception("세션 진행 상황을 DB에 반영하지 못했습니다")
+            if recording is not None:
+                _safe_recording_events(recording, events)
+                _safe_check_inactivity(recording)
 
 
 # ---------------------------------------------------------------------------
@@ -487,11 +689,41 @@ def finalize_session(
     )
 
 
-def _safe_persist(runtime: Runtime, recorded_file: Path | None) -> None:
+def _safe_persist(
+    runtime: Runtime, recorded_file: Path | None
+) -> list[Event]:
+    """세션 사건을 DB에 남기고, 꺼낸 사건 목록을 돌려준다(실패하면 빈 목록)."""
     try:
-        persist_events(runtime.conn, runtime.store, recorded_file)
+        return persist_events(runtime.conn, runtime.store, recorded_file)
     except Exception:  # 종료 경로에서는 기록 실패로 멈추지 않는다.
         logger.exception("세션 사건을 DB에 반영하지 못했습니다")
+        return []
+
+
+def _safe_recording_events(recording: Any, events: list[Event]) -> None:
+    """꺼낸 사건 중 SESSION_END를 녹화 마감에 반영한다(실패해도 계속)."""
+    if not events:
+        return
+    try:
+        recording.on_events(events)
+    except Exception:
+        logger.exception("세션 종료 사건을 녹화 마감에 반영하지 못했습니다")
+
+
+def _safe_check_inactivity(recording: Any) -> None:
+    """무수신 타임아웃을 확인한다. 실패해도 다음 1초 주기에 다시 본다."""
+    try:
+        recording.check_inactivity()
+    except Exception:
+        logger.exception("녹화 무수신 타임아웃을 확인하지 못했습니다")
+
+
+def _safe_close_recording(recording: Any, end_reason: str) -> None:
+    """활성 녹화를 닫아 마감 큐에 넣는다. 압축·업로드는 기다리지 않는다."""
+    try:
+        recording.close_active(end_reason)
+    except Exception:
+        logger.exception("녹화를 마감하지 못했습니다(end_reason=%s)", end_reason)
 
 
 def _safe_finalize(runtime: Runtime, recorded_file: Path | None) -> None:
