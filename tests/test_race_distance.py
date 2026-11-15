@@ -27,11 +27,15 @@ from f1re.web.app import player_summary
 NOW = 1_000_000_000_000
 PLAYER = 0
 
-# 공식 세션 종류(EA F1 25 UDP 문서).
+# 공식 세션 종류(EA F1 25 UDP 문서, SCRUM-131). F1 23과 달리 15가 레이스,
+# 18이 타임 트라이얼이고 10~14는 스프린트 슛아웃이다.
 PRACTICE = 1
 QUALIFYING = 5
-RACE = 10
-TIME_TRIAL = 13
+SPRINT_SHOOTOUT = 10
+RACE = 15
+RACE_2 = 16
+RACE_3 = 17
+TIME_TRIAL = 18
 
 
 # ---------------------------------------------------------------------------
@@ -144,6 +148,7 @@ def test_fuel_laps_margin_is_mfd_value() -> None:
         # 레이스가 아닌 세션에는 레이스 거리가 없다.
         (PRACTICE, 50, 10, None),
         (QUALIFYING, 50, 10, None),
+        (SPRINT_SHOOTOUT, 50, 10, None),
         (TIME_TRIAL, 0, 10, None),
         # 레이스라도 total_laps가 0·없으면 셀 수 없다.
         (RACE, 0, 10, None),
@@ -167,8 +172,12 @@ def test_remaining_race_laps_by_session_and_length(
     [
         (RACE, 5, True),
         (RACE, 50, True),
+        # 레이스 2·3(스프린트 레이스 포함)도 레이스다.
+        (RACE_2, 50, True),
+        (RACE_3, 50, True),
         (PRACTICE, 50, False),
         (QUALIFYING, 50, False),
+        (SPRINT_SHOOTOUT, 50, False),
         (TIME_TRIAL, 0, False),
         (RACE, 0, False),
         (RACE, None, False),
@@ -206,7 +215,9 @@ def test_recorded_false_alarm_sample_is_not_danger() -> None:
     assert _rules().evaluate(snapshot) == []
 
 
-@pytest.mark.parametrize("session_type", [PRACTICE, QUALIFYING, TIME_TRIAL])
+@pytest.mark.parametrize(
+    "session_type", [PRACTICE, QUALIFYING, SPRINT_SHOOTOUT, TIME_TRIAL]
+)
 def test_fuel_alert_suppressed_in_non_race_session(session_type: int) -> None:
     """레이스가 아닌 세션에서는 MFD 여유가 크게 모자라도 연료 경고를 내지 않는다."""
     assert _rules().evaluate(

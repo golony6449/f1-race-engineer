@@ -28,8 +28,9 @@ from f1re.udp.spec import PACKET_FORMAT, Header, PacketId
 SESSION_UID = 0x5EED_0000_0000_0001
 OTHER_SESSION_UID = 0x5EED_0000_0000_0002
 LAP_LENGTH_M = 1000.0
-SESSION_TIME_TRIAL = 13
-SESSION_RACE = 10
+# F1 25 공식 세션 종류(EA UDP 문서, SCRUM-131): 15~17 레이스, 18 타임 트라이얼.
+SESSION_TIME_TRIAL = 18
+SESSION_RACE = 15
 
 
 # ---------------------------------------------------------------------------
@@ -422,6 +423,29 @@ def test_valid_lap_has_no_reason() -> None:
     assert trace.valid is True
     assert trace.invalid_reason is None
     assert len(trace.samples) == 20
+
+
+@pytest.mark.parametrize("session_type", [15, 16, 17])
+def test_race_session_family_excludes_lap_1(session_type: int) -> None:
+    """F1 25 레이스(15~17, 스프린트 레이스 포함)는 1랩을 출발 혼전으로 뺀다."""
+    harness = _Harness()
+    session = {"session_type": session_type}
+    harness.run_lap(1, ticks=5, session=session)
+    harness.feed({0: {"lap": 2, "dist": 0.0, "t_ms": 0}}, session=session)
+    trace = _completed(harness.completed, 1)
+    assert trace.valid is False
+    assert trace.invalid_reason == "race_lap_1"
+
+
+def test_sprint_shootout_is_not_a_race_lap_1() -> None:
+    """F1 23의 10~12를 레이스로 보던 가정을 되풀이하지 않는다(SCRUM-131)."""
+    harness = _Harness()
+    session = {"session_type": 10}  # F1 25 스프린트 슛아웃 1
+    harness.run_lap(1, ticks=5, session=session)
+    harness.feed({0: {"lap": 2, "dist": 0.0, "t_ms": 0}}, session=session)
+    trace = _completed(harness.completed, 1)
+    assert trace.valid is True
+    assert trace.invalid_reason is None
 
 
 def test_lap_distance_rewind_marks_flashback() -> None:

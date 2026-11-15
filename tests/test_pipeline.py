@@ -70,7 +70,7 @@ def _packet(
     )
 
 
-def _session_body(track_id: int, session_type: int = 13) -> dict[str, Any]:
+def _session_body(track_id: int, session_type: int = 18) -> dict[str, Any]:
     return {
         "track_id": track_id,
         "session_type": session_type,
@@ -118,7 +118,7 @@ async def test_auto_detected_track_builds_coaches_without_data_file() -> None:
         pipeline._session_uid = 1
         pipeline._player_index = 0
         pipeline._track_id = 99  # 데이터 파일이 없는 트랙 ID
-        pipeline._session_type = 13  # 타임 트라이얼
+        pipeline._session_type = 18  # 타임 트라이얼
         pipeline._track_length = 5807.0
 
         await pipeline._process_laps([_demo_lap_trace()])
@@ -173,7 +173,7 @@ def test_add_reference_lap_updates_fastest_car_reference() -> None:
     """다른 차 랩은 집중 코너를 건드리지 않고 최속차 기준에만 들어간다."""
     track = load_track(SUZUKA_ID)
     assert track is not None
-    coach = Coach(track, player_car_index=0, session_type=10)
+    coach = Coach(track, player_car_index=0, session_type=15)
     player_lap = _demo_lap_trace(lap=2)
     other_lap = dataclasses.replace(player_lap, car_index=3, lap=2)
 

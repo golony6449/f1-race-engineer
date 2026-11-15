@@ -126,7 +126,7 @@ def _populated_store(*, recv_ns: int | None = None) -> StateStore:
 
     builder.apply(
         PacketId.SESSION,
-        _session_body(total_laps=50, track_length=5807, track_id=13, session_type=10),
+        _session_body(total_laps=50, track_length=5807, track_id=13, session_type=15),
         recv_ns=when,
     )
     builder.apply(

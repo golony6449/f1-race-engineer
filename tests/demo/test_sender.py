@@ -138,7 +138,7 @@ def test_packet_contents_are_plausible() -> None:
     by_id = {PacketId(packet.header.packet_id): packet for packet in packets}
 
     session = by_id[PacketId.SESSION].body
-    assert session["session_type"] == 13  # Time Trial
+    assert session["session_type"] == 18  # Time Trial
     assert session["game_mode"] == 2
     assert session["track_id"] == 13
     assert session["track_length"] == 5807
