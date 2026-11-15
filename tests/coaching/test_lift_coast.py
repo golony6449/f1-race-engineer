@@ -463,6 +463,8 @@ def test_short_lift_feedback_says_how_much_more() -> None:
     lap4 = _messages(
         _feed(coach, trace, 4, overrides=_alert_overrides(4))
     )
+    # 코칭(리프트 짧음)은 다음 직선으로 미루지 않고 바로 내보낸다(SCRUM-94).
+    assert coach.pending_count == 0
     _complete(coach, trace)
 
     short = [message for message in lap4 if message.corner == first.corner]

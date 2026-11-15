@@ -16,9 +16,9 @@
    `MIN_DECEL_KMH` 미만이면 추천에서 뺀다.
 3. **지시**: 레이스 세션에서만, `alerts.thresholds`(위험 기준 단일 출처)의
    `fuel_laps_margin`·`brake_temp`·앞 `tyre_temp` 중 하나가 WARN 이상일 때만
-   추천 구간에서 리프트하라고 무전한다. 지시 유효 시간은 그 구간 리프트 지점
-   전까지다(설계 6.7). 말할 타이밍은 작업 16의 `defer_until_straight`를 그대로
-   재사용해 다음 긴 직선으로 미룬다.
+   추천 구간에서 리프트하라고 무전한다. 코칭 종류 무전은 만든 즉시 큐에 넣고
+   5초 안에 못 말하면 큐가 버린다(SCRUM-94). 개선 알림은 작업 16의
+   `defer_until_straight`로 다음 긴 직선으로 미룬다.
 4. **피드백**: 지시한 다음 랩, 그 구간을 빠져나온 직후 실제 코스팅 거리로
    "N번 리프트가 짧았어. M미터 더 일찍 떼." 또는 "N번 리프트 좋아. 그대로 해."를
    한 번 말한다.
@@ -1208,6 +1208,13 @@ class LiftCoastCoach:
         *,
         zones: Sequence[LiftZone] = (),
     ) -> None:
+        # 코칭 종류는 만든 즉시 큐에 넣는다(SCRUM-94). 5초 유효 시간과 "새
+        # 코칭이 오면 옛 코칭 버리기"는 `RadioQueue`가 맡는다. 개선 알림은
+        # 지금처럼 다음 긴 직선으로 미룬다.
+        if message.kind == RadioKind.COACHING:
+            if self._emit(message, collected) and zones:
+                self._mark_instructed(zones)
+            return
         decision = defer_until_straight(
             sample.dist_m,
             sample.speed,

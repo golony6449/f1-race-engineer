@@ -26,7 +26,7 @@ from f1re.coaching.coach import (
 )
 from f1re.coaching.focus import FocusConfig
 from f1re.coaching.metrics import corner_metrics
-from f1re.coaching.reference import ReferenceSet
+from f1re.coaching.reference import SOURCE_RECENT_CAR, ReferenceSet
 from f1re.demo_sender.driving import DriverProfile, Sample as DrivingSample, generate_lap
 from f1re.demo_sender.scenarios import (
     SCENARIO_DIR,
@@ -171,7 +171,9 @@ def _coach(
     baseline_outline = outline or (
         _SUZUKA_OUTLINE if track.track_id == SUZUKA_ID else _MONACO_OUTLINE
     )
-    baseline = _trace(track, baseline_outline, 99)
+    # 기준 랩은 차마다 가장 최근 유효 랩이다(SCRUM-94). 내 차 랩과 비교할
+    # 기준은 다른 차(1번)의 가장 최근 랩으로 둔다.
+    baseline = _trace(track, baseline_outline, 99, car_index=1)
     references.update(baseline)
     coach = Coach(
         track,
@@ -419,11 +421,11 @@ def test_not_twice_same_lap() -> None:
 
 
 # ---------------------------------------------------------------------------
-# 미룸
+# 코너 탈출 직후 즉시 발화(SCRUM-94)
 
 
-def test_defer_when_next_brake_within_3s() -> None:
-    """모나코 10번(시케인)은 11번이 코앞이라 다음 긴 직선(12번 진입 전)으로 미룬다."""
+def test_coaching_speaks_right_after_corner_exit() -> None:
+    """모나코 10번(시케인) 코칭은 다음 직선까지 미루지 않고 탈출 직후 나간다."""
     coach = _coach(MONACO, focus=[10])
     lap = _monaco(1, effects=_late_brake(MONACO, 10, meters=10.0))
     corner10 = _corner(MONACO, 10)
@@ -431,45 +433,23 @@ def test_defer_when_next_brake_within_3s() -> None:
 
     events = _feed(coach, lap)
 
-    assert events, "미뤄 둔 무전이 긴 직선에서 나와야 한다"
+    assert events, "10번 탈출 직후 코칭 무전이 나와야 한다"
     dist, message = events[0]
     assert message.corner == 10
     assert "10번에서 브레이크가 늦었어." in message.text
-    # 10번 탈출 직후(11번 진입 전)에는 말하지 않고, 11번을 빠져나온 뒤에 말한다.
-    assert dist >= corner11.exit_m
-    assert dist > corner10.exit_m
+    assert corner10.exit_m <= dist < corner11.entry_m
 
 
-def test_deferral_is_visible_between_chicane_corners() -> None:
-    """10번 탈출 샘플에서는 아직 미뤄 두고, 11번 탈출 전에는 내보내지 않는다."""
-    coach = _coach(MONACO, focus=[10])
+def test_coaching_message_in_queue_immediately() -> None:
+    """큐를 주면 코너 탈출 샘플에서 곧바로 큐에 들어간다(미룸 없음)."""
+    queue = RadioQueue(clock=lambda: _BASE_NS)
+    coach = _coach(MONACO, focus=[10], queue=queue)
     lap = _monaco(1, effects=_late_brake(MONACO, 10, meters=10.0))
-    corner11 = _corner(MONACO, 11)
 
-    early = _feed(coach, lap, until_m=corner11.entry_m + 5.0)
+    _feed(coach, lap)
 
-    assert early == []
-    assert coach.pending_count == 1
-
-
-def test_deferred_message_dropped_at_lap_end() -> None:
-    """랩 안에 못 미루면 버린다. 다음 랩으로 넘어가지 않는다."""
-    coach = _coach(MONACO, focus=[18])
-    lap = _monaco(1, effects=_early_brake(MONACO, 18))
-    corner19 = _corner(MONACO, 19)
-
-    events = _feed(coach, lap, until_m=corner19.entry_m + 2.0)
-    assert events == []
-    assert coach.pending_count == 1
-
-    # 다음 랩 첫 샘플로 넘어가면 미뤄 둔 무전은 버려진다.
-    first = lap.samples[0]
-    next_lap_messages = coach.on_sample(
-        _state(first, 2), first.dist_m, 400_000_000_000
-    )
-
-    assert next_lap_messages == []
-    assert coach.pending_count == 0
+    assert queue.pending_count == 1
+    assert queue.pending()[0].corner == 10
 
 
 def test_defer_until_straight_helper() -> None:
@@ -534,7 +514,8 @@ def test_single_cause_message_has_where_what_howmuch() -> None:
     assert evidence["amount"] == 5
     assert evidence["unit"] == "m"
     assert evidence["focus"] is True
-    assert evidence["reference"] == "self"
+    # 기준은 1번 차의 가장 최근 랩이다(SCRUM-94).
+    assert evidence["reference"] == SOURCE_RECENT_CAR
     assert "metrics" in evidence and "reference_metrics" in evidence
 
 

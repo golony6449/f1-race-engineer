@@ -7,8 +7,13 @@
 - 말하는 중에 더 높은 우선순위 무전이 오면 `interrupt_if_higher()`가 True를
   돌려준다. 재생기는 지금 소리를 끊고 `complete()` 뒤 `next()`로 새 무전을 꺼낸다.
 - 낮은 우선순위 무전은 대기하고, 유효 시간이 지나면 `next()`가 버린다.
+- **코칭 무전은 만든 시각부터 `COACHING_TTL_NS`(5초) 안에 말을 시작하지
+  못하면 버린다**(SCRUM-94). 코칭 종류 판정과 5초는 이 모듈 한 곳에만 둔다.
+- **새 코칭이 들어오면 아직 재생 전인 옛 코칭은 버린다.** 재생 중인 무전과
+  다른 종류(안전·박스·추월·개선 알림)는 건드리지 않는다(SCRUM-94).
 - 버린 무전은 `set_drop_handler()`로 넘긴 처리기(무전 기록 등)에 이유와 함께
   알린다. 재생되지 않은 무전도 세션 뒤에 왜 사라졌는지 볼 수 있다(SCRUM-81).
+  유효 시간 만료는 `"expired"`, 새 코칭으로 밀려난 것은 `"superseded"`다.
 - 안전 경고는 끌 수 없다(`set_muted`가 False를 돌려주고 아무것도 바꾸지 않는다).
 """
 
@@ -54,8 +59,14 @@ PRIORITY_BY_KIND: dict[str, Priority] = {
 # 끌 수 있는 종류. 안전 경고는 설계 6.7(마스터 판단)에 따라 뺄 수 없다.
 MUTABLE_KINDS = frozenset(RadioKind) - {RadioKind.SAFETY}
 
-# 큐가 무전을 버린 이유. 지금은 유효 시간 만료뿐이다.
+# 코칭 무전은 만든 시각부터 이 시간 안에 말을 시작하지 못하면 버린다(SCRUM-94).
+# 코칭 종류 판정과 유효 시간은 여기 한 곳에만 둔다.
+COACHING_KIND = RadioKind.COACHING
+COACHING_TTL_NS = 5 * 10**9
+
+# 큐가 무전을 버린 이유.
 DROP_REASON_EXPIRED = "expired"
+DROP_REASON_SUPERSEDED = "superseded"
 
 
 @dataclass(frozen=True)
@@ -100,18 +111,25 @@ class RadioMessage:
         lap: int | None = None,
         corner: int | None = None,
     ) -> RadioMessage:
-        """종류로 우선순위를 정하고 유효 시간을 `now_ns + ttl_ns`로 채운다."""
+        """종류로 우선순위를 정하고 유효 시간을 `now_ns + ttl_ns`로 채운다.
+
+        코칭 무전은 `COACHING_TTL_NS`(5초)보다 길게 두지 않는다(SCRUM-94).
+        만든 시각부터 5초 안에 말을 시작하지 못하면 큐가 버린다.
+        """
         try:
-            priority = PRIORITY_BY_KIND[RadioKind(kind)]
+            resolved = RadioKind(kind)
+            priority = PRIORITY_BY_KIND[resolved]
         except ValueError as exc:
             raise ValueError(f"모르는 무전 종류: {kind}") from exc
         if ttl_ns < 0:
             raise ValueError("ttl_ns는 0 이상이어야 합니다")
+        if resolved is COACHING_KIND:
+            ttl_ns = min(int(ttl_ns), COACHING_TTL_NS)
         return cls(
             kind=str(kind),
             priority=priority,
             text=text,
-            expires_ns=now_ns + ttl_ns,
+            expires_ns=int(now_ns) + int(ttl_ns),
             evidence=dict(evidence or {}),
             created_ns=now_ns,
             lap=lap,
@@ -153,19 +171,40 @@ class RadioQueue:
 
         끈 종류는 사용자가 고른 것이므로 조용히 버리고, 이미 유효 시간이
         지난 무전은 버린 이유를 처리기에 알린다.
+
+        코칭 무전이 들어오면 아직 재생 전인 옛 코칭 무전은 버린다(SCRUM-94).
+        재생 중인 무전은 건드리지 않고, 다른 종류도 그대로 둔다.
         """
+        superseded: list[RadioMessage] = []
         with self._lock:
             if msg.kind in self._muted:
                 return False
+            handler = self._on_drop
             if msg.expired(self._clock()):
-                handler = self._on_drop
+                expired = True
             else:
+                expired = False
+                if msg.kind == COACHING_KIND:
+                    superseded = [
+                        entry.msg
+                        for entry in self._pending
+                        if entry.msg.kind == COACHING_KIND
+                    ]
+                    if superseded:
+                        self._pending = [
+                            entry
+                            for entry in self._pending
+                            if entry.msg.kind != COACHING_KIND
+                        ]
                 self._pending.append(_Entry(self._next_seq, msg))
                 self._next_seq += 1
                 self._pending.sort(key=self._order_key)
-                return True
-        self._notify_drop(handler, msg)
-        return False
+        if expired:
+            self._notify_drop(handler, msg, DROP_REASON_EXPIRED)
+            return False
+        for old in superseded:
+            self._notify_drop(handler, old, DROP_REASON_SUPERSEDED)
+        return True
 
     # --- 꺼내기 -----------------------------------------------------------
 
@@ -182,7 +221,7 @@ class RadioQueue:
             if msg is not None:
                 self._current = msg
         for expired in dropped:
-            self._notify_drop(handler, expired)
+            self._notify_drop(handler, expired, DROP_REASON_EXPIRED)
         return msg
 
     def complete(self) -> None:
@@ -282,15 +321,17 @@ class RadioQueue:
         return dropped
 
     @staticmethod
-    def _notify_drop(handler: DropHandler | None, msg: RadioMessage) -> None:
+    def _notify_drop(
+        handler: DropHandler | None, msg: RadioMessage, reason: str
+    ) -> None:
         """처리기에 버린 이유를 알린다. 처리기 오류가 큐를 막지 않는다."""
         if handler is None:
             return
         try:
-            handler(msg, DROP_REASON_EXPIRED)
+            handler(msg, reason)
         except Exception:  # 기록 실패가 무전 전달을 멈추지 않게 한다.
             logging.getLogger(__name__).exception(
-                "만료 무전을 처리기에 넘기지 못했습니다: %s", msg.text
+                "버린 무전을 처리기에 넘기지 못했습니다: %s", msg.text
             )
 
     def __iter__(self) -> Iterator[RadioMessage]:

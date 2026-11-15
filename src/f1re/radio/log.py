@@ -3,7 +3,8 @@
 설계 6.7은 무전마다 시각, 랩, 코너, 종류, 문장, 근거 수치, 실제 재생 여부와
 지연을 남기라고 한다. 재생에 실패한 무전도 `played=False`로 남겨, 세션 뒤
 화면(작업 20)에서 왜 말하지 못했는지 볼 수 있게 한다. 큐가 유효 시간이 지나
-버린 무전은 `dropped_reason="expired"`로 남긴다(SCRUM-81).
+버린 무전은 `dropped_reason="expired"`(SCRUM-81), 새 코칭이 들어와 밀려난
+옛 코칭은 `dropped_reason="superseded"`(SCRUM-94)로 남긴다.
 """
 
 from __future__ import annotations
