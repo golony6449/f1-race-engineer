@@ -63,6 +63,7 @@ from f1re.coaching.store import (
 from f1re.config import AppConfig
 from f1re.laps.traces import LAP_DISTANCE_TOLERANCE_M, LapTrace, LapTraceRecorder
 from f1re.overtake.advisor import OvertakeAdvisor, OvertakeConfig
+from f1re.race_distance import fuel_laps_margin, remaining_race_laps
 from f1re.radio.queue import RadioQueue
 from f1re.tracks.learn import remember_outline, resolve_outline
 from f1re.tracks.model import (
@@ -636,15 +637,12 @@ class RacePipeline:
             return None
 
         lap_number = _int(lap.get("current_lap_num"))
-        remaining_race_laps: float | None = None
-        if self._total_laps and lap_number:
-            remaining_race_laps = float(max(self._total_laps - lap_number + 1, 0))
-        fuel_remaining = _float(status.get("fuel_remaining_laps"))
-        fuel_margin = (
-            fuel_remaining - remaining_race_laps
-            if fuel_remaining is not None and remaining_race_laps is not None
-            else None
+        # 레이스 세션이 아니거나 total_laps가 없으면 남은 레이스 랩을 만들지 않는다.
+        race_laps_left = remaining_race_laps(
+            self._session_type, self._total_laps, lap_number
         )
+        # 게임 MFD의 연료 여유 랩(남은 레이스 거리 대비 +/-)을 그대로 쓴다.
+        fuel_margin = fuel_laps_margin(status.get("fuel_remaining_laps"))
         safety_car_status = (
             _int(self._latest_session.get("safety_car_status"))
             if self._latest_session
@@ -676,11 +674,11 @@ class RacePipeline:
             "safety_car": safety_car_status == 1,
             "vsc": safety_car_status == 2,
             "fuel_kg": _float(status.get("fuel_in_tank")),
-            "fuel_remaining_laps": fuel_remaining,
-            "remaining_race_laps": remaining_race_laps,
+            "fuel_remaining_laps": _float(status.get("fuel_remaining_laps")),
+            "remaining_race_laps": race_laps_left,
             "total_laps": self._total_laps,
             # 감정 단계(SCRUM-91): 마지막 3랩이면 코칭·리프트가 격앙 표현을 쓴다.
-            "remaining_laps": remaining_race_laps,
+            "remaining_laps": race_laps_left,
             "fuel_laps_margin": fuel_margin,
             "brake_temp": _max_number(telemetry.get("brakes_temperature")),
             "brake_temps": _number_list(telemetry.get("brakes_temperature")),

@@ -87,14 +87,18 @@ def mood_for(
 
 
 def is_last_laps(remaining_laps: float | None, *, threshold: int = LAST_LAPS) -> bool:
-    """남은 랩이 `threshold` 이하인가(레이스 여부는 호출자가 판단한다)."""
+    """남은 랩이 1 이상 `threshold` 이하인가(레이스 여부는 호출자가 판단한다).
+
+    0 이하는 레이스 도중 나올 수 없는 값이다(레이스가 아니거나 `total_laps`가
+    0·없는 세션의 계산 결과). 그때는 마지막 랩들로 보지 않는다(SCRUM-95).
+    """
     if remaining_laps is None:
         return False
     try:
         value = float(remaining_laps)
     except (TypeError, ValueError):
         return False
-    return math.isfinite(value) and value <= threshold
+    return math.isfinite(value) and 0 < value <= threshold
 
 
 def _slots_in_text(text: str) -> tuple[str, ...]:
