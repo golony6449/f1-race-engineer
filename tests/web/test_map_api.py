@@ -26,6 +26,7 @@ from f1re.udp.schema import (
     StructDef,
     StructField,
 )
+from f1re.udp.session_uid import demo_session_uid
 from f1re.udp.spec import PACKET_FORMAT, Header, PacketId
 from f1re.web.app import create_app
 
@@ -95,8 +96,9 @@ def _lap_data_body(entries: dict[int, dict[str, Any]]) -> dict[str, Any]:
 class PacketBuilder:
     """테스트용 패킷 생성기. 실제 파서·수신 파이프라인을 그대로 통과시킨다."""
 
-    def __init__(self, store: StateStore) -> None:
+    def __init__(self, store: StateStore, *, session_uid: int = SESSION_UID) -> None:
         self.store = store
+        self.session_uid = session_uid
         self.frame = 0
 
     def apply(self, packet_id: PacketId, body: dict[str, Any]) -> None:
@@ -108,7 +110,7 @@ class PacketBuilder:
             game_minor=0,
             packet_version=1,
             packet_id=int(packet_id),
-            session_uid=SESSION_UID,
+            session_uid=self.session_uid,
             session_time=self.frame / 60.0,
             frame_id=self.frame,
             overall_frame_id=self.frame,
@@ -125,9 +127,11 @@ def _client(store: StateStore, conn: Any = None) -> TestClient:
     return TestClient(create_app(store, conn=conn))
 
 
-def _with_session(track_id: int, **session_updates: Any) -> tuple[StateStore, PacketBuilder]:
+def _with_session(
+    track_id: int, *, session_uid: int = SESSION_UID, **session_updates: Any
+) -> tuple[StateStore, PacketBuilder]:
     store = StateStore()
-    builder = PacketBuilder(store)
+    builder = PacketBuilder(store, session_uid=session_uid)
     builder.apply(
         PacketId.SESSION,
         _session_body(track_id=track_id, track_length=5807, **session_updates),
@@ -135,9 +139,11 @@ def _with_session(track_id: int, **session_updates: Any) -> tuple[StateStore, Pa
     return store, builder
 
 
-def _populate_gp(store: StateStore) -> PacketBuilder:
+def _populate_gp(
+    store: StateStore, *, session_uid: int = SESSION_UID
+) -> PacketBuilder:
     """내 차(3위)와 앞차(2위)·뒷차(4위)가 달리는 그랑프리 상태."""
-    builder = PacketBuilder(store)
+    builder = PacketBuilder(store, session_uid=session_uid)
     builder.apply(
         PacketId.PARTICIPANTS, _participants_body({0: 0, 1: 8, 2: 1})
     )
@@ -265,14 +271,19 @@ def test_car_positions_from_lap_distance_without_motion() -> None:
     assert set(cars) == {0, 1, 2}
 
     outline = load_outline(SUZUKA_ID)
+    track = load_track(SUZUKA_ID)
     assert outline is not None
+    assert track is not None
+    # 실제 게임 세션은 lap_distance에서 중심선 오프셋(스즈카 130m)을 뺀다.
+    offset = track.lap_distance_offset_m
+    assert offset == pytest.approx(130.0)
     expected = {0: 500.0, 1: 530.0, 2: 900.0}
     for car_index, distance in expected.items():
         car = cars[car_index]
         assert car["dist_m"] == pytest.approx(distance)
         assert car["x"] is not None and car["z"] is not None
         assert (car["x"], car["z"]) == pytest.approx(
-            outline.position_at(distance)
+            outline.position_at(distance - offset)
         )
 
     # 팀 색·내 차 강조·앞차 표시.
@@ -289,6 +300,20 @@ def test_car_positions_from_lap_distance_without_motion() -> None:
         assert {"car", "dist_m", "x", "z", "team_id", "is_player", "is_target"} <= set(
             car
         )
+
+
+def test_car_positions_demo_session_uses_centerline_distance_without_offset() -> None:
+    """데모 세션은 중심선 좌표로 주행하므로 실제 게임용 오프셋을 적용하지 않는다."""
+    demo_uid = demo_session_uid(7)
+    store, _builder = _with_session(SUZUKA_ID, session_uid=demo_uid)
+    _populate_gp(store, session_uid=demo_uid)
+    data = _client(store).get("/api/state").json()
+
+    outline = load_outline(SUZUKA_ID)
+    assert outline is not None
+    car = next(car for car in data["cars"] if car["car"] == 0)
+    assert car["dist_m"] == pytest.approx(500.0)
+    assert (car["x"], car["z"]) == pytest.approx(outline.position_at(500.0))
 
 
 def test_car_positions_without_outline_have_no_xy() -> None:

@@ -25,6 +25,10 @@
 
 - `length_m`: 공식 서킷 길이(m). 중심선을 이 길이에 맞춰 축척했다. 5 m 간격으로 다시
   샘플링하면서 폴리라인 길이는 1% 안에서 조금 짧아진다.
+- `lap_distance_offset_m`(선택): 실제 게임 `lap_distance`와 중심선 `dist_m`의 차이.
+  게임 랩 거리에서 이 값을 빼면 중심선 거리다. 스즈카는 130.0 m(SCRUM-57 실측,
+  p5~p95 127~137 m), 없으면 0이다. 데모 송신기는 중심선 좌표로 주행하므로 이
+  보정을 쓰지 않고, 실제 게임 세션의 지도 차 위치만 보정한다.
 - `corners`: 공식 코너 번호 순서(1번부터 연속). `entry_m`~`exit_m`는 랩 시작(결승선)
   기준 랩 거리(m), `apex_m`는 그 구간에서 곡률이 가장 큰 지점이다. 데이터 파일에는 공식
   번호만 넣고, 로더(`f1re.tracks.model.load_track`)가 `official=True`로 채운다.
@@ -145,7 +149,8 @@ LLM 프롬프트와 규칙 엔진이 쓸 코너별 공략·방어 설명은 `src
 - 랩 거리 0(결승선) 기준:
   - 모나코: OSM 관계의 `start-finish` 노드.
   - 스즈카: OSM에 결승선 노드가 없어 피트 빌딩(way 184422099) 중심을 결승선 위치로
-    근사했다. 작업 7에서 실제 게임 `lapDistance`와 맞출 때 보정한다.
+    근사했다. 실제 게임 `lapDistance`와는 130 m 차이가 나서(SCRUM-57 실측)
+    `lap_distance_offset_m`에 적었다.
 - 코너 `entry_m`/`exit_m`는 공식 번호 순서대로 정한 랩 거리 구간이고, `apex_m`는 그 안에서
   곡률이 가장 큰 지점이다. 구간이 실제 코너 곡률을 덮는지는
   `tests/tracks/test_model.py::test_corner_intervals_have_curvature_and_straights_do_not`가
