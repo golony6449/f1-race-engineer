@@ -28,6 +28,12 @@
 - Session 패킷 `m_sessionType` 값 표는 [session-types.md](session-types.md)에
   있다. 코드의 단일 출처는 `src/f1re/udp/session_category.py`다.
 
+## 실제 게임 녹화 확인
+
+2026-11-15 실전 레이스 녹화(스즈카, recording id 6)로 538,918개 패킷 전부를
+파싱하고 크기·수신 주기·중심선 좌표 정렬·결승선 거리 오프셋을 확인했다. 결과와
+회귀 픽스처는 [real-game-check.md](real-game-check.md)에 있다.
+
 ## 2025 패킷 크기
 
 | 패킷 | ID | 바이트 |

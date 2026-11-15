@@ -67,6 +67,17 @@ def test_load_unknown_track_returns_none(track_id: int) -> None:
     assert load_outline(track_id) is None
 
 
+def test_lap_distance_offset_defaults_and_suzuka_calibration() -> None:
+    """스즈카만 실제 게임 lap_distance 보정값(130m)을 갖고, 모나코는 0이다."""
+    suzuka = load_track(13)
+    monaco = load_track(5)
+
+    assert suzuka is not None
+    assert monaco is not None
+    assert suzuka.lap_distance_offset_m == pytest.approx(130.0)
+    assert monaco.lap_distance_offset_m == 0.0
+
+
 def test_data_files_are_packaged() -> None:
     names = {entry.name for entry in resources.files("f1re.tracks.data").iterdir()}
     assert {"suzuka.json", "monaco.json"} <= names
