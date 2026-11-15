@@ -5,15 +5,31 @@
  * - `/api/radio/log`: 최근 무전(문장 + 근거 수치), 종류별 끄기 상태.
  * - `/api/radio/mute`: 끄기/켜기. 안전 경고는 서버가 409로 거부한다.
  * - `/api/report`: 코너별 손실 순위, 집중 코너 변화, 무전 뒤 개선 여부.
+ *
+ * 다시 보기(설계 4.6, SCRUM-101) 중에는 같은 화면 부품으로 리플레이 전용
+ * 버퍼를 읽는다. dashboard.js가 `f1re:replay-mode` 이벤트를 보내면 아래
+ * 주소가 `/api/replay/radio/log`·`/api/replay/report`로 바뀐다. 리플레이
+ * 중에는 무전 종류 끄기(POST)를 보내지 않는다(실서버 상태 보호).
  */
 
 const LOG_URL = "/api/radio/log";
 const MUTE_URL = "/api/radio/mute";
 const REPORT_URL = "/api/report";
+const REPLAY_LOG_URL = "/api/replay/radio/log";
+const REPLAY_REPORT_URL = "/api/replay/report";
 const LOG_REFRESH_MS = 2000;
 const REPORT_REFRESH_MS = 5000;
 
 let muteBusy = false;
+let replayActive = false;
+
+function logUrl() {
+  return replayActive ? REPLAY_LOG_URL : LOG_URL;
+}
+
+function reportUrl() {
+  return replayActive ? REPLAY_REPORT_URL : REPORT_URL;
+}
 
 // 코치가 남기는 원인 키(`coach.Cause.key`)의 화면 이름.
 const CAUSE_LABELS = {
@@ -81,12 +97,15 @@ function renderMutes(root, kinds) {
     button.type = "button";
     button.dataset.kind = item.kind;
     button.setAttribute("aria-pressed", item.muted ? "true" : "false");
-    button.disabled = item.mutable === false;
+    button.disabled = item.mutable === false || replayActive;
     if (item.muted) button.classList.add("is-muted");
-    if (item.mutable === false) {
+    if (replayActive) {
+      button.title = "다시 보기 중에는 무전 종류를 바꿀 수 없습니다";
+    } else if (item.mutable === false) {
       button.title = "안전 경고는 끌 수 없습니다";
     }
     button.addEventListener("click", () => {
+      if (replayActive) return;
       toggleMute(item.kind, !item.muted);
     });
     root.append(button);
@@ -244,7 +263,7 @@ function renderReport(root, report) {
 
 async function refreshLog() {
   try {
-    const log = await getJson(LOG_URL);
+    const log = await getJson(logUrl());
     renderMutes(document.getElementById("radio-mutes"), log.kinds);
     renderLog(document.getElementById("radio-log"), log);
   } catch (error) {
@@ -254,7 +273,7 @@ async function refreshLog() {
 
 async function refreshReport() {
   try {
-    const report = await getJson(REPORT_URL);
+    const report = await getJson(reportUrl());
     renderReport(document.getElementById("session-report"), report);
   } catch (error) {
     // 다음 주기에 다시 시도한다.
@@ -262,7 +281,7 @@ async function refreshReport() {
 }
 
 async function toggleMute(kind, muted) {
-  if (muteBusy) return;
+  if (muteBusy || replayActive) return;
   muteBusy = true;
   try {
     const response = await fetch(MUTE_URL, {
@@ -281,6 +300,14 @@ async function toggleMute(kind, muted) {
     muteBusy = false;
   }
 }
+
+// 다시 보기 모드 전환. dashboard.js가 시작/종료 때 알려 주면 곧바로 새 주소로
+// 다시 읽어 실시간 무전 기록이 리플레이 기록으로 바뀌게 한다.
+window.addEventListener("f1re:replay-mode", (event) => {
+  replayActive = Boolean(event.detail && event.detail.active);
+  refreshLog();
+  refreshReport();
+});
 
 if (document.getElementById("radio-log")) {
   refreshLog();
