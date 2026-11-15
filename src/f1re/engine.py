@@ -307,6 +307,24 @@ class Engine:
         return None if runtime is None else runtime.pipeline
 
     @property
+    def config(self) -> AppConfig | None:
+        """이 엔진을 만든 앱 설정(고정 런타임이면 `None`일 수 있다).
+
+        웹 서버 `lifespan`이 `BackupWorker`·`ReplayManager`를 같은 녹화 설정으로
+        만들 때 읽는다(설계 4.2 — 워커는 엔진 내부가 아닌 웹 서버 레벨).
+        """
+        return self._config
+
+    @property
+    def db_path(self) -> str | Path | None:
+        """세션 DB 파일 경로. `None`이면 기본 `data/f1re.db`를 쓴다.
+
+        웹 서버 `lifespan`의 `BackupWorker`가 엔진과 **같은** DB를 열도록
+        넘긴다(설계 4.2 2단계 — 전용 SQLite 연결이지만 같은 파일).
+        """
+        return self._db_path
+
+    @property
     def recording_manager(self) -> Any | None:
         """지금 자동 녹화 중인 `SessionRecordingManager`. 엔진 OFF면 `None`."""
         return self._recording_manager

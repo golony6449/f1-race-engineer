@@ -20,15 +20,28 @@ API:
 - ``GET /radio``·``WS /ws/radio``  무전 페이지와 음성 전달(`web/radio_api.py`)
 - ``GET /api/radio/log``·``POST /api/radio/mute``·``GET /api/report``
   무전 기록·종류별 끄기·세션 리포트(`web/report_api.py`)
+- ``GET /api/recordings*``·``POST /api/replay*``·``WS /ws/replay``
+  녹화 목록·다운로드·웹 다시 보기(`web/replay_api.py`, 설계 4.5·4.6)
+
+웹 서버 `lifespan`은 엔진과 분리된 `BackupWorker`를 소유한다(설계 4.2).
+기동할 때 `.active/*.f1rec` 복구와 `pending`·`failed` 재시도를 등록하고,
+종료할 때 워커 태스크만 멈춘다(진행 중 압축은 DB와 `.active/`에 남아 다음
+기동이 이어 받는다). 그래서 45분 레이스의 압축·업로드가 `Engine.stop()`
+(HTTP 요청)이나 서비스 종료(`TimeoutStopSec`)를 막지 않는다.
+
+녹화·리플레이 API는 **엔진 OFF에서도** 동작한다. 엔진이 필요한 나머지 API만
+503 `{"engine": "off"}`로 답한다(설계 4.5).
 """
 
 from __future__ import annotations
 
 import asyncio
 import contextlib
+import logging
 import math
 import sqlite3
 import time
+from collections.abc import Callable
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
@@ -38,7 +51,9 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+from f1re import db
 from f1re.alerts.thresholds import color_table, severity
+from f1re.config import AppConfig
 from f1re.engine import (
     ENGINE_OFF,
     ENGINE_ON,
@@ -48,10 +63,16 @@ from f1re.engine import (
 )
 from f1re.race_distance import fuel_laps_margin, remaining_race_laps
 from f1re.state.store import StateStore
+from f1re.udp.backup import BackupWorker
+from f1re.udp.gcs_transfer import RecordingFetcher
+from f1re.udp.web_replay import ReplayManager
 from f1re.web.lift_coast_api import create_lift_coast_router
 from f1re.web.map_api import TrackMap, create_map_router
 from f1re.web.radio_api import RadioService, router as radio_router
+from f1re.web.replay_api import create_replay_router
 from f1re.web.report_api import create_report_router
+
+logger = logging.getLogger(__name__)
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 
@@ -372,9 +393,24 @@ _ENGINE_OFF_ALLOWED_PATHS = {
     "/api/voice/check",
 }
 
+# 녹화·다시 보기는 실시간 엔진과 분리된 DB·메모리 리플레이만 쓴다. 그래서
+# 엔진 OFF에서도 목록·다운로드·리플레이 제어가 동작해야 한다(설계 4.5).
+# `/ws/replay`는 HTTP 미들웨어를 타지 않는 WebSocket이라 여기 없어도 열린다.
+_ENGINE_OFF_ALLOWED_PREFIXES = (
+    "/api/recordings",
+    "/api/replay",
+)
+
 
 def _engine_off_allowed(path: str) -> bool:
-    return path in _ENGINE_OFF_ALLOWED_PATHS or path.startswith("/static/")
+    if path in _ENGINE_OFF_ALLOWED_PATHS or path.startswith("/static/"):
+        return True
+    # 접두사 뒤에 `/`나 끝이 와야 한다. `/api/recordings-x` 같은 다른 경로를
+    # 실수로 통과시키지 않는다.
+    return any(
+        path == prefix or path.startswith(prefix + "/")
+        for prefix in _ENGINE_OFF_ALLOWED_PREFIXES
+    )
 
 
 def create_app(
@@ -383,15 +419,32 @@ def create_app(
     *,
     conn: sqlite3.Connection | None = None,
     engine: Engine | None = None,
+    config: AppConfig | None = None,
+    db_path: str | Path | None = None,
+    backup_worker: BackupWorker | None = None,
+    recording_fetcher: RecordingFetcher | None = None,
+    replay_manager: ReplayManager | None = None,
 ) -> FastAPI:
     """상태 저장소 하나를 읽는 FastAPI 앱을 만든다.
 
     실서버는 `engine`을 넘긴다. 웹 서버는 항상 뜨고, 엔진이 꺼져 있으면
-    화면·정적 파일·health·엔진 API만 동작하며 나머지 API는 503으로 답한다.
+    화면·정적 파일·health·엔진 API·녹화/리플레이 API만 동작하며 나머지 API는
+    503으로 답한다(설계 4.5).
 
     `engine` 없이 `store`/`radio`/`conn`을 넘기면 그 자원에 붙은 고정 엔진(항상
     ON)을 만들어 준다. 테스트·단독 실행이 쓰는 예전 방식이다. `radio`를 생략하면
     음성 캐시 없는 기본 서비스를 만든다.
+
+    앱 수명에는 엔진과 분리된 `BackupWorker`가 붙는다(설계 4.2). 엔진과 같은
+    DB 파일을 전용 연결로 열고, 기동 때 `.active/` 복구·pending 재시도를 하며
+    종료 때 진행 중 작업을 취소한다(다음 기동이 이어 받는다). 실제 `rclone`은
+    업로드할 작업이 있을 때만 부르므로 GCS가 꺼져 있거나 rclone이 없어도 앱은
+    그대로 뜬다.
+
+    `config`·`db_path`·`backup_worker`·`recording_fetcher`·`replay_manager`는
+    테스트가 가짜 업로더·임시 경로를 주입하는 자리다. 생략하면 엔진의 설정·DB
+    경로를 그대로 쓴다. DB 파일 경로가 없으면(메모리 DB·고정 엔진) 워커는 만들지
+    않고 읽기 API만 빈 메모리 DB로 답한다.
     """
     if engine is None:
         state_store = store if store is not None else StateStore()
@@ -404,12 +457,46 @@ def create_app(
                 map=TrackMap(conn),
             )
         )
+    app_config = config if config is not None else _engine_config(engine)
+    sessions_db, has_sessions_db = _resolve_sessions_db(engine, db_path, conn)
+    conn_factory = _sessions_conn_factory(sessions_db, has_sessions_db)
+
+    manager = (
+        replay_manager
+        if replay_manager is not None
+        else ReplayManager(config=app_config, conn_factory=conn_factory)
+    )
+    fetcher = (
+        recording_fetcher
+        if recording_fetcher is not None
+        else RecordingFetcher(conn_factory, app_config.recording)
+    )
+    worker = backup_worker
+    if worker is None and has_sessions_db:
+        try:
+            worker = BackupWorker(
+                sessions_db,
+                app_config.recording,
+                # 로컬 5개 정리에서 지금 리플레이 중인 파일을 지우지 않는다.
+                active_replay_id=lambda: manager.active_recording_id,
+            )
+        except Exception:  # 워커가 없어도 화면·실시간 API는 떠야 한다.
+            logger.exception("백업 워커를 만들지 못했습니다")
+            worker = None
+    if worker is not None:
+        # 엔진이 워커보다 먼저 켜져 있었어도 그동안의 마감 작업을 잃지 않게 한다.
+        engine.attach_backup_worker(worker)
+
     app = FastAPI(
         title="F1 레이스 엔지니어 대시보드",
-        lifespan=_lifespan(engine),
+        lifespan=_lifespan(engine, worker, manager),
     )
     app.state.engine = engine
     app.state.radio = engine.radio
+    app.state.backup_worker = worker
+    app.state.recording_fetcher = fetcher
+    app.state.replay_manager = manager
+    app.state.sessions_conn_factory = conn_factory
 
     @app.middleware("http")
     async def pages_and_engine_guard(request: Request, call_next):
@@ -434,6 +521,16 @@ def create_app(
     app.include_router(create_map_router(lambda: engine.runtime))
     app.include_router(create_report_router(lambda: engine.runtime))
     app.include_router(create_lift_coast_router(_lift_state_source(engine)))
+    # 녹화 목록·다운로드·웹 다시 보기(설계 4.5·4.6). 엔진 런타임이 아니라
+    # 앱 수명의 워커·리플레이 관리자·DB 공장만 쓰므로 엔진 OFF에서도 동작한다.
+    app.include_router(
+        create_replay_router(
+            conn_factory=conn_factory,
+            fetcher=fetcher,
+            replay_manager=manager,
+            backup_worker=worker,
+        )
+    )
 
     def _runtime() -> Runtime:
         runtime = engine.runtime
@@ -534,25 +631,99 @@ def _lift_state_source(engine: Engine):
     return source
 
 
-def _lifespan(engine: Engine):
-    """고정 엔진이면 무전 루프를 앱 수명에 묶고, 소유 엔진이면 종료 때 정리한다."""
+def _lifespan(
+    engine: Engine,
+    backup_worker: BackupWorker | None,
+    replay_manager: ReplayManager | None,
+):
+    """앱 수명에 무전 루프·백업 워커·리플레이를 묶는다.
+
+    고정 엔진이면 무전 서비스만 정리하고, 소유 엔진이면 종료 때 런타임을
+    정리한다. `BackupWorker.start()`는 `.active/` 복구·pending 재시도를 마친
+    뒤에야 끝나므로, 웹 서버 ready를 기다렸다가 엔진을 켜는 `main` 흐름에서는
+    기동 복구가 새 녹화를 건드리지 않는다.
+    """
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
+        if backup_worker is not None:
+            try:
+                await backup_worker.start()
+            except Exception:  # 워커가 없어도 대시보드는 뜬다.
+                logger.exception("백업 워커를 시작하지 못했습니다")
         radio = None if engine.managed else engine.radio
         if radio is not None:
             radio.ensure_started()
         try:
             yield
         finally:
+            # 리플레이를 먼저 닫아 로컬 5개 정리 대상에서 빠지게 한다.
+            if replay_manager is not None:
+                with contextlib.suppress(Exception):
+                    await replay_manager.aclose()
             radio = None if engine.managed else engine.radio
             if radio is not None:
                 await radio.aclose()
             else:
                 # 종료는 사용자가 끈 것이 아니므로 저장 상태를 바꾸지 않는다.
                 await engine.aclose()
+            # 엔진 종료가 큐에 넣은 마감 작업까지 워커가 받은 뒤 연결을 끊는다.
+            engine.attach_backup_worker(None)
+            if backup_worker is not None:
+                with contextlib.suppress(Exception):
+                    await backup_worker.aclose()
 
     return lifespan
+
+
+def _engine_config(engine: Engine) -> AppConfig:
+    """엔진을 만든 설정. 고정 엔진처럼 설정이 없으면 기본값을 쓴다."""
+    return engine.config if engine.config is not None else AppConfig()
+
+
+def _resolve_sessions_db(
+    engine: Engine,
+    db_path: str | Path | None,
+    conn: sqlite3.Connection | None,
+) -> tuple[str | Path | None, bool]:
+    """녹화 워커·API가 쓸 세션 DB 경로와 '파일 DB가 있는지'를 정한다.
+
+    - 명시한 `db_path`가 가장 우선한다(테스트 주입).
+    - 소유 엔진이면 그 엔진의 경로를 쓴다. `None`은 기본 `data/f1re.db`다.
+    - 고정 엔진·단독 앱이면 런타임 연결에서 파일 경로를 얻는다. 메모리 DB면
+      파일이 없으므로 워커를 만들지 않는다.
+    """
+    if db_path is not None:
+        return db_path, True
+    if engine.managed:
+        return engine.db_path, True
+    path = engine.db_path or _conn_file_path(engine.conn) or _conn_file_path(conn)
+    return path, path is not None
+
+
+def _conn_file_path(conn: sqlite3.Connection | None) -> Path | None:
+    """열린 연결이 파일 DB면 그 경로. 메모리 DB·닫힌 연결이면 `None`."""
+    if conn is None:
+        return None
+    try:
+        rows = conn.execute("PRAGMA database_list").fetchall()
+    except sqlite3.Error:
+        return None
+    for row in rows:
+        if len(row) >= 3 and row[1] == "main" and row[2]:
+            return Path(str(row[2]))
+    return None
+
+
+def _sessions_conn_factory(
+    db_path: str | Path | None, has_sessions_db: bool
+) -> Callable[[], sqlite3.Connection]:
+    """호출마다 새 SQLite 연결을 여는 공장. 라우터·복원기가 읽고 닫는다."""
+    if has_sessions_db:
+        return lambda: db.open_db(db_path)
+    # 파일 DB가 없는 테스트·단독 앱: 마이그레이션만 된 빈 메모리 DB를 준다.
+    # 그래야 녹화 API가 503이 아니라 빈 목록으로 답한다(설계 4.5).
+    return lambda: db.open_db(":memory:")
 
 
 async def _wait_or_off(off_event: asyncio.Event, timeout_s: float) -> None:
