@@ -1,13 +1,13 @@
-"""가장 빠른 차 기준과 레이스 세션 규칙 테스트(작업 17, SCRUM-67).
+"""최근 랩 기준과 레이스 세션 규칙 테스트(작업 17, SCRUM-67 · SCRUM-94).
 
-설계 6.3·6.4를 데모 송신기 주행 샘플로 확인한다. 공용 conftest를 만들지 않는
-규칙에 따라 도우미는 이 파일 안에 둔다.
+데모 송신기 주행 샘플로 확인한다. 공용 conftest를 만들지 않는 규칙에 따라
+도우미는 이 파일 안에 둔다.
 
-- 기준 랩 = 내 최고 유효 랩. AI 상대 세션에서는 세션 최속차의 최고 랩도 후보로
-  두고 코너마다 그 코너가 더 빠른 쪽을 기준으로 쓴다.
-- 최속차와 비교할 때는 양쪽에 다 있는 값(위치·속도·페달·스티어)만 쓴다. 휠 슬립
-  처럼 내 차에만 있는 값은 내 최고 랩과만 비교한다.
-- 타임 트라이얼은 AI 상대가 없으므로 최속차 기준을 두지 않는다.
+- 기준 랩 = 차마다 가장 최근 유효 랩(내 차 포함). 코너마다 그 코너 구간이 가장
+  짧은 랩을 기준으로 쓴다(SCRUM-94).
+- 다른 차와 비교할 때는 양쪽에 다 있는 값(위치·속도·페달·스티어)만 쓴다. 휠 슬립
+  처럼 내 차에만 있는 값은 내 차 랩과만 비교한다.
+- 타임 트라이얼은 최근 랩 규칙 대신 내 최고 랩을 쓰고, 다른 차 기준을 두지 않는다.
 - 레이스 세션은 1랩(출발 혼전)을 기준·집중 코너 산정에서 빼고, 유효 랩이 2랩
   쌓인 뒤부터 집중 코너를 정한다(리뷰 포커스 4).
 """
@@ -27,6 +27,7 @@ from f1re.coaching.metrics import corner_metrics
 from f1re.coaching.reference import (
     NON_AI_SESSION_TYPES,
     SOURCE_FASTEST_CAR,
+    SOURCE_RECENT_CAR,
     SOURCE_SELF,
     ReferenceSet,
 )
@@ -125,46 +126,44 @@ def _early_brake_effects(
 
 
 # ---------------------------------------------------------------------------
-# 가장 빠른 차 기준 (설계 6.3)
+# 다른 차의 최근 랩 기준 (SCRUM-94)
 
 
-def test_fastest_car_reference_used_per_corner() -> None:
-    """AI 상대 레이스 세션: 코너마다 내 최고 랩과 최속차 최고 랩 중 빠른 쪽."""
+def test_recent_lap_reference_used_per_corner() -> None:
+    """AI 상대 레이스 세션: 코너마다 내 최근 랩과 다른 차 최근 랩 중 빠른 쪽."""
     references = ReferenceSet(TRACK.corners, session_type=SESSION_TYPE_RACE)
     me = _trace(2)
     # 전체 랩은 더 빠르지만 5번 코너만 이른 브레이크로 느린 AI 차.
-    fastest_car = _trace(
+    other = _trace(
         2,
         effects=_early_brake_effects((5,)),
         pace=1.02,
         car_index=1,
     )
-    assert fastest_car.samples[-1].t_ms < me.samples[-1].t_ms
+    assert other.samples[-1].t_ms < me.samples[-1].t_ms
     references.update(me)
-    references.update(fastest_car)
+    references.update(other)
 
-    assert references.best_lap(SOURCE_FASTEST_CAR) is fastest_car
-
-    # 5번: 내가 더 빠르므로 내 랩, 9번: 최속차가 더 빠르므로 최속차 랩.
+    # 5번: 내가 더 빠르므로 내 랩, 9번: 다른 차가 더 빠르므로 그 차 랩.
     corner5 = references.best_for(5)
     corner9 = references.best_for(9)
     assert corner5 is not None and corner5[1] == SOURCE_SELF
     assert corner5[0] is me
-    assert corner9 is not None and corner9[1] == SOURCE_FASTEST_CAR
-    assert corner9[0] is fastest_car
+    assert corner9 is not None and corner9[1] == SOURCE_RECENT_CAR
+    assert corner9[0] is other
 
 
-def test_fastest_car_comparison_ignores_player_only_fields() -> None:
-    """휠 슬립은 내 차에만 있다. 최속차 비교는 휠 슬립을 쓰지 않는다."""
+def test_other_car_comparison_ignores_player_only_fields() -> None:
+    """휠 슬립은 내 차에만 있다. 다른 차 비교는 휠 슬립을 쓰지 않는다."""
     references = ReferenceSet(TRACK.corners, session_type=SESSION_TYPE_RACE)
     me = _trace(2, wheel_slip=(0.4, 0.5, 0.6, 0.7))
-    fastest_car = _trace(2, pace=1.02, car_index=1)
+    other = _trace(2, pace=1.02, car_index=1)
     references.update(me)
-    references.update(fastest_car)
+    references.update(other)
 
     corner = _corner(9)
     reference = references.best_for(corner.number)
-    assert reference is not None and reference[1] == SOURCE_FASTEST_CAR
+    assert reference is not None and reference[1] == SOURCE_RECENT_CAR
     player_metrics = corner_metrics(me, corner)
     reference_metrics = corner_metrics(reference[0], corner)
     assert player_metrics.exit_wheel_slip is not None
@@ -205,7 +204,13 @@ def test_time_trial_has_no_fastest_car() -> None:
 
 def test_race_lap1_excluded_and_start_after_2_laps() -> None:
     """레이스 1랩은 기준·집중 코너에서 빠지고, 유효 랩 2랩이 쌓인 뒤 시작한다."""
-    coach = Coach(TRACK, session_type=SESSION_TYPE_RACE)
+    # 기준 랩은 차마다 가장 최근 랩이다(SCRUM-94). 손실을 재려면 다른 차의
+    # 깨끗한 최근 랩이 있어야 하므로 1번 차 기준 랩을 넣는다.
+    references = ReferenceSet(TRACK.corners, session_type=SESSION_TYPE_RACE)
+    references.update(_trace(2, car_index=1))
+    coach = Coach(
+        TRACK, references=references, session_type=SESSION_TYPE_RACE
+    )
     assert coach.focus.min_valid_laps == RACE_FOCUS_MIN_VALID_LAPS == 2
 
     lap1 = _trace(1)  # 기록 표시는 유효하지만 레이스 1랩(출발 혼전)이다.

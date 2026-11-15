@@ -8,9 +8,10 @@
 - 원인은 하나만 고른다(`pick_cause`). 트랙 이탈 > 브레이크 > 턴인 > 조향 수정 >
   정점 속도 > 스로틀 > 라인 순으로, 문턱값을 넘는 첫 원인을 쓴다. 근거가 약하면
   아무 말도 하지 않는다("도움 안 되는 말" 금지, 설계 2장).
-- 다음 코너 브레이크 지점까지 `defer_s`(기본 3초)보다 짧거나 아직 코너 안이면
-  다음 긴 직선으로 미룬다(`defer_until_straight`). 미룬 무전은 그 랩이 끝나면
-  버린다. 이 함수는 리프트 앤 코스트(SCRUM-71)도 다시 쓴다.
+- 코칭 무전은 코너 탈출 직후 곧바로 큐에 넣는다(SCRUM-94, 사용자). 다음 직선으로
+  미루지 않는다. 코칭 무전의 5초 유효 시간과 "새 코칭이 오면 옛 코칭 버리기"는
+  `radio.queue.RadioQueue`가 맡는다. `defer_until_straight`는 리프트 앤 코스트
+  (SCRUM-71)가 개선 알림을 미룰 때 그대로 쓴다.
 - 같은 랩에 같은 코너는 한 번만 말한다. 무효 랩·피트·SC/VSC·레이스 1랩은
   `car_state` 플래그로 받아 코칭하지 않는다(리뷰 포커스 4).
 - 집중 코너 목록 변화(개선)는 `on_lap_completed()`가 `FocusSet`에서 받아
@@ -69,7 +70,12 @@ from f1re.laps.traces import (
     LapTrace,
     Sample,
 )
-from f1re.radio.queue import RadioKind, RadioMessage, RadioQueue
+from f1re.radio.queue import (
+    COACHING_TTL_NS,
+    RadioKind,
+    RadioMessage,
+    RadioQueue,
+)
 from f1re.radio.templates import (
     ORDINAL_KEYS,
     PRELOAD_KEYS,
@@ -384,6 +390,8 @@ class CoachConfig:
     focus_min_valid_laps: int = 1
     min_focus_loss_ms: int = 50
     big_loss_ms: int = 300
+    # 아래 두 값은 리프트 앤 코스트(SCRUM-71)가 개선 알림을 다음 긴 직선으로
+    # 미룰 때 쓴다. 코너 코칭은 더 이상 미루지 않는다(SCRUM-94).
     defer_s: float = 3.0
     # 다음 코너 브레이크 지점을 진입 지점보다 이만큼 앞으로 본다.
     brake_lead_m: float = 40.0
@@ -417,14 +425,6 @@ class Prefetchable(Protocol):
 
     async def prefetch(self, texts: Iterable[str], voice: str | None = None) -> Any:
         ...
-
-
-@dataclass
-class _Pending:
-    """미뤄 둔 무전. 다음 긴 직선에서 다시 판단한다."""
-
-    lap: int
-    message: RadioMessage
 
 
 class Coach:
@@ -484,7 +484,6 @@ class Coach:
         self._last_dist: float | None = None
         self._samples: list[Sample] = []
         self._crossed: set[int] = set()
-        self._pending: list[_Pending] = []
 
         # 감정 단계(SCRUM-91): 마지막 샘플에서 남은 랩을 기억해, 랩 완료 때
         # 개선 알림의 단계를 정한다. 표현 돌려 쓰기도 코치마다 하나씩 둔다.
@@ -512,10 +511,6 @@ class Coach:
     @property
     def focus_corners(self) -> tuple[int, ...]:
         return self._focus.corners
-
-    @property
-    def pending_count(self) -> int:
-        return len(self._pending)
 
     def seed_focus(self, corners: Iterable[int]) -> None:
         """저장된 집중 코너로 시작한다(계획 작업 19)."""
@@ -556,7 +551,6 @@ class Coach:
 
         if not self._coaching_allowed(state, lap):
             self._samples.clear()
-            self._pending.clear()
             self._last_dist = distance
             return []
 
@@ -567,9 +561,6 @@ class Coach:
         self._samples.append(sample)
 
         messages: list[RadioMessage] = []
-        if self._pending:
-            messages.extend(self._release_pending(sample, now))
-
         previous = self._last_dist
         mood = mood_for(last_laps=self._in_last_laps)
         if previous is not None and distance >= previous:
@@ -587,10 +578,6 @@ class Coach:
         self._ref_cache.clear()
         self._ref_metrics_cache.clear()
         self._ref_path_cache.clear()
-        # 랩이 끝났으므로 그 랩에서 미뤄 둔 무전은 버린다.
-        self._pending = [
-            pending for pending in self._pending if pending.lap != trace.lap
-        ]
         if trace.car_index != self._player_car_index:
             return []
 
@@ -606,8 +593,8 @@ class Coach:
     def add_reference_lap(self, trace: LapTrace) -> None:
         """다른 차의 완료 랩을 기준 랩 후보에만 넣는다(실서버 파이프라인, SCRUM-84).
 
-        AI 상대의 최고 랩(설계 6.3)을 기준으로 쓰기 위한 경로다. 집중 코너
-        산정·미뤄 둔 무전·개선 알림은 내 차 랩에만 걸리므로 건드리지 않는다.
+        AI 상대의 가장 최근 랩을 코너별 기준 후보로 쓰기 위한 경로다(SCRUM-94).
+        집중 코너 산정·개선 알림은 내 차 랩에만 걸리므로 건드리지 않는다.
         """
         self._references.update(trace)
         self._ref_cache.clear()
@@ -681,8 +668,6 @@ class Coach:
         self._last_dist = distance
         self._samples = []
         self._crossed = set()
-        # 앞 랩에서 미룬 무전은 그 랩 안에 못 했으므로 버린다.
-        self._pending.clear()
 
     def _coaching_allowed(self, state: Mapping[str, Any], lap: int) -> bool:
         """아웃랩·피트·무효·SC/VSC·레이스 1랩은 코칭하지 않는다(리뷰 포커스 4)."""
@@ -820,17 +805,7 @@ class Coach:
         message = self._corner_message(
             corner, cause, sample, now_ns, evidence, mood
         )
-        decision = defer_until_straight(
-            sample.dist_m,
-            sample.speed,
-            self._track.corners,
-            self._track.length_m,
-            defer_s=self._config.defer_s,
-            brake_lead_m=self._config.brake_lead_m,
-        )
-        if decision.defer:
-            self._pending.append(_Pending(lap=self._lap, message=message))
-            return []
+        # 코너 탈출 직후 바로 큐에 넣는다(SCRUM-94). 다음 직선으로 미루지 않는다.
         messages: list[RadioMessage] = []
         self._emit(message, messages)
         return messages
@@ -855,49 +830,11 @@ class Coach:
             RadioKind.COACHING.value,
             text,
             now_ns=now_ns,
-            ttl_ns=self._coaching_ttl_ns(corner, sample),
+            ttl_ns=COACHING_TTL_NS,
             evidence=evidence,
             lap=self._lap,
             corner=corner.number,
         )
-
-    def _coaching_ttl_ns(self, corner: Corner, sample: Sample) -> int:
-        """그 코너 다음 진입 전까지 유효하다(설계 6.7)."""
-        length = self._track.length_m
-        if length <= 0:
-            return 60 * 10**9
-        gap = (corner.entry_m - sample.dist_m) % length
-        if gap <= 0.0:
-            gap = length
-        speed_mps = max(sample.speed / 3.6, 1.0)
-        seconds = gap / speed_mps
-        return int(min(max(seconds, 3.0), 120.0) * 10**9)
-
-    def _release_pending(
-        self, sample: Sample, now_ns: int
-    ) -> list[RadioMessage]:
-        """미뤄 둔 무전을 지금 말해도 되는지 다시 보고, 되면 내보낸다."""
-        released: list[RadioMessage] = []
-        remaining: list[_Pending] = []
-        decision = defer_until_straight(
-            sample.dist_m,
-            sample.speed,
-            self._track.corners,
-            self._track.length_m,
-            defer_s=self._config.defer_s,
-            brake_lead_m=self._config.brake_lead_m,
-        )
-        for pending in self._pending:
-            if pending.lap != self._lap:
-                continue
-            if pending.message.expired(now_ns):
-                continue
-            if decision.defer:
-                remaining.append(pending)
-                continue
-            self._emit(pending.message, released)
-        self._pending = remaining
-        return released
 
     # --- 기준 랩 캐시 ------------------------------------------------------
 

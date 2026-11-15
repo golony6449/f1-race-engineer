@@ -5,7 +5,9 @@ from __future__ import annotations
 import pytest
 
 from f1re.radio.queue import (
+    COACHING_TTL_NS,
     DROP_REASON_EXPIRED,
+    DROP_REASON_SUPERSEDED,
     PRIORITY_BY_KIND,
     Priority,
     RadioKind,
@@ -56,9 +58,11 @@ def test_priority_order() -> None:
 
 
 def test_same_priority_is_fifo() -> None:
+    # 코칭은 새 무전이 오면 옛 무전을 버리므로(SCRUM-94) 같은 우선순위의
+    # 다른 종류로 FIFO를 확인한다.
     queue = RadioQueue()
-    queue.push(_msg(RadioKind.COACHING, "첫째", created_ns=1))
-    queue.push(_msg(RadioKind.COACHING, "둘째", created_ns=2))
+    queue.push(_msg(RadioKind.IMPROVEMENT, "첫째", created_ns=1))
+    queue.push(_msg(RadioKind.IMPROVEMENT, "둘째", created_ns=2))
 
     assert queue.next(1).text == "첫째"
     queue.complete()
@@ -177,6 +181,94 @@ def test_create_rejects_unknown_kind_and_negative_ttl() -> None:
         RadioMessage.create("telemetry", "문장", now_ns=1, ttl_ns=1)
     with pytest.raises(ValueError):
         RadioMessage.create(RadioKind.SAFETY, "경고", now_ns=1, ttl_ns=-1)
+
+
+# ---------------------------------------------------------------------------
+# 코칭 5초 유효 시간과 새 코칭 우선(SCRUM-94)
+
+
+def test_coaching_ttl_is_capped_to_five_seconds() -> None:
+    """코칭 무전은 만든 시각부터 5초를 넘기지 않는다. 다른 종류는 그대로다."""
+    coaching = RadioMessage.create(
+        RadioKind.COACHING, "3번에서 브레이크가 늦었어.", now_ns=1_000, ttl_ns=60 * 10**9
+    )
+    assert COACHING_TTL_NS == 5 * 10**9
+    assert coaching.expires_ns == 1_000 + COACHING_TTL_NS
+
+    safety = RadioMessage.create(
+        RadioKind.SAFETY, "경고", now_ns=1_000, ttl_ns=60 * 10**9
+    )
+    assert safety.expires_ns == 1_000 + 60 * 10**9
+
+
+def test_coaching_expires_after_five_seconds() -> None:
+    """5초 안에 말을 시작하지 못한 코칭은 버리고 이유를 남긴다."""
+    dropped: list[tuple[str, str]] = []
+    queue = RadioQueue(
+        clock=lambda: 0,
+        on_drop=lambda msg, reason: dropped.append((msg.text, reason)),
+    )
+    message = RadioMessage.create(
+        RadioKind.COACHING, "코칭", now_ns=0, ttl_ns=60 * 10**9
+    )
+    assert queue.push(message) is True
+
+    assert queue.next(COACHING_TTL_NS - 1) is not None
+    queue.complete()
+    assert queue.next(COACHING_TTL_NS) is None
+    assert dropped == []
+
+    queue.push(
+        RadioMessage.create(RadioKind.COACHING, "곧 만료", now_ns=0, ttl_ns=60 * 10**9)
+    )
+    assert queue.next(COACHING_TTL_NS) is None
+    assert dropped == [("곧 만료", DROP_REASON_EXPIRED)]
+
+
+def test_new_coaching_drops_pending_coaching_only() -> None:
+    """새 코칭이 오면 대기 중인 옛 코칭만 버리고, 다른 종류는 남긴다."""
+    dropped: list[tuple[str, str]] = []
+    queue = RadioQueue(on_drop=lambda msg, reason: dropped.append((msg.text, reason)))
+    queue.push(_msg(RadioKind.COACHING, "옛 코칭"))
+    queue.push(_msg(RadioKind.SAFETY, "경고"))
+    queue.push(_msg(RadioKind.BOX, "박스"))
+    queue.push(_msg(RadioKind.OVERTAKE, "추월"))
+    queue.push(_msg(RadioKind.IMPROVEMENT, "개선"))
+
+    assert queue.push(_msg(RadioKind.COACHING, "새 코칭")) is True
+
+    assert [msg.text for msg in queue.pending()] == [
+        "경고",
+        "박스",
+        "새 코칭",
+        "추월",
+        "개선",
+    ]
+    assert dropped == [("옛 코칭", DROP_REASON_SUPERSEDED)]
+    assert DROP_REASON_SUPERSEDED == "superseded"
+
+
+def test_new_coaching_does_not_cut_current_message() -> None:
+    """재생 중인 무전은 끊지 않고, 대기 중인 옛 코칭만 버린다."""
+    dropped: list[str] = []
+    queue = RadioQueue(on_drop=lambda msg, reason: dropped.append(msg.text))
+    queue.push(_msg(RadioKind.COACHING, "재생 중"))
+    assert queue.next(1).text == "재생 중"
+    queue.push(_msg(RadioKind.COACHING, "대기 중이던 코칭"))
+
+    assert queue.push(_msg(RadioKind.COACHING, "새 코칭")) is True
+
+    assert queue.current is not None and queue.current.text == "재생 중"
+    assert [msg.text for msg in queue.pending()] == ["새 코칭"]
+    assert dropped == ["대기 중이던 코칭"]
+
+
+def test_non_coaching_push_keeps_pending_coaching() -> None:
+    queue = RadioQueue()
+    queue.push(_msg(RadioKind.COACHING, "코칭"))
+    assert queue.push(_msg(RadioKind.SAFETY, "경고")) is True
+
+    assert [msg.text for msg in queue.pending()] == ["경고", "코칭"]
 
 
 def test_message_rejects_empty_text_and_accepts_plain_int_priority() -> None:

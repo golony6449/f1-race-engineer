@@ -757,8 +757,9 @@ class RacePipeline:
                 coach.references.prune()
                 self._refresh_caches()
             else:
-                # 다른 차 랩은 최속차 기준으로만 쓴다. 집중 코너·미뤄 둔 무전은
-                # 내 차 랩에만 걸리므로 무거운 집중 코너 재계산을 하지 않는다.
+                # 다른 차 랩은 코너별 최근 랩 기준 후보로 넣는다(SCRUM-94).
+                # 집중 코너·개선 알림은 내 차 랩에만 걸리므로 무거운 집중 코너
+                # 재계산은 하지 않는다.
                 coach.add_reference_lap(trace)
                 coach.references.prune()
                 self._refresh_reference_info()
@@ -938,7 +939,12 @@ class RacePipeline:
         self._refresh_reference_info()
 
     def _refresh_reference_info(self) -> None:
-        """기준 랩 요약(내 최고·세션 최속차 최고)만 갱신한다."""
+        """기준 랩 요약(내 최고 기록·가장 빠른 다른 차의 최고 기록)을 갱신한다.
+
+        코너별 코칭 비교는 최근 랩을 쓰지만(SCRUM-94), 화면 요약은 저장·비교에
+        쓰는 최고 기록을 보여 준다. 코너별 실제 출처는 `corner_metrics`의
+        `reference_source`(`self`/`recent_car`/`fastest_car`)에 남는다.
+        """
         coach = self._coach
         if coach is None:
             return
@@ -1100,6 +1106,8 @@ def _adopt_reference(
 
     저장된 랩의 `car_index`는 지난 세션 값이라, 내 차 인덱스가 달라졌으면
     내 최고 랩은 이번 인덱스로 옮긴다. 코너 정의는 이번 트랙 것을 쓴다.
+    저장 기준은 `add_stored`로 넣어, 이번 세션 유효 랩이 생기면 코칭 비교에서
+    빠지게 한다(SCRUM-94).
     """
     reference = ReferenceSet(
         track.corners,
@@ -1120,7 +1128,7 @@ def _adopt_reference(
             trace = dataclasses.replace(
                 trace, car_index=(player_car_index + 1) % 22
             )
-        reference.update(trace)
+        reference.add_stored(trace)
     return reference
 
 

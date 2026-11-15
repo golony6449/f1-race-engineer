@@ -6,6 +6,7 @@
   (`test_keys_separate_wet_and_dry`).
 - 저장된 기준 랩·집중 코너만으로 다음 방문 첫 랩부터 코칭이 나간다
   (`test_saved_reference_enables_lap1_coaching`, 설계 6.4).
+- 이번 세션 랩이 하나라도 생기면 저장 기준은 코칭 비교에서 빠진다(SCRUM-94).
 - 조건이 다른 기준밖에 없으면 시간 수치 없이 동작만 말한다
   (`test_condition_mismatch_speaks_actions_not_time`, 설계 6.3).
 
@@ -234,6 +235,24 @@ def test_saved_reference_enables_lap1_coaching(tmp_path: Path) -> None:
 
     # 같은 랩이라도 기준이 없으면 코칭이 나가지 않는다(저장된 기준의 효과).
     assert _feed(_coach(None, focus_seed), slow) == []
+
+
+def test_session_lap_replaces_saved_reference_after_first_lap() -> None:
+    """세션 랩이 생기면 더 빠른 저장 기준 대신 그 랩을 기준으로 쓴다(SCRUM-94)."""
+    references = ReferenceSet(TRACK.corners)
+    baseline = _trace(99)  # 저장 기준: 깨끗하고 빠른 랩
+    references.add_stored(baseline)
+    coach = _coach(references, (FOCUS_CORNER,))
+
+    slow = _trace(1, effects=_early_brake(FOCUS_CORNER))
+    first = [m for m in _feed(coach, slow) if m.corner == FOCUS_CORNER]
+    assert len(first) == 1, "세션 랩이 없을 때는 저장 기준으로 코칭한다"
+
+    coach.on_lap_completed(slow)
+    coach.seed_focus([FOCUS_CORNER])  # 기준만 시험하려고 집중 코너를 다시 고정한다.
+    # 이제 기준은 방금 끝난 내 랩이다. 같은 주행을 반복하면 손실이 없어 말하지 않는다.
+    second = _trace(2, effects=_early_brake(FOCUS_CORNER))
+    assert [m for m in _feed(coach, second) if m.corner == FOCUS_CORNER] == []
 
 
 # ---------------------------------------------------------------------------
