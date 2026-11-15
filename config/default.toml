@@ -223,3 +223,38 @@ full_throttle = 0.95
 line_dev_max_m = 50.0
 # 기준 궤적에서 가장 가까운 선분을 찾을 때 보는 랩 거리 창.
 line_dev_search_m = 40.0
+
+# ---------------------------------------------------------------------------
+# 세션별 원시 텔레메트리 자동 녹화 (설계 4.3)
+#
+# Engine ON 동안 들어오는 실제 게임 세션을 sessionUID별로 `.active/`에 순차
+# 기록하고, 세션이 끝나면 압축(`.f1rec.zst`)해 GCS에 백업한다. 60Hz 수신
+# 루프는 비압축 쓰기만 하므로 녹화 때문에 패킷이 밀리지 않는다.
+#
+# GCS 업로드가 확인되지 않은 로컬 파일은 지우지 않는다. rclone이 없거나
+# 설정이 잘못돼 업로드를 못 하면 경고만 남기고 녹화·로컬 보존은 계속한다.
+# ---------------------------------------------------------------------------
+[recording]
+enabled = true
+# 녹화 파일 기준 디렉터리(레포 루트 기준 상대 경로)
+dir = "data/recordings"
+# 업로드가 끝난 녹화 중 로컬에 남길 최신 개수. 나머지는 GCS에만 남긴다.
+keep_local_count = 5
+# GCS 온디맨드 복원 캐시(`.cache/`) 상한
+keep_cache_count = 3
+# 이 시간(초) 동안 패킷이 없으면 녹화를 마감한다(기본 10분).
+# 같은 세션이 다시 시작되면 segment를 늘려(`2부`) 새 파일로 이어 받는다.
+inactivity_timeout_s = 600
+# 데모 세션(f1re-demo)은 자동 녹화·백업하지 않는다.
+exclude_demo = true
+# 이보다 적은 패킷의 세션(메뉴만 열었다 닫은 경우 등)은 백업하지 않고 폐기한다.
+min_packets = 100
+
+[recording.gcs]
+enabled = true
+# rclone 원격 이름과 버킷(`<remote>:<bucket>/<prefix>/...`로 업로드)
+rclone_remote = "gcs"
+bucket = "f1-race-engineer-backup"
+prefix = "recordings"
+# rclone 설정 파일. 홈서버 계정 기준 경로다.
+rclone_config = "~/.config/rclone/rclone.conf"
