@@ -25,6 +25,8 @@
   snake_case다.
 - `PACKET_SIZES`는 공식 문서의 패킷별 전체 바이트 수(헤더 29바이트 포함)다.
   테스트가 정의 크기 합과 이 값을 매번 대조한다.
+- Session 패킷 `m_sessionType` 값 표는 [session-types.md](session-types.md)에
+  있다. 코드의 단일 출처는 `src/f1re/udp/session_category.py`다.
 
 ## 2025 패킷 크기
 
