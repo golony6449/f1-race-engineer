@@ -51,6 +51,10 @@ SAMPLE_VALUES: dict[str, object] = {
     "sector": 2,
     "sector_s": "28.4",
     "position": 8,
+    # SCRUM-130: 서킷 추월 지점 공격·방어 틀.
+    "spot": "카시오 시케인",
+    "prep": "14번, 15번",
+    "attack": "16번, 17번",
 }
 
 

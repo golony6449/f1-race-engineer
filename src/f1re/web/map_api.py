@@ -27,6 +27,7 @@ from fastapi import APIRouter, HTTPException
 from f1re.tracks.learn import resolve_outline
 from f1re.tracks.model import Track, TrackDataError, load_track
 from f1re.tracks.outline import TrackOutline
+from f1re.udp.session_uid import is_demo_session_uid
 
 if TYPE_CHECKING:
     import sqlite3
@@ -161,6 +162,18 @@ class TrackMap:
         with self._lock:
             outline = self._outline
             track = self._track
+            source = self._source
+
+        # 실제 게임의 lap_distance는 중심선 dist_m보다 130m(스즈카) 앞선다.
+        # 게임 랩 거리에서 이 값을 빼야 중심선 위 올바른 위치가 나온다.
+        # 데모 송신기는 중심선 좌표로 주행하므로 보정하지 않는다(SCRUM-57).
+        offset_m = 0.0
+        if (
+            track is not None
+            and source == "data"
+            and not is_demo_session_uid(snapshot.get("session_uid"))
+        ):
+            offset_m = track.lap_distance_offset_m
 
         packets = snapshot.get("packets") or {}
         lap_entries = _list((packets.get("lap_data") or {}).get("lap_data"))
@@ -180,7 +193,7 @@ class TrackMap:
             x: float | None = None
             z: float | None = None
             if outline is not None:
-                x, z = outline.position_at(distance)
+                x, z = outline.position_at(distance - offset_m)
             team_id: int | None = None
             if car_index < len(participants) and isinstance(
                 participants[car_index], dict

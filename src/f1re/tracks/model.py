@@ -111,6 +111,10 @@ class Track:
 
     `drs_zones`·`overtaking_spots`는 선택 데이터다. JSON에 없으면 빈 튜플이며,
     기존처럼 `Track(track_id, name, length_m, corners)`로도 만들 수 있다.
+
+    `lap_distance_offset_m`은 실제 게임 `lap_distance`와 중심선 `dist_m`의
+    차이다. 게임 랩 거리에서 이 값을 빼면 중심선 거리가 된다(스즈카 130m,
+    SCRUM-57 실측). 데이터 파일에 없으면 0이라 기존 파일·데모는 그대로다.
     """
 
     track_id: int
@@ -119,6 +123,7 @@ class Track:
     corners: list[Corner]
     drs_zones: tuple[DrsZone, ...] = ()
     overtaking_spots: tuple[OvertakingSpot, ...] = ()
+    lap_distance_offset_m: float = 0.0
 
 
 def load_track(track_id: int) -> Track | None:
@@ -234,6 +239,12 @@ def _build_track(raw: dict[str, Any], filename: str) -> Track:
     overtaking_spots = _build_overtaking_spots(
         raw.get("overtaking_spots"), corner_numbers, length_m, filename
     )
+    offset_raw = raw.get("lap_distance_offset_m")
+    lap_distance_offset_m = (
+        0.0
+        if offset_raw is None
+        else _number(offset_raw, f"{filename}: lap_distance_offset_m")
+    )
 
     return Track(
         track_id=track_id,
@@ -242,6 +253,7 @@ def _build_track(raw: dict[str, Any], filename: str) -> Track:
         corners=corners,
         drs_zones=drs_zones,
         overtaking_spots=overtaking_spots,
+        lap_distance_offset_m=lap_distance_offset_m,
     )
 
 

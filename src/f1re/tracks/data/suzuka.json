@@ -2,6 +2,7 @@
  "track_id": 13,
  "name": "스즈카 서킷",
  "length_m": 5807.0,
+ "lap_distance_offset_m": 130.0,
  "corners": [
   {
    "number": 1,
