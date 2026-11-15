@@ -14,6 +14,13 @@
   (SCRUM-71)가 개선 알림을 미룰 때 그대로 쓴다.
 - 같은 랩에 같은 코너는 한 번만 말한다. 무효 랩·피트·SC/VSC·레이스 1랩은
   `car_state` 플래그로 받아 코칭하지 않는다(리뷰 포커스 4).
+- **반복 실수 강조**(SCRUM-125): 코너별로 직전 코칭 원인과 랩을 기억해, 같은
+  코너·같은 원인이 `REPEAT_STREAK_LAPS`(3)랩 연속이면 일반 코칭 틀 대신
+  `coaching.repeat_*` 틀을 강한 어조(urgent, 마지막 3랩이면 hyped)로 쓴다.
+  4랩 이상 이어져도 매 랩 다시 강조하며 연속 횟수를 근거(`evidence["streak"]`)에
+  남긴다. 다른 원인이 나오거나 그 코너가 개선돼 코칭 조건을 넘지 못하면 횟수를
+  0으로 되돌리고, 랩을 건너뛰면(무효 랩·피트·SC 등) 랩 번호 차이로 자동으로
+  끊긴다.
 - 집중 코너 목록 변화(개선)는 `on_lap_completed()`가 `FocusSet`에서 받아
   "3번 좋아졌어. 다음은 7번 보자." 무전으로 만든다.
 - 감정 단계(SCRUM-91): 레이스 마지막 3랩이면 `hyped`, 개선 알림은 `warm`,
@@ -126,6 +133,22 @@ _CAUSE_TEMPLATES: dict[str, str] = {
     CAUSE_LATE_THROTTLE: "coaching.late_throttle",
     CAUSE_LINE_WIDE: "coaching.line_wide",
     CAUSE_OFF_TRACK: "coaching.off_track",
+}
+
+# 같은 코너·같은 원인이 몇 랩 연속이면 반복 실수 강조 틀을 쓰는가(SCRUM-125).
+REPEAT_STREAK_LAPS = 3
+
+# 원인 → 반복 실수 강조 틀. 3랩째부터 이 틀을 강한 어조(urgent/hyped)로 쓴다.
+_REPEAT_TEMPLATES: dict[str, str] = {
+    CAUSE_BRAKE_LATE: "coaching.repeat_brake_late",
+    CAUSE_BRAKE_EARLY: "coaching.repeat_brake_early",
+    CAUSE_TURN_IN_EARLY: "coaching.repeat_turn_in_early",
+    CAUSE_TURN_IN_LATE: "coaching.repeat_turn_in_late",
+    CAUSE_STEER_CORRECTIONS: "coaching.repeat_steer_corrections",
+    CAUSE_MIN_SPEED_LOW: "coaching.repeat_min_speed_low",
+    CAUSE_LATE_THROTTLE: "coaching.repeat_late_throttle",
+    CAUSE_LINE_WIDE: "coaching.repeat_line_wide",
+    CAUSE_OFF_TRACK: "coaching.repeat_off_track",
 }
 
 
@@ -492,6 +515,11 @@ class Coach:
         self._remaining_laps: float | None = None
         self._in_last_laps = False
 
+        # 반복 실수 강조(SCRUM-125): 코너별 직전 코칭 원인과 연속 랩 수.
+        self._cause_key: dict[int, str] = {}
+        self._cause_streak: dict[int, int] = {}
+        self._cause_lap: dict[int, int] = {}
+
         # 기준 랩 조회·지표·궤적은 랩마다 한 번만 계산해 캐시한다.
         self._ref_cache: dict[int, tuple[LapTrace, str] | None] = {}
         self._ref_metrics_cache: dict[
@@ -793,23 +821,63 @@ class Coach:
             and loss_ms < self._config.big_loss_ms
             and not metrics.off_track
         ):
+            # 코너가 개선돼 코칭 조건을 넘지 못했다. 연속 실수 횟수를 끊는다.
+            self._reset_streak(corner.number)
             return []
         cause = pick_cause(metrics, reference_metrics)
         if cause is None:
             # 근거가 약하면 말하지 않는다(설계 2장 "도움 안 되는 말" 금지).
+            # 코너가 좋아졌다는 뜻이므로 연속 실수 횟수도 끊는다.
+            self._reset_streak(corner.number)
             return []
 
         evidence = _corner_evidence(
             cause, metrics, reference_metrics, loss_ms, source, focused, corner
         )
-        evidence["mood"] = mood.value
-        message = self._corner_message(
-            corner, cause, sample, now_ns, evidence, mood
-        )
+        streak = self._record_streak(corner.number, cause.key)
+        evidence["streak"] = streak
+        evidence["repeated"] = streak >= REPEAT_STREAK_LAPS
+        if streak >= REPEAT_STREAK_LAPS:
+            # 같은 실수를 3랩째 반복하면 강한 어조로 짚는다(SCRUM-125).
+            # 마지막 3랩처럼 이미 격앙된 상황이면 hyped를 그대로 쓴다.
+            repeat_mood = Mood.HYPED if mood is Mood.HYPED else Mood.URGENT
+            evidence["mood"] = repeat_mood.value
+            message = self._repeat_message(
+                corner, cause, streak, now_ns, evidence, repeat_mood
+            )
+        else:
+            evidence["mood"] = mood.value
+            message = self._corner_message(
+                corner, cause, sample, now_ns, evidence, mood
+            )
         # 코너 탈출 직후 바로 큐에 넣는다(SCRUM-94). 다음 직선으로 미루지 않는다.
         messages: list[RadioMessage] = []
         self._emit(message, messages)
         return messages
+
+    def _record_streak(self, corner: int, cause_key: str) -> int:
+        """코너별 같은 원인 연속 랩 수를 갱신해 돌려준다.
+
+        직전 코칭이 같은 원인이고 바로 앞 랩이면 이어 세고, 그 밖에는 1부터
+        다시 센다. 다른 원인이 나오거나 코너를 한 랩 건너뛰면(개선·무효 랩·
+        피트 등) 자동으로 초기화된다.
+        """
+        previous_key = self._cause_key.get(corner)
+        previous_lap = self._cause_lap.get(corner)
+        if previous_key == cause_key and previous_lap == self._lap - 1:
+            streak = self._cause_streak.get(corner, 1) + 1
+        else:
+            streak = 1
+        self._cause_key[corner] = cause_key
+        self._cause_streak[corner] = streak
+        self._cause_lap[corner] = self._lap
+        return streak
+
+    def _reset_streak(self, corner: int) -> None:
+        """코너가 개선되거나 건너뛰어졌을 때 연속 실수 횟수를 지운다."""
+        self._cause_key.pop(corner, None)
+        self._cause_streak.pop(corner, None)
+        self._cause_lap.pop(corner, None)
 
     def _corner_message(
         self,
@@ -825,6 +893,33 @@ class Coach:
             corner.number,
             official=corner.official,
             mood=mood,
+            **{cause.slot: cause.value},
+        )
+        return RadioMessage.create(
+            RadioKind.COACHING.value,
+            text,
+            now_ns=now_ns,
+            ttl_ns=COACHING_TTL_NS,
+            evidence=evidence,
+            lap=self._lap,
+            corner=corner.number,
+        )
+
+    def _repeat_message(
+        self,
+        corner: Corner,
+        cause: Cause,
+        streak: int,
+        now_ns: int,
+        evidence: dict[str, Any],
+        mood: Mood,
+    ) -> RadioMessage:
+        """반복 실수 강조 무전. 공식/자동 탐지 코너 모두 `corner_label`로 말한다."""
+        text = self._variants.render(
+            _REPEAT_TEMPLATES[cause.key],
+            mood=mood,
+            corner_label=corner_label(corner.number, official=corner.official),
+            lap_streak=streak,
             **{cause.slot: cause.value},
         )
         return RadioMessage.create(
@@ -1038,6 +1133,7 @@ __all__ = [
     "CAUSE_STEER_CORRECTIONS",
     "CAUSE_TURN_IN_EARLY",
     "CAUSE_TURN_IN_LATE",
+    "REPEAT_STREAK_LAPS",
     "Cause",
     "Coach",
     "CoachConfig",
