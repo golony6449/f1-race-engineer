@@ -476,3 +476,60 @@ def test_malformed_surface_loads_as_none(surface: object) -> None:
     best = loaded.best_lap(SOURCE_SELF)
     assert best is not None
     assert best.samples[0].surface is None
+
+
+# ---------------------------------------------------------------------------
+# 직렬화: 접전 표시(SCRUM-124)
+
+
+def test_roundtrip_keeps_traffic_flags() -> None:
+    """저장·복원을 거쳐도 접전·순위 변동 표시가 남는다(다음 레이스 기준 제외)."""
+    references = _refs()
+    trace = _trace(1)
+    corner = _corner(9)
+    trace.samples = [
+        dataclasses.replace(sample, in_traffic=True, position_changed=True)
+        if corner.entry_m <= sample.dist_m <= corner.exit_m
+        else sample
+        for sample in trace.samples
+    ]
+    references.update(trace)
+
+    payload = json.loads(json.dumps(reference_to_dict(references)))
+    loaded = reference_from_dict(payload)
+
+    best = loaded.best_lap(SOURCE_SELF)
+    assert best is not None
+    inside = [
+        sample
+        for sample in best.samples
+        if corner.entry_m <= sample.dist_m <= corner.exit_m
+    ]
+    assert inside and all(
+        sample.in_traffic and sample.position_changed for sample in inside
+    )
+    outside = [
+        sample
+        for sample in best.samples
+        if not corner.entry_m <= sample.dist_m <= corner.exit_m
+    ]
+    assert outside and not any(
+        sample.in_traffic or sample.position_changed for sample in outside
+    )
+
+
+def test_old_reference_without_traffic_keys_loads_as_clean() -> None:
+    """접전 키가 없던 옛 기준 랩 JSON은 접전 없음(False)으로 읽는다."""
+    payload = reference_to_dict(_reference_with_surface())
+    for lap in payload["laps"]:
+        for sample in lap["samples"]:
+            sample.pop("in_traffic", None)
+            sample.pop("position_changed", None)
+
+    loaded = reference_from_dict(json.loads(json.dumps(payload)))
+
+    best = loaded.best_lap(SOURCE_SELF)
+    assert best is not None
+    assert not any(
+        sample.in_traffic or sample.position_changed for sample in best.samples
+    )

@@ -30,7 +30,7 @@ from fastapi.testclient import TestClient
 
 from f1re.coaching.reference import SOURCE_SELF, ReferenceSet
 from f1re.coaching.store import ReferenceKey, ReferenceStore
-from f1re.config import AppConfig
+from f1re.config import AppConfig, CoachingSensitivityConfig
 from f1re.db import open_db, save_track_outline
 from f1re.demo_sender.driving import DriverProfile, generate_lap
 from f1re.demo_sender.scenarios import SCENARIO_DIR
@@ -48,6 +48,18 @@ from f1re.web.app import create_app
 
 SUZUKA_ID = 13
 HOST = "127.0.0.1"
+
+# 데모 시나리오(coaching.yaml)의 효과는 코너 손실이 0에 가까워 SCRUM-124 기본
+# 민감도(브레이크 8m, 손실 100ms 하한)에서는 코칭 무전이 나가지 않는다. 이
+# 테스트는 UDP → 파이프라인 → 무전 큐 연결과 문장 모양을 확인하므로 옛 민감도를
+# 명시한다. 새 기본값·접전 코너 제외는 단위 테스트가 확인한다.
+_DEMO_COACHING = CoachingSensitivityConfig(
+    brake_diff_m=3.0,
+    turn_in_diff_m=3.0,
+    min_speed_diff_kmh=2.0,
+    # 옛 동작처럼 손실 하한을 두지 않는다(빠른 코너도 원인 확인용으로 발화).
+    min_corner_loss_ms=-10_000,
+)
 
 # 별도 프로세스에서 데모를 보낸다. 같은 프로세스면 GIL 때문에 송신·수신이
 # 번갈아 실행되어 몇 배 느리다(기존 종단 테스트와 같은 이유).
@@ -140,9 +152,14 @@ def _radio_factory(_store: Any, _conn: Any) -> _FakeRadio:
     return _FakeRadio()
 
 
-def _engine(tmp_path: Path, *, db_name: str = "f1re.db") -> Engine:
+def _engine(
+    tmp_path: Path,
+    *,
+    db_name: str = "f1re.db",
+    config: AppConfig | None = None,
+) -> Engine:
     return Engine(
-        config=AppConfig(),
+        config=config or AppConfig(),
         host=HOST,
         port=0,
         db_path=tmp_path / db_name,
@@ -225,7 +242,7 @@ def _corner_coaching(messages: list[RadioMessage]) -> list[RadioMessage]:
 
 
 async def test_coaching_radio_and_report_map_lift_state(tmp_path: Path) -> None:
-    engine = _engine(tmp_path)
+    engine = _engine(tmp_path, config=AppConfig(coaching=_DEMO_COACHING))
     await engine.start()
     try:
         pipeline = engine.pipeline
@@ -331,7 +348,7 @@ async def test_overtake_and_lift_coast_radio(tmp_path: Path) -> None:
 
 
 async def test_engine_off_on_rewires_pipeline(tmp_path: Path) -> None:
-    engine = _engine(tmp_path)
+    engine = _engine(tmp_path, config=AppConfig(coaching=_DEMO_COACHING))
     await engine.start()
     first = engine.pipeline
     assert first is not None

@@ -19,7 +19,7 @@ from f1re.config import AppConfig
 from f1re.coaching.coach import Coach
 from f1re.coaching.reference import SOURCE_FASTEST_CAR
 from f1re.demo_sender.driving import DriverProfile, generate_lap
-from f1re.laps.traces import LapTrace, Sample
+from f1re.laps.traces import LapTrace, LapTraceRecorder, Sample
 from f1re.pipeline import RacePipeline
 from f1re.radio.queue import RadioQueue
 from f1re.state.store import StateStore
@@ -220,6 +220,190 @@ def _lap_data_body(*, lap: int = 2, position: int = 8) -> dict[str, Any]:
         "pit_status": 0,
     }
     return {"lap_data": [entry]}
+
+
+# ---------------------------------------------------------------------------
+# 접전(traffic) 판정(SCRUM-124)
+
+
+def _lap_entry(
+    *,
+    index: int = 0,
+    lap: int = 2,
+    distance: float = 1000.0,
+    lap_time_ms: int = 10_000,
+    position: int = 8,
+    gap_ms: int | None = 600,
+    total_distance: float | None = None,
+    driver_status: int = 4,
+    result_status: int = 2,
+) -> dict[str, Any]:
+    """Lap Data 차량 한 대 항목. `lap=0`이면 기록하지 않는 빈 칸이다."""
+    if lap <= 0:
+        return {"current_lap_num": 0}
+    entry: dict[str, Any] = {
+        "current_lap_num": lap,
+        "lap_distance": distance,
+        "current_lap_time_in_ms": lap_time_ms,
+        "car_position": position,
+        "total_distance": (
+            (lap - 1) * 5807.0 + distance
+            if total_distance is None
+            else total_distance
+        ),
+        "current_lap_invalid": 0,
+        "driver_status": driver_status,
+        "pit_status": 0,
+        "result_status": result_status,
+    }
+    if gap_ms is not None:
+        entry["delta_to_car_in_front_minutes_part"] = gap_ms // 60_000
+        entry["delta_to_car_in_front_ms_part"] = gap_ms % 60_000
+    return entry
+
+
+def _entries(player: dict[str, Any], others: list[dict[str, Any]] | None = None) -> list:
+    entries: list = [{"current_lap_num": 0} for _ in range(22)]
+    entries[0] = player
+    for offset, entry in enumerate(others or [], start=1):
+        entries[offset] = entry
+    return entries
+
+
+def _telemetry_body() -> dict[str, Any]:
+    entries: list = [{} for _ in range(22)]
+    entries[0] = {
+        "speed": 220.0,
+        "throttle": 1.0,
+        "brake": 0.0,
+        "steer": 0.0,
+        "gear": 7,
+        "surface_type": [0, 0, 0, 0],
+    }
+    return {"car_telemetry_data": entries}
+
+
+def _race_pipeline() -> RacePipeline:
+    pipeline = RacePipeline(StateStore(), _Radio(), None, config=AppConfig())
+    pipeline._session_uid = 1
+    pipeline._player_index = 0
+    pipeline._session_type = 15
+    pipeline._total_laps = 20
+    return pipeline
+
+
+def test_lap_data_marks_traffic_when_car_ahead_within_one_second() -> None:
+    """앞차와 1초 이내면 코치 입력 샘플에 접전 표시가 붙는다."""
+    pipeline = _race_pipeline()
+    pipeline._on_lap_data(
+        {"lap_data": _entries(_lap_entry(position=8, gap_ms=600))}
+    )
+
+    assert pipeline._player_in_traffic is True
+    state = pipeline._car_state(_telemetry_body()["car_telemetry_data"][0])
+    assert state is not None
+    assert state["in_traffic"] is True
+
+
+def test_lap_data_marks_traffic_when_car_behind_within_one_second() -> None:
+    """바로 뒤 차가 1초 이내면(그 차의 앞차 간격) 접전으로 본다."""
+    behind = _lap_entry(index=1, position=9, gap_ms=700)
+    pipeline = _race_pipeline()
+    pipeline._on_lap_data(
+        {
+            "lap_data": _entries(
+                _lap_entry(position=8, gap_ms=5000), [behind]
+            )
+        }
+    )
+
+    assert pipeline._player_in_traffic is True
+
+
+def test_lap_data_does_not_mark_traffic_outside_one_second() -> None:
+    pipeline = _race_pipeline()
+    pipeline._on_lap_data(
+        {"lap_data": _entries(_lap_entry(position=8, gap_ms=1200))}
+    )
+
+    assert pipeline._player_in_traffic is False
+
+
+def test_lap_data_does_not_mark_traffic_outside_race() -> None:
+    """타임 트라이얼 등 비레이스 세션은 간격이 가까워도 접전으로 보지 않는다."""
+    pipeline = _race_pipeline()
+    pipeline._session_type = 18
+    pipeline._on_lap_data(
+        {"lap_data": _entries(_lap_entry(position=8, gap_ms=600))}
+    )
+
+    assert pipeline._player_in_traffic is False
+
+
+def test_lap_data_position_change_marks_next_sample() -> None:
+    """코너 안 순위 변동을 다음 코치 입력 샘플 하나에 표시한다."""
+    pipeline = _race_pipeline()
+    pipeline._on_lap_data(
+        {"lap_data": _entries(_lap_entry(position=8, gap_ms=5000))}
+    )
+    assert pipeline._position_changed is False
+
+    pipeline._on_lap_data(
+        {"lap_data": _entries(_lap_entry(position=7, gap_ms=5000))}
+    )
+
+    assert pipeline._position_changed is True
+    state = pipeline._car_state(_telemetry_body()["car_telemetry_data"][0])
+    assert state is not None and state["position_changed"] is True
+
+
+def test_recorder_marks_traffic_and_position_change_on_samples() -> None:
+    """완료 랩 트레이스의 샘플에도 접전·순위 변동이 남아 기준 랩 제외에 쓰인다."""
+    recorder = LapTraceRecorder()
+    traces = []
+
+    def feed(packet: Packet) -> None:
+        traces.extend(recorder.on_packet(packet))
+
+    feed(_packet(PacketId.SESSION, _session_body(SUZUKA_ID, session_type=15)))
+    feed(
+        _packet(
+            PacketId.LAP_DATA,
+            {"lap_data": _entries(_lap_entry(lap=1, position=8, gap_ms=600))},
+        )
+    )
+    feed(_packet(PacketId.CAR_TELEMETRY, _telemetry_body()))
+    feed(
+        _packet(
+            PacketId.LAP_DATA,
+            {
+                "lap_data": _entries(
+                    _lap_entry(
+                        lap=1, distance=1100.0, position=7, gap_ms=3000
+                    )
+                )
+            },
+        )
+    )
+    feed(_packet(PacketId.CAR_TELEMETRY, _telemetry_body()))
+    # 다음 랩으로 넘어가면 이전 랩이 마감된다.
+    feed(
+        _packet(
+            PacketId.LAP_DATA,
+            {
+                "lap_data": _entries(
+                    _lap_entry(lap=2, distance=0.0, position=7, gap_ms=3000)
+                )
+            },
+        )
+    )
+
+    trace = next(trace for trace in traces if trace.car_index == 0)
+    assert len(trace.samples) == 2
+    assert trace.samples[0].in_traffic is True
+    assert trace.samples[0].position_changed is False
+    assert trace.samples[1].in_traffic is False
+    assert trace.samples[1].position_changed is True
 
 
 async def test_pipeline_pushes_praise_for_personal_best() -> None:
