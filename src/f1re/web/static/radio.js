@@ -10,7 +10,11 @@
  *   이어 붙인다. 더 높은 우선순위 무전이 와서 서버가 끊으면 `interrupt`를 받아
  *   재생 중인 조각을 모두 멈춘다.
  * - 서버와의 연결이 끊기면 1초마다 자동으로 다시 연결한다.
+ * - 오른쪽 데이터 수신 칸은 대시보드와 같은 `/api/state`를 1초마다 읽어
+ *   `carstate.js`의 문구 함수로 그린다(SCRUM-111).
  */
+
+import { connectionText, diagnosticsText } from "./carstate.js";
 
 const KIND_LABELS = {
   safety: "안전",
@@ -21,6 +25,10 @@ const KIND_LABELS = {
 };
 
 const connectionNode = document.getElementById("connection");
+const connectionTextNode = document.getElementById("connection-text");
+const dataStatusNode = document.getElementById("data-status");
+const dataStatusValue = document.getElementById("data-status-value");
+const dataStatusDetail = document.getElementById("data-status-detail");
 const connectButton = document.getElementById("connect");
 const voiceCheckButton = document.getElementById("voice-check");
 const voiceNode = document.getElementById("voice");
@@ -43,10 +51,77 @@ let engineState = "off";
 let currentPriority = null;
 const activeSources = new Set();
 
-/** 연결 상태 배너. state: connected | connecting | disconnected */
+// 데이터 수신 상태(SCRUM-111). 대시보드가 쓰는 `/api/state`를 약 1초마다
+// 읽어, 엔진이 켜져 있는 동안만 갱신한다.
+const DATA_POLL_MS = 1000;
+let dataPollTimer = null;
+let dataRefreshing = false;
+
+/** 연결 상태 배너의 왼쪽(무전 연결) 칸. state: connected | connecting | disconnected */
 function setConnection(state, text) {
   connectionNode.dataset.state = state;
-  connectionNode.textContent = text;
+  connectionTextNode.textContent = text;
+}
+
+/** 데이터 수신 칸(오른쪽 반). `/api/state` 응답을 대시보드와 같은 문구로 그린다. */
+function setDataStatus(payload) {
+  const diagnostics = (payload.snapshot && payload.snapshot.diagnostics) || {};
+  const connection = payload.connection || {};
+  dataStatusValue.textContent = connectionText(connection, diagnostics);
+  dataStatusDetail.textContent = diagnosticsText(diagnostics);
+  dataStatusNode.dataset.state =
+    connection.data_age_ms === null || connection.data_age_ms === undefined
+      ? "none"
+      : connection.stale
+        ? "stale"
+        : "live";
+}
+
+/** 엔진이 꺼졌을 때. 수신이 없으므로 대시보드와 같은 "데이터 없음"으로 둔다. */
+function clearDataStatus() {
+  dataStatusValue.textContent = connectionText({}, {});
+  dataStatusDetail.textContent = "";
+  dataStatusNode.dataset.state = "none";
+}
+
+function startDataPolling() {
+  refreshDataStatus();
+}
+
+function stopDataPolling() {
+  if (dataPollTimer !== null) {
+    window.clearTimeout(dataPollTimer);
+    dataPollTimer = null;
+  }
+}
+
+function scheduleDataPoll() {
+  if (dataPollTimer !== null || engineState !== "on") return;
+  dataPollTimer = window.setTimeout(() => {
+    dataPollTimer = null;
+    refreshDataStatus();
+  }, DATA_POLL_MS);
+}
+
+async function refreshDataStatus() {
+  if (dataRefreshing) return;
+  dataRefreshing = true;
+  try {
+    const response = await fetch("/api/state", { cache: "no-store" });
+    if (response.status === 503) {
+      // 서버는 떠 있지만 엔진이 꺼진 상태다. 엔진 안내·상태 폴링으로 넘긴다.
+      setEngineState("off");
+      return;
+    }
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const payload = await response.json();
+    if (engineState === "on") setDataStatus(payload);
+  } catch (error) {
+    // 서버가 잠깐 응답하지 않을 수 있다. 마지막 표시를 두고 다음 주기에 다시 묻는다.
+  } finally {
+    dataRefreshing = false;
+    scheduleDataPoll();
+  }
 }
 
 function setVoice(label, reason) {
@@ -69,6 +144,7 @@ function setEngineState(state, { pollWhenOff = true } = {}) {
     if (connectionNode.dataset.state === "disconnected") {
       setConnection("disconnected", "무전 연결 대기");
     }
+    startDataPolling();
     return;
   }
   started = false;
@@ -87,6 +163,8 @@ function setEngineState(state, { pollWhenOff = true } = {}) {
   }
   stopAudio();
   currentPriority = null;
+  stopDataPolling();
+  clearDataStatus();
   setConnection("disconnected", "레이스 엔지니어 꺼짐");
   if (pollWhenOff) scheduleEnginePoll();
 }
