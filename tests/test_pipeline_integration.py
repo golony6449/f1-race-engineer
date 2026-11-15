@@ -307,10 +307,13 @@ async def test_overtake_and_lift_coast_radio(tmp_path: Path) -> None:
         assert overtake, [msg.text for msg in radio.queue.pushed]
         assert re.search(r"앞차랑 \d+\.\d초", overtake[0].text)
 
+        # 리프트 앤 코스트 지시는 근거의 reason으로 가른다. 문장 표현이
+        # "발 떼"와 "리프트"로 돌아가므로 낱말로 거르면 놓친다.
         lift = [
             msg
             for msg in _messages(radio, "coaching")
-            if "리프트" in msg.text
+            if msg.evidence.get("reason")
+            in {"fuel_laps_margin", "brake_temp", "tyre_temp"}
         ]
         assert lift, [msg.text for msg in radio.queue.pushed]
         assert re.search(r"\d+\s*미터", lift[0].text)

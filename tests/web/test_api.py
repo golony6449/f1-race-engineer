@@ -126,7 +126,7 @@ def _populated_store(*, recv_ns: int | None = None) -> StateStore:
 
     builder.apply(
         PacketId.SESSION,
-        _session_body(total_laps=50, track_length=5807, track_id=13, session_type=13),
+        _session_body(total_laps=50, track_length=5807, track_id=13, session_type=10),
         recv_ns=when,
     )
     builder.apply(
@@ -276,14 +276,16 @@ def test_state_endpoint_shape() -> None:
     assert damage["engine_mguh_wear"]["value"]["severity"] == "warn"
     assert damage["engine_mguh_wear"]["label"] == "MGU-H 마모"
 
-    # 연료: 남은 양, 랩당 소모, 남은 랩, 남은 레이스 랩, 여유
+    # 연료: 남은 양, 랩당 소모, MFD 여유 랩, 남은 레이스 랩
     fuel = car["fuel"]
     assert fuel["remaining_kg"]["value"] == pytest.approx(18.0)
-    assert fuel["per_lap_kg"]["value"] == pytest.approx(1.8)
+    # 실제 연료 랩 = 남은 레이스 랩(41) + MFD 여유(10) = 51랩.
+    assert fuel["per_lap_kg"]["value"] == pytest.approx(18.0 / 51.0)
     assert fuel["remaining_laps"]["value"] == pytest.approx(10.0)
     assert fuel["remaining_race_laps"]["value"] == pytest.approx(41.0)
-    assert fuel["laps_margin"]["value"] == pytest.approx(-31.0)
-    assert fuel["laps_margin"]["severity"] == "danger"
+    # `fuel_remaining_laps`가 이미 MFD의 여유 랩이다. 남은 랩을 다시 빼지 않는다.
+    assert fuel["laps_margin"]["value"] == pytest.approx(10.0)
+    assert fuel["laps_margin"]["severity"] == "ok"
 
     # ERS: 잔량 %, 모드
     assert car["ers"]["store_pct"]["value"] == pytest.approx(50.0)

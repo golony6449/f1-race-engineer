@@ -15,8 +15,9 @@
   들어간다.
 - 안전 경고·박스 지시의 유효 시간은 앞 무전이 재생되는 동안에도 지나지 않게
   설정 `[radio]`의 넉넉한 값을 쓴다(`rules_from_config()`).
-- 경고 대상: 타이어 마모·표면/내부 온도, 브레이크 온도, 연료 부족(남은 연료
-  랩 < 남은 레이스 랩), 날개·부품 큰 손상, 페널티, SC·VSC·적기, 박스 지시.
+- 경고 대상: 타이어 마모·표면/내부 온도, 브레이크 온도, 연료 부족(게임 MFD의
+  연료 여유 랩 < 0), 날개·부품 큰 손상, 페널티, SC·VSC·적기, 박스 지시.
+  연료 부족은 레이스 세션이고 `total_laps`가 있을 때만 판정한다(SCRUM-95).
 - 박스 지시는 (1) 레이스에서 타이어 마모가 DANGER가 되었거나 (2) 서브해야 할
   드라이브스루·스톱고 페널티가 생겼을 때 한 번 나간다. 타임 트라이얼에는
   박스가 없으므로 타이어 경고만 한다.
@@ -41,6 +42,11 @@ from typing import Any
 
 from f1re.alerts.thresholds import Severity, metric_threshold, severity
 from f1re.config import load_config
+from f1re.race_distance import (
+    fuel_laps_margin,
+    race_distance_known,
+    remaining_race_laps,
+)
 from f1re.radio.queue import RadioKind, RadioMessage
 from f1re.radio.templates import Mood, VariantRotator
 from f1re.state.events import Event, EventKind
@@ -359,12 +365,21 @@ class AlertRules:
         car_index: int,
         status: dict[str, Any],
     ) -> _Candidate | None:
-        """연료 부족: 남은 연료 랩 - 남은 레이스 랩 < 0."""
-        fuel_laps = _finite(status.get("fuel_remaining_laps"))
-        remaining_race_laps = _remaining_race_laps(packets, car_index)
-        if fuel_laps is None or remaining_race_laps is None:
+        """연료 부족: 게임 MFD의 연료 여유 랩 < 0.
+
+        `m_fuelRemainingLaps`가 이미 남은 레이스 거리 대비 여유 랩(+/-)이므로
+        남은 레이스 랩을 다시 빼지 않는다(SCRUM-95). 레이스 거리가 없는
+        세션(FP·Q·TT, `total_laps` 0·없음)에서는 판정하지 않는다.
+        """
+        session = packets.get("session") or {}
+        if not race_distance_known(
+            session.get("session_type"), session.get("total_laps")
+        ):
             return None
-        margin = fuel_laps - remaining_race_laps
+        fuel_laps = _finite(status.get("fuel_remaining_laps"))
+        margin = fuel_laps_margin(fuel_laps)
+        if margin is None:
+            return None
         if severity("fuel_laps_margin", margin) is not Severity.DANGER:
             return None
         return _Candidate(
@@ -375,7 +390,7 @@ class AlertRules:
                 "fuel_laps_margin",
                 margin,
                 fuel_remaining_laps=fuel_laps,
-                remaining_race_laps=remaining_race_laps,
+                remaining_race_laps=_remaining_race_laps(packets, car_index),
             ),
         )
 
@@ -687,14 +702,14 @@ def _current_lap(snapshot: dict[str, Any]) -> int | None:
 def _remaining_race_laps(
     packets: dict[str, Any], car_index: int | None
 ) -> float | None:
-    """화면과 같은 계산: total_laps - current_lap_num + 1."""
+    """남은 레이스 랩. 레이스가 아니거나 거리 정보가 없으면 None(SCRUM-95)."""
     session = packets.get("session") or {}
-    total_laps = _as_int(session.get("total_laps"))
     lap_entry = _player_entry(packets, "lap_data", "lap_data", car_index)
-    current_lap = _as_int(lap_entry.get("current_lap_num"))
-    if not total_laps or not current_lap or total_laps <= 0 or current_lap <= 0:
-        return None
-    return float(max(total_laps - current_lap + 1, 0))
+    return remaining_race_laps(
+        session.get("session_type"),
+        session.get("total_laps"),
+        lap_entry.get("current_lap_num"),
+    )
 
 
 def _tyre_readings(

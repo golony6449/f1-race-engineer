@@ -112,12 +112,13 @@ def test_fuel_laps_margin_danger_only_when_negative() -> None:
     assert severity("fuel_laps_margin", 0.5, {}) is Severity.OK
 
 
-def test_fuel_margin_can_be_derived_from_context() -> None:
+def test_fuel_margin_comes_from_mfd_value_in_context() -> None:
+    """`m_fuelRemainingLaps`는 이미 MFD 여유 랩이다. 남은 랩을 다시 빼지 않는다."""
     assert (
         severity(
             "fuel_laps_margin",
             None,
-            {"fuel_remaining_laps": 9.0, "remaining_race_laps": 10.0},
+            {"fuel_remaining_laps": -1.0},
         )
         is Severity.DANGER
     )
@@ -125,7 +126,7 @@ def test_fuel_margin_can_be_derived_from_context() -> None:
         severity(
             "fuel_laps_margin",
             None,
-            {"fuel_remaining_laps": 10.2, "remaining_race_laps": 10.0},
+            {"fuel_remaining_laps": 0.2},
         )
         is Severity.WARN
     )
@@ -133,15 +134,21 @@ def test_fuel_margin_can_be_derived_from_context() -> None:
         severity(
             "fuel_laps_margin",
             None,
-            {"fuel_remaining_laps": 10.6, "remaining_race_laps": 10.0},
+            {"fuel_remaining_laps": 1.0},
         )
         is Severity.OK
     )
-    # 문맥이 모자라면 값을 계산하지 않는다.
+    # 남은 레이스 랩은 이제 판정에 쓰지 않는다(중복 차감 금지).
     assert (
-        severity("fuel_laps_margin", None, {"fuel_remaining_laps": 10.0})
+        severity(
+            "fuel_laps_margin",
+            None,
+            {"remaining_race_laps": 10.0},
+        )
         is Severity.NO_DATA
     )
+    # 문맥이 모자라면 값을 계산하지 않는다.
+    assert severity("fuel_laps_margin", None, {}) is Severity.NO_DATA
 
 
 @pytest.mark.parametrize("metric", tuple(default_thresholds().metrics))

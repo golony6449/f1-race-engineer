@@ -87,14 +87,18 @@ def mood_for(
 
 
 def is_last_laps(remaining_laps: float | None, *, threshold: int = LAST_LAPS) -> bool:
-    """남은 랩이 `threshold` 이하인가(레이스 여부는 호출자가 판단한다)."""
+    """남은 랩이 1 이상 `threshold` 이하인가(레이스 여부는 호출자가 판단한다).
+
+    0 이하는 레이스 도중 나올 수 없는 값이다(레이스가 아니거나 `total_laps`가
+    0·없는 세션의 계산 결과). 그때는 마지막 랩들로 보지 않는다(SCRUM-95).
+    """
     if remaining_laps is None:
         return False
     try:
         value = float(remaining_laps)
     except (TypeError, ValueError):
         return False
-    return math.isfinite(value) and value <= threshold
+    return math.isfinite(value) and 0 < value <= threshold
 
 
 def _slots_in_text(text: str) -> tuple[str, ...]:
@@ -695,11 +699,13 @@ _TEMPLATES: tuple[Template, ...] = (
         RadioKind.COACHING,
         _moods(
             calm=(
-                "연료가 {laps}랩 모자라. {corners}에서 {meters}미터 일찍 발 떼.",
-                "연료가 {laps}랩 부족해. {corners}에서 {meters}미터 일찍 떼.",
+                "연료가 {laps}랩 모자라. 리프트 앤 코스트로 "
+                "{corners}에서 {meters}미터 일찍 발 떼.",
+                "연료가 {laps}랩 부족해. {corners}에서 {meters}미터 일찍 리프트해.",
             ),
             hyped=(
-                "연료 {laps}랩 모자라! {corners}에서 {meters}미터 일찍 떼! 가자!",
+                "연료 {laps}랩 모자라! 리프트 앤 코스트! "
+                "{corners}에서 {meters}미터 일찍 떼! 가자!",
                 "{laps}랩 부족해! {corners}, {meters}미터 리프트! 지금부터!",
             ),
         ),
@@ -716,7 +722,7 @@ _TEMPLATES: tuple[Template, ...] = (
             ),
             hyped=(
                 "{corner}번 리프트 짧아! {meters}미터 더 일찍! 당겨!",
-                "{corner}번 부족해! {meters}미터 더! 지금!",
+                "{corner}번 리프트 부족해! {meters}미터 더! 지금!",
             ),
         ),
         needs_evidence=True,
@@ -729,11 +735,12 @@ _TEMPLATES: tuple[Template, ...] = (
         RadioKind.COACHING,
         _moods(
             calm=(
-                "브레이크가 {celsius}도야. {corners}에서 {meters}미터 일찍 발 떼서 식혀.",
-                "브레이크가 {celsius}도야. {corners}에서 {meters}미터 일찍 떼서 식혀.",
+                "브레이크가 {celsius}도야. {corners}에서 {meters}미터 일찍 발 떼. "
+                "리프트 앤 코스트로 식혀.",
+                "브레이크가 {celsius}도야. {corners}에서 {meters}미터 일찍 리프트해서 식혀.",
             ),
             hyped=(
-                "브레이크 {celsius}도! {corners}에서 {meters}미터 일찍 떼! 식혀!",
+                "브레이크 {celsius}도! {corners}에서 {meters}미터 일찍 리프트! 식혀!",
                 "{celsius}도야! {corners}, {meters}미터 리프트! 뜨거워!",
             ),
         ),
@@ -745,11 +752,12 @@ _TEMPLATES: tuple[Template, ...] = (
         RadioKind.COACHING,
         _moods(
             calm=(
-                "앞 타이어가 {celsius}도야. {corners}에서 {meters}미터 일찍 발 떼서 식혀.",
-                "앞 타이어가 {celsius}도야. {corners}에서 {meters}미터 일찍 떼서 식혀.",
+                "앞 타이어가 {celsius}도야. {corners}에서 {meters}미터 일찍 발 떼. "
+                "리프트 앤 코스트로 식혀.",
+                "앞 타이어가 {celsius}도야. {corners}에서 {meters}미터 일찍 리프트해서 식혀.",
             ),
             hyped=(
-                "앞 타이어 {celsius}도! {corners}에서 {meters}미터 일찍 떼! 식혀!",
+                "앞 타이어 {celsius}도! {corners}에서 {meters}미터 일찍 리프트! 식혀!",
                 "{celsius}도야! {corners}, {meters}미터 리프트! 뜨거워!",
             ),
         ),
@@ -945,7 +953,7 @@ _TEMPLATES: tuple[Template, ...] = (
             ),
             hyped=(
                 "{corner_label} 리프트 짧아! {meters}미터 더 일찍! 당겨!",
-                "{corner_label} 부족해! {meters}미터 더! 지금!",
+                "{corner_label} 리프트 부족해! {meters}미터 더! 지금!",
             ),
         ),
         needs_evidence=True,

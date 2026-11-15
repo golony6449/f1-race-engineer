@@ -29,6 +29,7 @@ from pathlib import Path
 from typing import Any
 
 from f1re.config import ConfigError, default_config_path
+from f1re.race_distance import fuel_laps_margin
 
 
 class Severity(StrEnum):
@@ -176,8 +177,9 @@ def severity(
     """지표 값의 위험 단계를 설정 문턱값으로 판정한다.
 
     `ctx`는 값이 없을 때 계산에 쓸 문맥이다. 지금은 `fuel_laps_margin`에서
-    `fuel_remaining_laps`와 `remaining_race_laps`가 있으면 그 차이로 값을
-    계산한다. 그 밖의 문맥은 판정에 쓰지 않는다.
+    `fuel_remaining_laps`(게임 MFD의 남은 레이스 거리 대비 여유 랩)를 그대로
+    쓴다. 남은 레이스 랩을 다시 빼지 않는다(SCRUM-95). 그 밖의 문맥은 판정에
+    쓰지 않는다.
     """
     threshold = metric_threshold(metric)
     resolved = _resolve_value(metric, value, ctx or {})
@@ -269,15 +271,5 @@ def _resolve_value(
             return None
         return number if math.isfinite(number) else None
     if metric == "fuel_laps_margin":
-        fuel = _context_number(ctx.get("fuel_remaining_laps"))
-        remaining = _context_number(ctx.get("remaining_race_laps"))
-        if fuel is not None and remaining is not None:
-            return fuel - remaining
+        return fuel_laps_margin(ctx.get("fuel_remaining_laps"))
     return None
-
-
-def _context_number(value: Any) -> float | None:
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        return None
-    number = float(value)
-    return number if math.isfinite(number) else None

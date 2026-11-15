@@ -46,6 +46,7 @@ from f1re.engine import (
     Engine,
     Runtime,
 )
+from f1re.race_distance import fuel_laps_margin, remaining_race_laps
 from f1re.state.store import StateStore
 from f1re.web.lift_coast_api import create_lift_coast_router
 from f1re.web.map_api import TrackMap, create_map_router
@@ -255,22 +256,33 @@ def player_summary(snapshot: dict[str, Any]) -> dict[str, Any]:
 
     fuel_kg = _finite(status_entry.get("fuel_in_tank"))
     fuel_laps = _finite(status_entry.get("fuel_remaining_laps"))
-    remaining_race_laps = _remaining_race_laps(session, lap_entry)
+    race_laps_left = remaining_race_laps(
+        session.get("session_type"),
+        session.get("total_laps"),
+        lap_entry.get("current_lap_num"),
+    )
+    # `fuel_remaining_laps`는 MFD의 여유 랩(+/-)이므로 실제 연료 랩은
+    # `남은 레이스 랩 + 여유 랩`으로 복원한다(레이스 세션에서만).
+    fuel_laps_total = (
+        race_laps_left + fuel_laps
+        if race_laps_left is not None and fuel_laps is not None
+        else None
+    )
     per_lap_kg = (
-        fuel_kg / fuel_laps
-        if fuel_kg is not None and fuel_laps is not None and fuel_laps > 0
+        fuel_kg / fuel_laps_total
+        if fuel_kg is not None
+        and fuel_laps_total is not None
+        and fuel_laps_total > 0
         else None
     )
-    laps_margin = (
-        fuel_laps - remaining_race_laps
-        if fuel_laps is not None and remaining_race_laps is not None
-        else None
-    )
+    # `fuel_remaining_laps`가 이미 MFD의 여유 랩(+/-)이다. 레이스가 아닌
+    # 세션에서도 값은 그대로 보여 주고, 색만 문턱값으로 판정한다(SCRUM-95).
+    laps_margin = fuel_laps_margin(fuel_laps)
     fuel = {
         "remaining_kg": _number_cell(fuel_kg, unit="kg"),
         "per_lap_kg": _number_cell(per_lap_kg, unit="kg/랩"),
         "remaining_laps": _number_cell(fuel_laps, unit="랩"),
-        "remaining_race_laps": _number_cell(remaining_race_laps, unit="랩"),
+        "remaining_race_laps": _number_cell(race_laps_left, unit="랩"),
         "laps_margin": _number_cell(
             laps_margin, metric="fuel_laps_margin", unit="랩"
         ),
@@ -631,20 +643,6 @@ def _ers_mode_cell(value: Any) -> dict[str, Any]:
     if code is None:
         return _text_cell(None, None)
     return _text_cell(_ERS_DEPLOY_MODES.get(code, f"알 수 없음({code})"), code)
-
-
-def _remaining_race_laps(
-    session: dict[str, Any], lap_entry: dict[str, Any]
-) -> float | None:
-    """남은 레이스 랩. 현재 랩을 포함해 완주까지 남은 랩 수다.
-
-    타임 트라이얼·프랙티스처럼 `total_laps`가 0이면 알 수 없으므로 `None`.
-    """
-    total_laps = _integer(session.get("total_laps"))
-    current_lap = _integer(lap_entry.get("current_lap_num"))
-    if not total_laps or not current_lap or total_laps <= 0 or current_lap <= 0:
-        return None
-    return float(max(total_laps - current_lap + 1, 0))
 
 
 def _finite(value: Any) -> float | None:

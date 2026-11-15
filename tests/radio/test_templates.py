@@ -87,7 +87,7 @@ def test_templates_have_where_what_howmuch() -> None:
 def test_lift_and_coast_templates_present() -> None:
     assert (
         render("coaching.fuel_lift", laps=2, corners="3·7", meters=40)
-        == "연료가 2랩 모자라. 3·7에서 40미터 일찍 발 떼."
+        == "연료가 2랩 모자라. 리프트 앤 코스트로 3·7에서 40미터 일찍 발 떼."
     )
     assert render("improvement.fuel_lift_good", corner=7) == "7번 리프트 좋아. 그대로 해."
     assert (
@@ -95,6 +95,34 @@ def test_lift_and_coast_templates_present() -> None:
         == "7번 리프트가 짧았어. 10미터 더 일찍 떼."
     )
     assert render("improvement.fuel_lift_stop") == "연료 회복됐어. 이제 리프트 안 해도 돼."
+
+
+# 리프트 앤 코스트 문구는 어떤 감정 단계·표현이 나가도 '리프트'를 말해
+# 무엇을 하라는 지시인지 무전만 듣고 알 수 있어야 한다(SCRUM-112).
+LIFT_COAST_KEYS: tuple[str, ...] = (
+    "coaching.fuel_lift",
+    "coaching.fuel_lift_short",
+    "coaching.fuel_lift_short_ordinal",
+    "coaching.brake_temp_lift",
+    "coaching.tyre_temp_lift",
+    "improvement.fuel_lift_good",
+    "improvement.fuel_lift_good_ordinal",
+    "improvement.fuel_lift_stop",
+)
+
+
+def test_lift_and_coast_phrases_always_say_lift() -> None:
+    for key in LIFT_COAST_KEYS:
+        template = TEMPLATES[key]
+        for mood, texts in template.moods.items():
+            for variant in range(len(texts)):
+                text = render(
+                    key,
+                    mood=mood,
+                    variant=variant,
+                    **_sample_for(key),
+                )
+                assert "리프트" in text, (key, mood, variant, text)
 
 
 def test_coaching_examples_match_radio_wording() -> None:
@@ -266,6 +294,10 @@ def test_mood_selection_rules() -> None:
     assert is_last_laps(3) is True
     assert is_last_laps(2.9) is True
     assert is_last_laps(4) is False
+    assert is_last_laps(1) is True
+    # 0 이하는 레이스 도중 나올 수 없다(레이스 거리 없음·total_laps 0).
+    assert is_last_laps(0) is False
+    assert is_last_laps(-1) is False
     assert is_last_laps(None) is False
 
 

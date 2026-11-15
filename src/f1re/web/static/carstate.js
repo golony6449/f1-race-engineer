@@ -32,10 +32,12 @@ const DISPLAY_UNITS = {
   W: { unit: "kW", scale: 1e-3 },
 };
 
+// `remaining_laps`는 게임 MFD의 연료 여유 랩(+/-)과 같은 값이라 여기서는
+// `laps_margin` 한 칸으로만 보여 준다(SCRUM-95). `remaining_race_laps`는
+// 레이스 세션에서만 값이 있고, FP·Q·TT에서는 비어 있다.
 const FUEL_CELLS = [
   ["remaining_kg", "남은 연료"],
   ["per_lap_kg", "랩당 소모"],
-  ["remaining_laps", "남은 랩"],
   ["remaining_race_laps", "레이스 남은 랩"],
   ["laps_margin", "연료 여유"],
 ];
@@ -321,6 +323,31 @@ function compoundText(tyre) {
   return parts.join(" · ");
 }
 
+/**
+ * 데이터 수신 상태 문구. 대시보드 상태줄과 무전 페이지가 함께 쓴다(SCRUM-111).
+ *
+ * `connection`은 `/api/state`의 `connection`, `diagnostics`는
+ * `snapshot.diagnostics`다. 두 화면의 문구·기준이 어긋나지 않게 이 함수만 쓴다.
+ */
+export function connectionText(connection = {}, diagnostics = {}) {
+  if (connection.data_age_ms === null || connection.data_age_ms === undefined) {
+    return "데이터 없음";
+  }
+  if (connection.stale) {
+    const seconds = (connection.data_age_ms / 1000).toFixed(1);
+    return `데이터 안 옴 · 마지막 수신 ${seconds}초 전`;
+  }
+  return `수신 중 · ${Math.round(diagnostics.packets_per_sec || 0)} pkt/s`;
+}
+
+/** 마지막 패킷의 형식·ID·길이. 대시보드와 무전 페이지가 함께 쓴다. */
+export function diagnosticsText(diagnostics = {}) {
+  const format = diagnostics.last_format ?? "—";
+  const packetId = diagnostics.last_packet_id ?? "—";
+  const length = diagnostics.last_len ?? "—";
+  return `형식 ${format} · 패킷 ${packetId} · 길이 ${length}`;
+}
+
 /** 상단 상태줄(수신 진단·음성·무전 페이지). */
 export function renderStatusBar(payload) {
   const diagnostics = (payload.snapshot && payload.snapshot.diagnostics) || {};
@@ -329,22 +356,12 @@ export function renderStatusBar(payload) {
 
   const connectionValue = document.querySelector('[data-field="connection"]');
   if (connectionValue) {
-    if (connection.data_age_ms === null || connection.data_age_ms === undefined) {
-      connectionValue.textContent = "데이터 없음";
-    } else if (connection.stale) {
-      const seconds = (connection.data_age_ms / 1000).toFixed(1);
-      connectionValue.textContent = `데이터 안 옴 · 마지막 수신 ${seconds}초 전`;
-    } else {
-      connectionValue.textContent = `수신 중 · ${Math.round(diagnostics.packets_per_sec || 0)} pkt/s`;
-    }
+    connectionValue.textContent = connectionText(connection, diagnostics);
   }
 
   const detail = document.getElementById("connection-detail");
   if (detail) {
-    const format = diagnostics.last_format ?? "—";
-    const packetId = diagnostics.last_packet_id ?? "—";
-    const length = diagnostics.last_len ?? "—";
-    detail.textContent = `형식 ${format} · 패킷 ${packetId} · 길이 ${length}`;
+    detail.textContent = diagnosticsText(diagnostics);
   }
 
   const detail2 = document.getElementById("connection-detail-2");
