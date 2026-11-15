@@ -38,6 +38,28 @@ class TTSConfig:
 
 
 @dataclass(frozen=True)
+class LLMConfig:
+    """Qwen LLM 무전 문장 생성 설정(SCRUM-129).
+
+    판단과 숫자는 규칙 엔진이 정하고, LLM은 주어진 사실(facts)과 KB 문맥만으로
+    짧은 한국어 무전 문장을 만든다. 급하지 않은 무전(추월·방어 전략 등)에 쓴다.
+    요청이 `timeout_s` 안에 끝나지 않거나 출력 검증에 걸리면 미리 만든
+    fallback 문장으로 대체하므로 무전 큐가 막히지 않는다.
+    """
+
+    enabled: bool = True
+    model: str = "qwen3.7-flash-2026-07-15"
+    endpoint: str = (
+        "https://dashscope-intl.aliyuncs.com"
+        "/compatible-mode/v1/chat/completions"
+    )
+    timeout_s: float = 1.5
+    secret_key: str = "qwen"
+    max_tokens: int = 80
+    temperature: float = 0.3
+
+
+@dataclass(frozen=True)
 class WebConfig:
     """대시보드 웹 서버 설정. 화면(태블릿·옆 모니터)이 접속하는 주소다."""
 
@@ -101,6 +123,7 @@ class AppConfig:
     web: WebConfig = dataclasses.field(default_factory=WebConfig)
     radio: RadioConfig = dataclasses.field(default_factory=RadioConfig)
     recording: RecordingConfig = dataclasses.field(default_factory=RecordingConfig)
+    llm: LLMConfig = dataclasses.field(default_factory=LLMConfig)
     focus_corner_count: int = 5
     focus_recent_laps: int = 3
     big_loss_s: float = 0.3
@@ -141,15 +164,18 @@ def load_config(path: str | Path | None = None) -> AppConfig:
     web_values = raw.get("web", {})
     radio_values = raw.get("radio", {})
     recording_values = raw.get("recording", {})
+    llm_values = raw.get("llm", {})
     if (
         not isinstance(global_values, dict)
         or not isinstance(tts_values, dict)
         or not isinstance(web_values, dict)
         or not isinstance(radio_values, dict)
         or not isinstance(recording_values, dict)
+        or not isinstance(llm_values, dict)
     ):
         raise ConfigError(
-            "[global], [tts], [web], [radio], [recording]는 표(table)여야 합니다"
+            "[global], [tts], [web], [radio], [recording], [llm]는 "
+            "표(table)여야 합니다"
         )
 
     config = AppConfig(
@@ -157,11 +183,12 @@ def load_config(path: str | Path | None = None) -> AppConfig:
         web=_build(WebConfig, web_values, "web"),
         radio=_build(RadioConfig, radio_values, "radio"),
         recording=_build_recording(recording_values),
+        llm=_build(LLMConfig, llm_values, "llm"),
         **_known_fields(
             AppConfig,
             global_values,
             "global",
-            skip={"tts", "web", "radio", "recording"},
+            skip={"tts", "web", "radio", "recording", "llm"},
         ),
     )
     _validate(config)
@@ -239,3 +266,18 @@ def _validate(config: AppConfig) -> None:
         )
     if recording.min_packets < 1:
         raise ConfigError("recording.min_packets는 1 이상이어야 합니다")
+
+    # LLM 무전 문장 생성 설정(SCRUM-129).
+    llm = config.llm
+    if not llm.model.strip():
+        raise ConfigError("llm.model이 비어 있습니다")
+    if not llm.endpoint.strip():
+        raise ConfigError("llm.endpoint가 비어 있습니다")
+    if not llm.secret_key.strip():
+        raise ConfigError("llm.secret_key가 비어 있습니다")
+    if not math.isfinite(llm.timeout_s) or llm.timeout_s <= 0:
+        raise ConfigError("llm.timeout_s는 0보다 큰 유한한 수여야 합니다")
+    if llm.max_tokens < 1:
+        raise ConfigError("llm.max_tokens는 1 이상이어야 합니다")
+    if not math.isfinite(llm.temperature) or not 0.0 <= llm.temperature <= 2.0:
+        raise ConfigError("llm.temperature는 0.0~2.0이어야 합니다")
