@@ -65,6 +65,16 @@ from f1re.race_distance import fuel_laps_margin, remaining_race_laps
 from f1re.state.store import StateStore
 from f1re.udp.backup import BackupWorker
 from f1re.udp.gcs_transfer import RecordingFetcher
+from f1re.udp.session_category import (
+    category_label,
+    is_practice_session,
+    is_qualifying_session,
+    is_race_session,
+    is_sprint_shootout_session,
+    is_time_trial_session,
+    session_category,
+    session_type_label,
+)
 from f1re.udp.web_replay import ReplayManager
 from f1re.web.lift_coast_api import create_lift_coast_router
 from f1re.web.map_api import TrackMap, create_map_router
@@ -165,14 +175,22 @@ def state_payload(
     store: StateStore,
     radio: RadioService,
     map_state: TrackMap | None = None,
+    *,
+    pipeline: Any | None = None,
 ) -> dict[str, Any]:
     """화면·API가 함께 쓰는 상태 묶음.
 
     `cars`·`flag`는 서킷 지도(작업 10)용이다. `map_state`가 없으면 빈 값으로
     두어 지도 없이도 같은 모양을 유지한다. `flags`는 깃발 상태 줄(SCRUM-80)이
     쓰는 요약이며 `snapshot["flags"]`와 같은 값이다.
+
+    `session`은 세션 종류의 화면용 이름, `corner`는 현재/다음 코너와 다음 코너
+    진입까지 남은 거리다(SCRUM-126). 활성 트랙 정보는 `pipeline.track_state()`가
+    있으면 그 코너 목록을 쓴다. 파이프라인이 없으면(고정 엔진·테스트) 트랙을
+    모르는 상태로 `None` 값을 유지한다.
     """
     snapshot = store.snapshot()
+    track_state = None if pipeline is None else pipeline.track_state()
     return {
         "snapshot": snapshot,
         "car": player_summary(snapshot),
@@ -181,7 +199,148 @@ def state_payload(
         "cars": [] if map_state is None else map_state.car_positions(snapshot),
         "flag": "none" if map_state is None else map_state.flag(snapshot),
         "flags": snapshot.get("flags", _empty_flags()),
+        "session": session_info(snapshot),
+        "corner": corner_info(snapshot, track_state),
     }
+
+
+def session_info(snapshot: dict[str, Any]) -> dict[str, Any]:
+    """세션 종류를 화면에 바로 쓸 수 있는 한국어 이름으로 요약한다.
+
+    `m_sessionType` 판정은 `f1re.udp.session_category`(SCRUM-131)만 쓴다.
+    SESSION 패킷이 아직 없으면 모든 값이 `None`이고, 화면은 `—`를 보여 준다.
+    `label`은 대분류와 세부 이름을 합친 표시 문자열이다(예: `연습 · P1`,
+    `스프린트 슛아웃 · SS1`, `레이스`). 스프린트 슛아웃은 녹화 범주로는
+    예선이지만 화면에서는 따로 보여 준다.
+    """
+    session = (snapshot.get("packets") or {}).get("session") or {}
+    raw = _integer(session.get("session_type"))
+    if raw is None:
+        return {
+            "session_type": None,
+            "session_type_label": None,
+            "session_category": None,
+            "label": None,
+        }
+    kind = _session_kind_label(raw)
+    type_label = session_type_label(raw)
+    label = kind
+    if kind is not None and type_label not in (kind, "알 수 없음"):
+        label = f"{kind} · {type_label}"
+    return {
+        "session_type": raw,
+        "session_type_label": type_label,
+        "session_category": session_category(raw),
+        "category_label": category_label(session_category(raw)),
+        "label": label,
+    }
+
+
+def _session_kind_label(session_type: int) -> str | None:
+    """세션 대분류의 한국어 이름. 모르는 값이면 `None`."""
+    if is_sprint_shootout_session(session_type):
+        return "스프린트 슛아웃"
+    if is_practice_session(session_type):
+        return "연습"
+    if is_qualifying_session(session_type):
+        return "예선"
+    if is_race_session(session_type):
+        return "레이스"
+    if is_time_trial_session(session_type):
+        return "타임 트라이얼"
+    return None
+
+
+def corner_info(
+    snapshot: dict[str, Any],
+    track_state: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """현재/다음 코너와 다음 코너 진입까지 남은 거리(SCRUM-126).
+
+    `track_state`는 `RacePipeline.track_state()`가 준 코너다. 내 차의
+    `lap_distance`가 코너 구간(진입~탈출) 안이면 `current_corner`에 번호를,
+    직선이면 `None`을 넣는다. `next_corner`는 아직 지나지 않은 첫 코너이며,
+    마지막 코너 뒤에서는 다음 랩 1번 코너로 넘어간다(wrap-around). 그래서
+    `distance_to_next_corner_m`은 `length_m - lap_distance + entry_m`이 된다.
+
+    트랙을 모르거나 내 차 랩 거리가 없으면 `track_loaded`만 실제 값을 두고
+    나머지는 `None`이다.
+    """
+    corners = _track_corner_ranges(track_state)
+    length_m = _finite((track_state or {}).get("length_m"))
+    if not corners or length_m is None or length_m <= 0:
+        return {
+            "track_loaded": False,
+            "current_corner": None,
+            "next_corner": None,
+            "distance_to_next_corner_m": None,
+        }
+    lap_distance = _player_lap_distance(snapshot)
+    if lap_distance is None:
+        return {
+            "track_loaded": True,
+            "current_corner": None,
+            "next_corner": None,
+            "distance_to_next_corner_m": None,
+        }
+
+    distance = lap_distance % length_m
+    current_corner = next(
+        (
+            number
+            for number, entry_m, exit_m in corners
+            if entry_m <= distance <= exit_m
+        ),
+        None,
+    )
+    following = next(
+        (corner for corner in corners if corner[1] > distance), None
+    )
+    if following is not None:
+        number, entry_m, _ = following
+        remaining_m = entry_m - distance
+    else:
+        # 랩 끝을 넘어 다음 랩 1번 코너까지의 거리.
+        number, entry_m, _ = corners[0]
+        remaining_m = (length_m - distance) + entry_m
+    return {
+        "track_loaded": True,
+        "current_corner": current_corner,
+        "next_corner": number,
+        "distance_to_next_corner_m": round(remaining_m, 2),
+    }
+
+
+def _track_corner_ranges(
+    track_state: dict[str, Any] | None,
+) -> list[tuple[int, float, float]]:
+    """`track_state()`의 코너 목록을 (번호, 진입, 탈출)로 정리해 거리순 정렬."""
+    if not isinstance(track_state, dict):
+        return []
+    raw_corners = track_state.get("corners")
+    if not isinstance(raw_corners, list):
+        return []
+    ranges: list[tuple[int, float, float]] = []
+    for item in raw_corners:
+        if not isinstance(item, dict):
+            continue
+        number = _integer(item.get("number"))
+        entry_m = _finite(item.get("entry_m"))
+        exit_m = _finite(item.get("exit_m"))
+        if number is None or entry_m is None or exit_m is None:
+            continue
+        ranges.append((number, entry_m, exit_m))
+    ranges.sort(key=lambda corner: corner[1])
+    return ranges
+
+
+def _player_lap_distance(snapshot: dict[str, Any]) -> float | None:
+    """스냅샷에서 내 차의 현재 랩 거리(m)를 꺼낸다."""
+    packets = snapshot.get("packets") or {}
+    lap_entry = _player_entry(
+        packets, "lap_data", "lap_data", snapshot.get("player_car_index")
+    )
+    return _finite(lap_entry.get("lap_distance"))
 
 
 def _empty_flags() -> dict[str, Any]:
@@ -583,7 +742,9 @@ def create_app(
     @app.get("/api/state")
     def api_state() -> dict[str, Any]:
         runtime = _runtime()
-        return state_payload(runtime.store, runtime.radio, runtime.map)
+        return state_payload(
+            runtime.store, runtime.radio, runtime.map, pipeline=runtime.pipeline
+        )
 
     @app.get("/api/thresholds")
     def api_thresholds() -> dict[str, Any]:
@@ -602,7 +763,12 @@ def create_app(
                 if runtime is None:
                     break
                 await websocket.send_json(
-                    state_payload(runtime.store, runtime.radio, runtime.map)
+                    state_payload(
+                        runtime.store,
+                        runtime.radio,
+                        runtime.map,
+                        pipeline=runtime.pipeline,
+                    )
                 )
                 await _wait_or_off(off_event, PUSH_INTERVAL_S)
         except (WebSocketDisconnect, RuntimeError, OSError):
