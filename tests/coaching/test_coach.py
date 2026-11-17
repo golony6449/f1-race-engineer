@@ -27,6 +27,7 @@ from f1re.coaching.coach import (
 from f1re.coaching.focus import FocusConfig
 from f1re.coaching.metrics import corner_metrics
 from f1re.coaching.reference import SOURCE_RECENT_CAR, ReferenceSet
+from f1re.config import CoachingSensitivityConfig
 from f1re.demo_sender.driving import DriverProfile, Sample as DrivingSample, generate_lap
 from f1re.demo_sender.scenarios import (
     SCENARIO_DIR,
@@ -44,6 +45,19 @@ SUZUKA_ID = 13
 MONACO_ID = 5
 # 실제 시각 기준. RadioQueue에 넣는 무전의 유효 시간을 진짜 시계로 판정하기 때문이다.
 _BASE_NS = time.time_ns()
+
+# SCRUM-124로 기본 민감도(브레이크 8m, 손실 100ms 하한)가 바뀌었다. 데모 송신기
+# 시나리오의 효과는 코너 손실이 0에 가깝거나 음수라 새 기본값에서는 무전이 나가지
+# 않는다. 이 파일은 원인 선택·문구·발화 시점 규칙을 확인하므로, 그 규칙만 따로
+# 확인하도록 옛 민감도를 명시한다. 새 기본값과 접전 코너 제외는
+# tests/coaching/test_traffic_and_sensitivity.py가 확인한다.
+_RELAXED_SENSITIVITY = CoachingSensitivityConfig(
+    brake_diff_m=3.0,
+    turn_in_diff_m=3.0,
+    min_speed_diff_kmh=2.0,
+    # 옛 동작처럼 손실 하한을 두지 않는다(빠른 코너도 원인 확인용으로 발화).
+    min_corner_loss_ms=-10_000,
+)
 
 _SUZUKA = load_track(SUZUKA_ID)
 _SUZUKA_OUTLINE = load_outline(SUZUKA_ID)
@@ -175,6 +189,8 @@ def _coach(
     # 기준은 다른 차(1번)의 가장 최근 랩으로 둔다.
     baseline = _trace(track, baseline_outline, 99, car_index=1)
     references.update(baseline)
+    # 시나리오 효과의 작은 차이를 그대로 보기 위해 옛 민감도를 명시한다.
+    kwargs.setdefault("config", CoachConfig(sensitivity=_RELAXED_SENSITIVITY))
     coach = Coach(
         track,
         references=references,
@@ -197,6 +213,8 @@ def _state(sample: Sample, lap: int, **overrides) -> dict:
         "x": sample.x,
         "z": sample.z,
         "surface": sample.surface,
+        "in_traffic": sample.in_traffic,
+        "position_changed": sample.position_changed,
         "lap_num": lap,
     }
     state.update(overrides)
@@ -537,7 +555,7 @@ def test_last_laps_coaching_uses_hyped_wording() -> None:
         _feed(
             coach,
             lap,
-            overrides={"session_type": 10, "remaining_laps": 3},
+            overrides={"session_type": 15, "remaining_laps": 3},
         )
     )
 
@@ -558,7 +576,7 @@ def test_time_trial_is_not_hyped_even_near_the_end() -> None:
         _feed(
             coach,
             lap,
-            overrides={"session_type": 13, "remaining_laps": 1},
+            overrides={"session_type": 18, "remaining_laps": 1},
         )
     )
 
@@ -633,12 +651,12 @@ def test_invalid_lap_is_not_coached(overrides: dict) -> None:
 def test_race_lap_1_is_not_coached_but_lap_2_is() -> None:
     lap = _suzuka(1, effects=_early_brake(SUZUKA, 9))
 
-    first = _coach(SUZUKA, focus=[9], session_type=10)
-    assert _feed(first, lap, overrides={"session_type": 10}) == []
+    first = _coach(SUZUKA, focus=[9], session_type=15)
+    assert _feed(first, lap, overrides={"session_type": 15}) == []
 
-    second = _coach(SUZUKA, focus=[9], session_type=10)
+    second = _coach(SUZUKA, focus=[9], session_type=15)
     later = _suzuka(2, effects=_early_brake(SUZUKA, 9))
-    messages = _messages(_feed(second, later, overrides={"session_type": 10}))
+    messages = _messages(_feed(second, later, overrides={"session_type": 15}))
     assert [message.corner for message in messages] == [9]
 
 

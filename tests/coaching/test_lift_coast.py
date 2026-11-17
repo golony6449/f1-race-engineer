@@ -186,7 +186,7 @@ def _complete(coach: LiftCoastCoach, trace: LapTrace) -> None:
 def _coach(
     track: Track = SUZUKA,
     *,
-    session_type: int = 10,
+    session_type: int = 15,
     state: LiftCoastState | None = None,
     config: LiftCoastConfig | None = None,
 ) -> LiftCoastCoach:
@@ -424,7 +424,7 @@ def test_last_laps_lift_instruction_uses_hyped_wording() -> None:
         2,
         overrides={
             **_alert_overrides(2),
-            "session_type": 10,
+            "session_type": 15,
             "remaining_laps": 3,
         },
     )
@@ -438,7 +438,7 @@ def test_last_laps_lift_instruction_uses_hyped_wording() -> None:
             3,
             overrides={
                 **_alert_overrides(3),
-                "session_type": 10,
+                "session_type": 15,
                 "remaining_laps": 2,
             },
         )
@@ -537,7 +537,7 @@ def test_no_message_when_margins_are_healthy() -> None:
 
 def test_no_lift_messages_outside_race_session() -> None:
     """타임 트라이얼에서는 위험해도 리프트 지시·피드백을 말하지 않는다."""
-    coach = _coach(session_type=13)
+    coach = _coach(session_type=18)
 
     emitted = []
     for lap in range(1, 5):
@@ -701,9 +701,10 @@ def _need_after_sample(
     [
         (1, 50.0),  # FP1
         (5, 50.0),  # Q1
-        (13, 0.0),  # 타임 트라이얼
-        (10, 0.0),  # 레이스지만 레이스 거리 없음
-        (10, None),  # total_laps 필드 없음
+        (10, 0.0),  # F1 25 스프린트 슛아웃(레이스가 아니다)
+        (18, 0.0),  # 타임 트라이얼
+        (15, 0.0),  # 레이스지만 레이스 거리 없음
+        (15, None),  # total_laps 필드 없음
     ],
 )
 def test_fuel_need_ignored_without_race_distance(
@@ -721,7 +722,7 @@ def test_fuel_need_ignored_without_race_distance(
 @pytest.mark.parametrize("total_laps", [5.0, 50.0])
 def test_fuel_need_active_in_race_with_distance(total_laps: float) -> None:
     """단축 레이스(5랩)와 풀 레이스 모두 MFD 여유가 위험하면 연료 사유가 켜진다."""
-    need = _need_after_sample(session_type=10, total_laps=total_laps)
+    need = _need_after_sample(session_type=15, total_laps=total_laps)
 
     assert need["active"] is True
     assert need["reasons"] == ["fuel_laps_margin"]

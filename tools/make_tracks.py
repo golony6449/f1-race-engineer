@@ -46,6 +46,9 @@ SUZUKA = {
     "length_m": 5807.0,  # 공식 서킷 길이
     "track_id": 13,  # EA F1 25 공식 트랙 ID
     "name": "스즈카 서킷",
+    # 실제 게임 lap_distance는 중심선 dist_m보다 이만큼 크다(SCRUM-57 실측
+    # 130m, p5~p95 127~137m). 게임 랩 거리에서 빼면 중심선 거리다.
+    "lap_distance_offset_m": 130.0,
     # (시작, 끝) 랩 거리. 끝이 시작보다 작으면 랩을 넘어간다.
     "straights": [(5624.0, 500.0), (3970.0, 4800.0)],
     # 공식 코너 번호 순서(1번부터). (entry_m, exit_m)는 이 스크립트가 만든
@@ -456,13 +459,16 @@ def build_track(spec, nodes, ways, rels):
     centerline = [
         [round(cum[i], 3), round(pts[i][0], 3), round(pts[i][1], 3)] for i in range(n)
     ]
-    return {
+    data = {
         "track_id": spec["track_id"],
         "name": spec["name"],
         "length_m": spec["length_m"],
         "corners": corners,
         "centerline": centerline,
     }
+    if "lap_distance_offset_m" in spec:
+        data["lap_distance_offset_m"] = spec["lap_distance_offset_m"]
+    return data
 
 
 def download_osm(url: str, path: Path) -> None:

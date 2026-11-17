@@ -25,6 +25,23 @@
 ``VariantRotator``가 틀·단계별로 마지막 표현 번호를 기억해 다음 번호를 고른다.
 무작위가 아니라 결정적이며, 같은 틀·같은 단계가 연달아 나가면 직전 표현을
 피한다. 미리 합성 목록은 ``all_phrases()``로 모든 단계·표현을 만든다.
+
+SCRUM-125 틀
+------------
+- ``coaching.repeat_*``: 같은 코너·같은 원인 3랩 연속일 때 쓰는 강조 틀.
+  코너 이름은 ``corner_label`` 슬롯 하나로 받아 공식/자동 탐지 코너를 모두
+  같은 틀로 말한다.
+- ``praise.*``: 개인 최고 랩·섹터 최고·순위 상승·클린 랩 칭찬. 퀄리파잉용
+  ``*_short`` 틀은 시간 슬롯 없이 더 짧다.
+- ``overtake.reaction``·``overtake.reaction_bundle``: 레이스에서 추월 직후
+  내는 반응. 10초 창 안 2대 이상이면 묶음 틀 하나로 말한다.
+
+SCRUM-130 틀
+------------
+- ``strategy.attack``·``strategy.attack_drs``·``strategy.defense``: 서킷 추월
+  지점 기반 공격·방어 전략 무전. 지점 이름과 코너 묶음(``16번, 17번``)은 규칙
+  엔진(`overtake/strategy.py`)이 만들어 슬롯으로 넘긴다. LLM을 쓸 수 없을 때의
+  폴백 문장이기도 하다.
 """
 
 from __future__ import annotations
@@ -693,6 +710,199 @@ _TEMPLATES: tuple[Template, ...] = (
         ),
         needs_evidence=True,
     ),
+    # --- 반복 실수 강조 (SCRUM-125) --------------------------------------
+    # 같은 코너에서 같은 원인이 3랩 연속 나오면 일반 코칭 대신 이 틀을 강한
+    # 어조(urgent/hyped)로 쓴다. 코너 이름은 공식/자동 탐지 모두 `corner_label`
+    # 하나로 받아("3번" / "3번째 코너") 틀을 두 벌 만들지 않는다.
+    Template(
+        "coaching.repeat_brake_late",
+        RadioKind.COACHING,
+        _moods(
+            calm=(
+                "{corner_label} 브레이크 {lap_streak}랩째 늦어. "
+                "{meters}미터 당겨. 이번엔 꼭 잡자.",
+                "{corner_label}에서 {lap_streak}랩째 브레이크가 늦어. "
+                "{meters}미터 일찍 밟아.",
+            ),
+            urgent=(
+                "{corner_label} 브레이크 {lap_streak}랩째야! {meters}미터 당겨! 꼭 잡아!",
+                "{lap_streak}랩째 같은 실수야! {corner_label} {meters}미터 일찍! 당장!",
+            ),
+            hyped=(
+                "{corner_label} {lap_streak}랩째 늦어! {meters}미터 당겨! 이제 바꾸자!",
+                "{lap_streak}랩 연속이야! {corner_label} {meters}미터! 밀어!",
+            ),
+        ),
+        needs_evidence=True,
+        note="같은 코너·같은 원인 3랩 연속(브레이크 늦음)",
+    ),
+    Template(
+        "coaching.repeat_brake_early",
+        RadioKind.COACHING,
+        _moods(
+            calm=(
+                "{corner_label} 브레이크 {lap_streak}랩째 일러. "
+                "{meters}미터 참아. 이번엔 꼭 잡자.",
+                "{corner_label}에서 {lap_streak}랩째 일찍 밟아. {meters}미터 더 참아.",
+            ),
+            urgent=(
+                "{corner_label} 브레이크 {lap_streak}랩째 일러! {meters}미터 참아! 꼭 잡아!",
+                "{lap_streak}랩째 같은 실수야! {corner_label} {meters}미터 참아! 당장!",
+            ),
+            hyped=(
+                "{corner_label} {lap_streak}랩째 일러! {meters}미터 참아! 이제 바꾸자!",
+                "{lap_streak}랩 연속이야! {corner_label} {meters}미터! 버텨!",
+            ),
+        ),
+        needs_evidence=True,
+        note="같은 코너·같은 원인 3랩 연속(브레이크 이름)",
+    ),
+    Template(
+        "coaching.repeat_turn_in_early",
+        RadioKind.COACHING,
+        _moods(
+            calm=(
+                "{corner_label} 턴인 {lap_streak}랩째 빨라. "
+                "{meters}미터 기다려. 이번엔 꼭 잡자.",
+                "{corner_label}에서 {lap_streak}랩째 일찍 꺾어. {meters}미터 더 기다려.",
+            ),
+            urgent=(
+                "{corner_label} 턴인 {lap_streak}랩째 빨라! {meters}미터 기다려! 꼭 잡아!",
+                "{lap_streak}랩째 같은 실수야! {corner_label} {meters}미터 참아! 당장!",
+            ),
+            hyped=(
+                "{corner_label} {lap_streak}랩째 빨라! {meters}미터 기다려! 이제 바꾸자!",
+                "{lap_streak}랩 연속이야! {corner_label} {meters}미터! 버텨!",
+            ),
+        ),
+        needs_evidence=True,
+        note="같은 코너·같은 원인 3랩 연속(턴인 이름)",
+    ),
+    Template(
+        "coaching.repeat_turn_in_late",
+        RadioKind.COACHING,
+        _moods(
+            calm=(
+                "{corner_label} 턴인 {lap_streak}랩째 늦어. "
+                "{meters}미터 일찍 꺾어. 꼭 잡자.",
+                "{corner_label}에서 {lap_streak}랩째 늦게 꺾어. {meters}미터 당겨.",
+            ),
+            urgent=(
+                "{corner_label} 턴인 {lap_streak}랩째 늦어! {meters}미터 당겨! 꼭 잡아!",
+                "{lap_streak}랩째 같은 실수야! {corner_label} {meters}미터 일찍! 당장!",
+            ),
+            hyped=(
+                "{corner_label} {lap_streak}랩째 늦어! {meters}미터 당겨! 이제 바꾸자!",
+                "{lap_streak}랩 연속이야! {corner_label} {meters}미터! 밀어!",
+            ),
+        ),
+        needs_evidence=True,
+        note="같은 코너·같은 원인 3랩 연속(턴인 늦음)",
+    ),
+    Template(
+        "coaching.repeat_steer_corrections",
+        RadioKind.COACHING,
+        _moods(
+            calm=(
+                "{corner_label} 핸들 {lap_streak}랩째 고치고 있어. "
+                "{count}번이야. 한 번에 꺾어.",
+                "{corner_label}에서 {lap_streak}랩째 조향 수정 {count}번이야. 부드럽게 가.",
+            ),
+            urgent=(
+                "{corner_label} 핸들 {lap_streak}랩째야! {count}번 고쳤어! 한 번에!",
+                "{lap_streak}랩째 같은 실수야! {corner_label} 핸들 {count}번! 부드럽게!",
+            ),
+            hyped=(
+                "{corner_label} {lap_streak}랩째 흔들려! {count}번이야! 매끄럽게 가자!",
+                "{lap_streak}랩 연속이야! {corner_label} 핸들 {count}번! 한 번에!",
+            ),
+        ),
+        needs_evidence=True,
+        note="같은 코너·같은 원인 3랩 연속(조향 수정)",
+    ),
+    Template(
+        "coaching.repeat_min_speed_low",
+        RadioKind.COACHING,
+        _moods(
+            calm=(
+                "{corner_label} 코너 속도 {lap_streak}랩째 느려. "
+                "{kmh}킬로 부족해. 더 밀어.",
+                "{corner_label}에서 {lap_streak}랩째 {kmh}킬로 느려. 더 빠르게 돌아.",
+            ),
+            urgent=(
+                "{corner_label} 속도 {lap_streak}랩째 느려! {kmh}킬로 부족! 더 밀어!",
+                "{lap_streak}랩째 같은 실수야! {corner_label} {kmh}킬로! 밀어붙여!",
+            ),
+            hyped=(
+                "{corner_label} {lap_streak}랩째 느려! {kmh}킬로! 이제 밀어!",
+                "{lap_streak}랩 연속이야! {corner_label} {kmh}킬로! 가자!",
+            ),
+        ),
+        needs_evidence=True,
+        note="같은 코너·같은 원인 3랩 연속(정점 속도)",
+    ),
+    Template(
+        "coaching.repeat_late_throttle",
+        RadioKind.COACHING,
+        _moods(
+            calm=(
+                "{corner_label} 탈출 가속 {lap_streak}랩째 늦어. {meters}미터 일찍 밟아.",
+                "{corner_label}에서 {lap_streak}랩째 가속이 늦어. {meters}미터 당겨.",
+            ),
+            urgent=(
+                "{corner_label} 가속 {lap_streak}랩째 늦어! {meters}미터 일찍! 꼭 잡아!",
+                "{lap_streak}랩째 같은 실수야! {corner_label} {meters}미터! 당장!",
+            ),
+            hyped=(
+                "{corner_label} {lap_streak}랩째 늦어! {meters}미터 일찍! 이제 바꾸자!",
+                "{lap_streak}랩 연속이야! {corner_label} {meters}미터! 밀어!",
+            ),
+        ),
+        needs_evidence=True,
+        note="같은 코너·같은 원인 3랩 연속(스로틀 늦음)",
+    ),
+    Template(
+        "coaching.repeat_line_wide",
+        RadioKind.COACHING,
+        _moods(
+            calm=(
+                "{corner_label} 라인 {lap_streak}랩째 밀려. {meters}미터야. 안으로 붙여.",
+                "{corner_label}에서 {lap_streak}랩째 라인이 {meters}미터 벗어나. 붙여.",
+            ),
+            urgent=(
+                "{corner_label} 라인 {lap_streak}랩째야! {meters}미터 밖! 안으로 붙여!",
+                "{lap_streak}랩째 같은 실수야! {corner_label} {meters}미터! 당겨!",
+            ),
+            hyped=(
+                "{corner_label} {lap_streak}랩째 밀려! {meters}미터! 안으로 붙여!",
+                "{lap_streak}랩 연속이야! {corner_label} {meters}미터! 라인 잡아!",
+            ),
+        ),
+        needs_evidence=True,
+        note="같은 코너·같은 원인 3랩 연속(라인 이탈)",
+    ),
+    Template(
+        "coaching.repeat_off_track",
+        RadioKind.COACHING,
+        _moods(
+            calm=(
+                "{corner_label} {lap_streak}랩째 트랙 밖이야. "
+                "바퀴 {count}개 다 나갔어. 라인 잡아.",
+                "{corner_label}에서 {lap_streak}랩째 바퀴 {count}개가 나갔어. 안으로 붙여.",
+            ),
+            urgent=(
+                "{corner_label} {lap_streak}랩째 트랙 밖! 바퀴 {count}개 다 나갔어! 붙여!",
+                "{lap_streak}랩째 같은 실수야! {corner_label} 트랙 밖! "
+                "바퀴 {count}개! 라인 당장 잡아!",
+            ),
+            hyped=(
+                "{corner_label} {lap_streak}랩째 나가! 바퀴 {count}개! 안으로 붙여!",
+                "{lap_streak}랩 연속이야! {corner_label} 트랙 밖! 바퀴 {count}개! 라인 잡아!",
+            ),
+        ),
+        needs_evidence=True,
+        note="같은 코너·같은 원인 3랩 연속(트랙 이탈)",
+    ),
     # 리프트 앤 코스트: 연료 부족 때 코너 몇 곳에서 액셀을 짧게 뗀다.
     Template(
         "coaching.fuel_lift",
@@ -850,6 +1060,100 @@ _TEMPLATES: tuple[Template, ...] = (
         ),
         needs_evidence=True,
     ),
+    # --- 서킷 추월 지점 기반 공격·방어 (SCRUM-130) -------------------------
+    # 규칙 엔진(`overtake/strategy.py`)이 고른 지점·코너·간격을 짧은 문장으로
+    # 말한다. 지점 이름은 `spot`, 코너 묶음은 이미 "16번, 17번"처럼 만든 값을
+    # `attack`·`prep`에 받는다(공식/자동 탐지 코너 표기를 엔진이 맞춘다).
+    # LLM(Qwen)을 쓸 수 없을 때의 폴백 문장이기도 하다.
+    Template(
+        "strategy.attack",
+        RadioKind.OVERTAKE,
+        _moods(
+            calm=(
+                "{spot} 공격이야. 앞차랑 {gap}초. "
+                "{prep} 탈출 좋게, {attack} 인코스 늦게 브레이킹.",
+                "앞차랑 {gap}초. {spot} 간다. "
+                "{prep} 탈출 준비하고 {attack} 인코스.",
+            ),
+            hyped=(
+                "{spot} 공격이야! 앞차랑 {gap}초! "
+                "{prep} 탈출 좋게! {attack} 인코스 늦게!",
+                "{gap}초! {spot} 간다! {prep} 탈출! {attack} 인코스!",
+            ),
+        ),
+        needs_evidence=True,
+        note="서킷 추월 지점 공격(DRS 없음)",
+    ),
+    Template(
+        "strategy.attack_drs",
+        RadioKind.OVERTAKE,
+        _moods(
+            calm=(
+                "{spot} 공격이야. 앞차랑 {gap}초. "
+                "DRS 열리면 {attack} 인코스 늦게 브레이킹.",
+                "앞차랑 {gap}초. {spot} 간다. DRS 켜고 {attack} 인코스.",
+            ),
+            hyped=(
+                "{spot} 공격이야! 앞차랑 {gap}초! "
+                "DRS 열리면 {attack} 인코스 늦게!",
+                "{gap}초! {spot} 간다! DRS 켜고 {attack} 인코스!",
+            ),
+        ),
+        needs_evidence=True,
+        note="서킷 추월 지점 공격(DRS 연계)",
+    ),
+    Template(
+        "strategy.defense",
+        RadioKind.OVERTAKE,
+        _moods(
+            calm=(
+                "뒤차랑 {gap}초. {spot} 방어야. "
+                "{attack} 인코스 커버하고 각지게 돌아.",
+                "뒤차랑 {gap}초 붙었어. {spot} {attack} 인코스 먼저 커버해.",
+            ),
+            hyped=(
+                "뒤차랑 {gap}초! {spot} 방어! "
+                "{attack} 인코스 커버! 각지게!",
+                "{gap}초! 뒤가 붙었어! {spot} {attack} 인코스 커버!",
+            ),
+        ),
+        needs_evidence=True,
+        note="서킷 추월 지점 방어",
+    ),
+    # --- 추월 리액션 (레이스 전용, SCRUM-125) -----------------------------
+    # 이미 앞차를 넘어선 직후에 말한다. 안내(위의 overtake.*)가 아니라 반응이므로
+    # 위치·수치 슬롯 없이 짧게 끝낸다. 감정 단계는 0.5초 이내 접전·마지막 3랩이면
+    # hyped, 그 밖에는 calm이다.
+    Template(
+        "overtake.reaction",
+        RadioKind.OVERTAKE,
+        _moods(
+            calm=(
+                "하나 넘었어, 페이스로 밀어붙이자.",
+                "하나 잡았어. 이대로 밀어.",
+            ),
+            hyped=(
+                "하나 넘었다! 페이스 좋아! 밀어붙여!",
+                "좋아, 하나 넘었어! 계속 간다!",
+            ),
+        ),
+        note="추월 1대 리액션(레이스 전용)",
+    ),
+    Template(
+        "overtake.reaction_bundle",
+        RadioKind.OVERTAKE,
+        _moods(
+            calm=(
+                "한 번에 {count}대 넘었어! 페이스 좋아.",
+                "한 번에 {count}대 잡았어. 이대로 밀어.",
+            ),
+            hyped=(
+                "한 번에 {count}대! 미쳤다! 계속 밀어!",
+                "한 번에 {count}대 넘었다! 가자!",
+            ),
+        ),
+        note="짧은 시간 안에 2대 이상 추월을 한 무전으로 묶음",
+    ),
     # --- 개선 알림 --------------------------------------------------------
     Template(
         "improvement.corner_improved",
@@ -996,6 +1300,161 @@ _TEMPLATES: tuple[Template, ...] = (
             ),
         ),
         note="리프트 앤 코스트: 그만해도 된다",
+    ),
+    # --- 칭찬 (SCRUM-125) -------------------------------------------------
+    # 한 랩 최대 1번, 우선순위는 개인 최고 랩 > 섹터 최고 > 순위 상승 >
+    # 클린 랩이다. 퀄리파잉·스프린트 슛아웃에서는 `*_short` 틀만 쓴다.
+    Template(
+        "praise.personal_best",
+        RadioKind.IMPROVEMENT,
+        _moods(
+            calm=(
+                "개인 최고 랩이야. {lap_s}초.",
+                "최고 랩 갱신했어. {lap_s}초야.",
+            ),
+            warm=(
+                "오~ 개인 최고 랩이야~ {lap_s}초!",
+                "좋아~ 최고 랩 갱신~ {lap_s}초!",
+            ),
+            hyped=(
+                "개인 최고야! {lap_s}초! 좋아!",
+                "최고 랩! {lap_s}초! 이 기세로 가자!",
+            ),
+        ),
+        note="개인 최고 랩(PB) 칭찬",
+    ),
+    Template(
+        "praise.personal_best_short",
+        RadioKind.IMPROVEMENT,
+        _moods(
+            calm=(
+                "개인 최고 랩이야.",
+                "최고 랩 갱신했어.",
+            ),
+            warm=(
+                "오~ 개인 최고~",
+                "좋아~ 최고 랩~",
+            ),
+            hyped=(
+                "개인 최고! 좋아!",
+                "최고 랩! 이 기세!",
+            ),
+        ),
+        note="개인 최고 랩(PB) 칭찬(퀄리파잉 짧은 문장)",
+    ),
+    Template(
+        "praise.sector_best",
+        RadioKind.IMPROVEMENT,
+        _moods(
+            calm=(
+                "{sector}섹터 내 최고야. {sector_s}초.",
+                "{sector}섹터 최고 갱신. {sector_s}초야.",
+            ),
+            warm=(
+                "오~ {sector}섹터 내 최고~ {sector_s}초!",
+                "좋아~ {sector}섹터 최고~ {sector_s}초!",
+            ),
+            hyped=(
+                "{sector}섹터 최고! {sector_s}초! 가자!",
+                "{sector}섹터 최고야! {sector_s}초! 밀어!",
+            ),
+        ),
+        note="섹터 최고 칭찬",
+    ),
+    Template(
+        "praise.sector_best_short",
+        RadioKind.IMPROVEMENT,
+        _moods(
+            calm=(
+                "{sector}섹터 최고야.",
+                "{sector}섹터 갱신했어.",
+            ),
+            warm=(
+                "오~ {sector}섹터 최고~",
+                "좋아~ {sector}섹터~",
+            ),
+            hyped=(
+                "{sector}섹터 최고! 좋아!",
+                "{sector}섹터! 갱신!",
+            ),
+        ),
+        note="섹터 최고 칭찬(퀄리파잉 짧은 문장)",
+    ),
+    Template(
+        "praise.position_gained",
+        RadioKind.IMPROVEMENT,
+        _moods(
+            calm=(
+                "{position}위로 올라왔어. 좋아.",
+                "이제 {position}위야. 계속 가자.",
+            ),
+            warm=(
+                "오~ {position}위로 올라왔어~ 좋아!",
+                "좋아~ {position}위야~ 이대로!",
+            ),
+            hyped=(
+                "{position}위로 올라왔어! 계속 밀어!",
+                "{position}위! 좋아, 이 기세로!",
+            ),
+        ),
+        note="순위 상승 칭찬",
+    ),
+    Template(
+        "praise.position_gained_short",
+        RadioKind.IMPROVEMENT,
+        _moods(
+            calm=(
+                "{position}위로 올라왔어.",
+                "이제 {position}위야.",
+            ),
+            warm=(
+                "오~ {position}위~",
+                "좋아~ {position}위~",
+            ),
+            hyped=(
+                "{position}위! 좋아!",
+                "{position}위로 올라왔어!",
+            ),
+        ),
+        note="순위 상승 칭찬(퀄리파잉 짧은 문장)",
+    ),
+    Template(
+        "praise.clean_lap",
+        RadioKind.IMPROVEMENT,
+        _moods(
+            calm=(
+                "깔끔한 랩이야. 이대로 가자.",
+                "트랙 안에서 깔끔하게 마쳤어.",
+            ),
+            warm=(
+                "오~ 깔끔한 랩이야~ 이대로 가~",
+                "좋아~ 깔끔하게 마쳤어~",
+            ),
+            hyped=(
+                "깔끔해! 이대로 계속!",
+                "완벽한 랩이야! 그대로!",
+            ),
+        ),
+        note="클린 랩 칭찬(직전 랩이 무효였을 때만)",
+    ),
+    Template(
+        "praise.clean_lap_short",
+        RadioKind.IMPROVEMENT,
+        _moods(
+            calm=(
+                "깔끔했어.",
+                "깔끔한 랩이야.",
+            ),
+            warm=(
+                "오~ 깔끔해~",
+                "좋아~ 깔끔했어~",
+            ),
+            hyped=(
+                "깔끔해! 좋아!",
+                "깔끔한 랩! 이대로!",
+            ),
+        ),
+        note="클린 랩 칭찬(퀄리파잉 짧은 문장)",
     ),
 )
 

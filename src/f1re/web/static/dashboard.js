@@ -387,12 +387,37 @@ function recordingBadges(recording, splitSession) {
   return badges;
 }
 
-/** 로컬/클라우드 보관 위치 표시. */
+// 백업 사유가 길면(rclone stderr 등) 목록 줄을 망치지 않게 줄인다. 서버는
+// `backup_error`를 500자까지만 남기지만 화면에는 그보다 짧게 보여 준다.
+const BACKUP_ISSUE_MAX_CHARS = 120;
+
+/**
+ * `skipped`·`failed` 녹화의 백업 사유 문구. 사유가 없거나 `uploaded`·진행
+ * 중이면 빈 문자열이다. 서버가 준 문자열을 그대로 `textContent`로만 쓰므로
+ * HTML로 해석되지 않는다(XSS 없음).
+ */
+function backupIssueText(recording) {
+  const status = recording.backup_status;
+  if (status !== "skipped" && status !== "failed") return "";
+  const reason =
+    typeof recording.backup_error === "string"
+      ? recording.backup_error.trim()
+      : "";
+  if (!reason) return "";
+  const label = status === "skipped" ? "백업 안 함" : "백업 실패";
+  const text = `${label} (${reason})`;
+  return text.length > BACKUP_ISSUE_MAX_CHARS
+    ? `${text.slice(0, BACKUP_ISSUE_MAX_CHARS - 1)}…`
+    : text;
+}
+
+/** 로컬/클라우드 보관 위치 표시. 백업 사유가 있으면 함께 붙인다. */
 function storageText(recording) {
+  const issue = backupIssueText(recording);
   if (recording.local_exists) return "로컬";
   if (recording.backup_status === "uploaded") return "클라우드";
-  if (recording.backup_status === "failed") return "백업 실패";
-  if (recording.backup_status === "skipped") return "백업 안 함";
+  if (recording.backup_status === "failed") return issue || "백업 실패";
+  if (recording.backup_status === "skipped") return issue || "백업 안 함";
   return "백업 대기";
 }
 
@@ -424,7 +449,13 @@ function recordingItem(recording, splitSession) {
     parts.push(`패킷 ${recording.packet_count.toLocaleString("ko-KR")}`);
   }
   parts.push(storageText(recording));
+  // 로컬 파일이 남아 있으면 보관 위치가 "로컬"만 보여 백업 사유가 묻힌다.
+  // 사유가 있으면 보관 위치와 별개로 한 번 더 붙여 화면에서 바로 읽게 한다.
+  const backupIssue = backupIssueText(recording);
+  if (backupIssue && recording.local_exists) parts.push(backupIssue);
   meta.textContent = parts.filter(Boolean).join(" · ");
+  // 줄인 사유도 마우스를 올리면 같은 문구를 볼 수 있게 둔다.
+  if (backupIssue) meta.title = backupIssue;
   item.append(meta);
 
   const actions = document.createElement("div");

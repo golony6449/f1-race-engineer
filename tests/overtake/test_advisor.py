@@ -28,8 +28,9 @@ from f1re.radio.templates import TEMPLATES
 from f1re.tracks.model import Corner, Track, load_outline, load_track
 
 SUZUKA_ID = 13
-SESSION_TYPE_RACE = 10
-SESSION_TYPE_TIME_TRIAL = 13
+# F1 25 공식 세션 종류(EA UDP 문서, SCRUM-131): 15=레이스, 18=타임 트라이얼.
+SESSION_TYPE_RACE = 15
+SESSION_TYPE_TIME_TRIAL = 18
 PLAYER = 0
 AHEAD = 1
 OTHER_AHEAD = 3
@@ -290,6 +291,24 @@ def test_no_overtake_in_time_trial() -> None:
 
     assert messages == []
     assert not advisor.active
+
+
+@pytest.mark.parametrize("session_type", [15, 16, 17])
+def test_overtake_active_in_race_family(session_type: int) -> None:
+    """F1 25 레이스(15~17)에서는 추월 안내가 켜진다(SCRUM-131)."""
+    advisor = _advisor()
+    messages = advisor.evaluate(
+        _snapshot(
+            gap_s=0.8,
+            session_type=session_type,
+            player_status={"drs_allowed": 1, "drs_distance": 150},
+        ),
+        None,
+        NOW_NS,
+    )
+
+    assert advisor.active
+    assert messages
 
 
 def test_no_overtake_under_safety_car() -> None:

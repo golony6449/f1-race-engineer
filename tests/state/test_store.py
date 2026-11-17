@@ -97,7 +97,7 @@ class PacketBuilder:
         **overrides: Any,
     ) -> Packet:
         body = _default_body(PacketId.SESSION)
-        body.update(weather=0, track_id=13, session_type=13, game_paused=0)
+        body.update(weather=0, track_id=13, session_type=18, game_paused=0)
         body.update(overrides)
         return self.packet(PacketId.SESSION, body, frame=frame, uid=uid)
 
@@ -161,7 +161,7 @@ class PacketBuilder:
     ) -> Packet:
         """마셜 구역 배열을 채운 Session 패킷(나머지 칸은 0으로 둔다)."""
         body = _default_body(PacketId.SESSION)
-        body.update(weather=0, track_id=13, session_type=13, game_paused=0)
+        body.update(weather=0, track_id=13, session_type=18, game_paused=0)
         entries = list(body["marshal_zones"])
         for index, zone in enumerate(zones[: len(entries)]):
             entries[index] = dict(zone)

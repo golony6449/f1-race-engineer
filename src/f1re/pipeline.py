@@ -12,12 +12,27 @@
   샘플마다 `Coach.on_sample`로 코너 탈출 직후 무전을 만든다.
 - **리프트 앤 코스트**: 같은 샘플로 `LiftCoastCoach.on_sample`(SCRUM-71).
 - **추월**: 10Hz 태스크가 `OvertakeAdvisor.evaluate`(작업 18)를 부른다.
+- **서킷 전략 무전**(SCRUM-130): 추월 지점(`overtaking_spots`)이 있는 서킷에서는
+  `OvertakeStrategy`가 공격·방어 계획을 고르고 `StrategyNarrator`가 Qwen LLM
+  또는 템플릿 문장으로 무전을 만든다. LLM 호출은 별도 태스크라 10Hz 판단을
+  막지 않는다. 지점 데이터가 없는 트랙(모나코 등)은 기존 추월 안내만 쓴다.
+- **칭찬**(SCRUM-125): 완료 랩마다 `PraiseTracker.on_lap_completed`가 개인 최고
+  랩·섹터 최고·순위 상승·클린 랩을 우선순위대로 하나만, 한 랩에 최대 한 번
+  말한다(`RadioKind.IMPROVEMENT`). 퀄리파잉·스프린트 슛아웃은 짧은 문장이다.
+  섹터 경계는 Session 패킷의 `sector2_lap_distance_start`·`sector3_...`를 쓴다.
+- **추월 리액션**(SCRUM-125): Event 패킷의 `OVTK`에서 내가 넘긴 사건만 모아,
+  레이스 2랩 이후·SC/피트가 아닐 때 `OvertakeReactionTracker`가 짧게 반응한다.
+  10초 창 안 2대 이상이면 "한 번에 N대" 한 건으로 묶는다.
 - **무전**: 세 모듈 모두 `RadioQueue`를 직접 받아 `push()`한다(설계 6.7의
   우선순위·끄기 규칙은 큐가 맡는다).
 - **세션**: Session 패킷에서 트랙·세션 종류·날씨를 읽어 `load_track`(없으면
   자동 탐지 경로), `ReferenceStore.load_compatible`(트랙·모드·날씨·차)로
   저장된 기준·집중 코너를 불러오고, 코칭 문장을 `VoiceCache.prefetch`로 미리
   만든다. 랩 완료·세션 끝·엔진 OFF에 `ReferenceStore.save`로 저장한다.
+- **접전 코너**(SCRUM-124): 레이스 세션에서 Lap Data의 앞/뒤차 간격(1초 이내)과
+  순위 변동을 코치 입력 샘플에 표시한다. `LapTraceRecorder`도 같은 값으로 완료
+  랩 샘플에 표시해, 접전 코너는 코칭·기준 랩·집중 코너 계산에서 빠진다. 비레이스
+  세션(타임 트라이얼·연습·예선)은 판정하지 않는다.
 - **세션 재시작·플래시백**(리뷰 포커스 1): `sessionUID`가 바뀌면 코치·기준·
   집중 코너·기록기를 모두 새로 만든다. 프레임 되감기·랩 거리 후진·FLBK는 그
   랩을 무효로 표시해 코칭·기준 랩에 쓰지 않는다. 프로그램은 멈추지 않는다.
@@ -48,6 +63,7 @@ from f1re.coaching.metrics import (
     corner_metrics,
     default_coaching_thresholds,
 )
+from f1re.coaching.praise import PraiseContext, PraiseTracker
 from f1re.coaching.reference import (
     SOURCE_FASTEST_CAR,
     SOURCE_SELF,
@@ -61,10 +77,23 @@ from f1re.coaching.store import (
     mode_for_session_type,
 )
 from f1re.config import AppConfig
-from f1re.laps.traces import LAP_DISTANCE_TOLERANCE_M, LapTrace, LapTraceRecorder
+from f1re.laps.traces import (
+    DRIVER_IN_LAP,
+    DRIVER_IN_PIT,
+    DRIVER_OUT_LAP,
+    LAP_DISTANCE_TOLERANCE_M,
+    PIT_LANE_STATUSES,
+    LapTrace,
+    LapTraceRecorder,
+    battle_traffic,
+)
 from f1re.overtake.advisor import OvertakeAdvisor, OvertakeConfig
+from f1re.overtake.reaction import OvertakeReactionTracker, ReactionContext
+from f1re.overtake.strategy import OvertakeStrategy, StrategyConfig, StrategyPlan
 from f1re.race_distance import fuel_laps_margin, remaining_race_laps
 from f1re.radio.queue import RadioQueue
+from f1re.radio.strategy import StrategyNarrator
+from f1re.tracks.kb import load_track_kb
 from f1re.tracks.learn import remember_outline, resolve_outline
 from f1re.tracks.model import (
     Corner,
@@ -75,6 +104,7 @@ from f1re.tracks.model import (
 )
 from f1re.tracks.outline import TrackOutline
 from f1re.udp.parser import Packet
+from f1re.udp.session_category import is_race_session
 from f1re.udp.session_uid import is_demo_session_uid
 from f1re.udp.spec import PacketId
 
@@ -118,12 +148,17 @@ class RacePipeline:
         *,
         config: AppConfig | None = None,
         clock: Callable[[], int] = time.time_ns,
+        llm_generator: Any | None = None,
     ) -> None:
         self._store = store
         self._radio = radio
         self._conn = conn
         self._config = config or AppConfig()
         self._clock = clock
+        # LLM 무전 생성기(SCRUM-130). 엔진이 `[llm] enabled`일 때 만들어 넘기며,
+        # 수명은 이 파이프라인이 맡는다(`aclose`에서 닫는다). `None`이면 서킷
+        # 전략 무전은 템플릿 문장만 쓴다(테스트·데모 기본 경로).
+        self._llm_generator = llm_generator
         queue = getattr(radio, "queue", None)
         self._radio_queue: RadioQueue = queue if queue is not None else RadioQueue()
 
@@ -146,6 +181,19 @@ class RacePipeline:
         self._lift_coach: LiftCoastCoach | None = None
         self._advisor: OvertakeAdvisor | None = None
         self._advisor_active = False
+        # 칭찬(SCRUM-125): 랩 완료 때 한 번만 판단한다.
+        self._praise: PraiseTracker | None = None
+        # 추월 리액션(SCRUM-125): OVTK 사건을 모아 10Hz 판단 주기에 낸다.
+        self._reaction: OvertakeReactionTracker | None = None
+        # 서킷 추월 지점 기반 공격·방어 전략(SCRUM-130). 지점 데이터가 있는
+        # 트랙에서만 만들고, 없으면 기존 `OvertakeAdvisor`가 그대로 말한다.
+        self._strategy: OvertakeStrategy | None = None
+        self._strategy_narrator: StrategyNarrator | None = None
+        # LLM 생성은 10Hz 주기를 막지 않도록 별도 태스크로 띄운다.
+        self._strategy_tasks: set[asyncio.Task[None]] = set()
+        # Session 패킷의 섹터 경계(랩 거리). 없으면 랩 길이 3등분을 쓴다.
+        self._sector2_m: float | None = None
+        self._sector3_m: float | None = None
         self._reference_store = (
             ReferenceStore(conn) if conn is not None else None
         )
@@ -166,6 +214,12 @@ class RacePipeline:
         self._player_last_distance: float | None = None
         self._invalid_reasons: set[str] = set()
         self._max_frame: int | None = None
+
+        # 접전 판정(SCRUM-124): 레이스에서 앞/뒤차 1초 이내이거나 순위가 바뀐
+        # 샘플을 코치 입력에 표시한다. 순위 변동은 샘플 하나에만 붙인다.
+        self._player_in_traffic = False
+        self._player_position: int | None = None
+        self._position_changed = False
 
         self._pending_traces: list[LapTrace] = []
         self._traces_by_car: dict[int, list[LapTrace]] = {}
@@ -205,13 +259,18 @@ class RacePipeline:
         """대기 중인 랩을 마저 처리하고 기준 랩을 저장한 뒤 정리한다."""
         queue, self._lap_queue = self._lap_queue, None
         tasks, self._tasks = self._tasks, []
-        for task in tasks:
+        # 진행 중인 LLM 전략 무전 태스크도 함께 기다리지 않고 취소한다.
+        strategy_tasks = list(self._strategy_tasks)
+        self._strategy_tasks.clear()
+        for task in [*tasks, *strategy_tasks]:
             task.cancel()
-        for task in tasks:
+        for task in [*tasks, *strategy_tasks]:
             try:
                 await task
             except asyncio.CancelledError:
                 pass
+            except Exception:  # 백그라운드 태스크 오류가 종료를 막지 않게 한다.
+                logger.exception("백그라운드 태스크를 정리하는 중 오류")
         if queue is not None:
             # 종료 직전에 들어온 완료 랩도 버리지 않고 처리한다.
             while True:
@@ -226,6 +285,15 @@ class RacePipeline:
         self._save_reference()
         self._clear_session_state()
         self._advisor = None
+        # 이 파이프라인이 넘겨받은 LLM 생성기의 수명을 맡는다.
+        generator, self._llm_generator = self._llm_generator, None
+        if generator is not None:
+            close = getattr(generator, "aclose", None)
+            if close is not None:
+                try:
+                    await close()
+                except Exception:
+                    logger.warning("LLM 무전 생성기를 닫지 못했습니다")
 
     # ------------------------------------------------------------------
     # 수신 패킷
@@ -278,7 +346,7 @@ class RacePipeline:
         elif packet_id is PacketId.PARTICIPANTS:
             self._on_participants(body)
         elif packet_id is PacketId.EVENT:
-            self._on_event(body)
+            self._on_event(body, recv_ns)
 
     # ------------------------------------------------------------------
     # 세션·트랙
@@ -298,6 +366,13 @@ class RacePipeline:
         self._lift_coach = None
         self._advisor = None
         self._advisor_active = False
+        self._praise = None
+        self._reaction = None
+        self._strategy = None
+        self._strategy_narrator = None
+        self._cancel_strategy_tasks()
+        self._sector2_m = None
+        self._sector3_m = None
         self._key = None
         self._conditions_match = True
         self._track = None
@@ -321,6 +396,9 @@ class RacePipeline:
         self._player_lap_number = None
         self._player_last_distance = None
         self._invalid_reasons.clear()
+        self._player_in_traffic = False
+        self._player_position = None
+        self._position_changed = False
         self._ref_path_cache.clear()
         self._ref_points_cache.clear()
         self._ref_metrics_cache.clear()
@@ -329,6 +407,12 @@ class RacePipeline:
             self._focus_losses = {}
             self._corner_metrics = {}
             self._reference_info = {}
+
+    def _cancel_strategy_tasks(self) -> None:
+        """세션이 바뀌었을 때 진행 중인 LLM 전략 무전 태스크를 취소한다."""
+        for task in list(self._strategy_tasks):
+            task.cancel()
+        self._strategy_tasks.clear()
 
     def _on_session(self, body: dict[str, Any]) -> None:
         self._latest_session = body
@@ -344,6 +428,11 @@ class RacePipeline:
             self._coach = None
             self._lift_coach = None
             self._advisor = None
+            self._praise = None
+            self._reaction = None
+            self._strategy = None
+            self._strategy_narrator = None
+            self._cancel_strategy_tasks()
             # 데모 세션은 학습 윤곽을 불러오지 않는다(SCRUM-93).
             outline_conn = (
                 None if is_demo_session_uid(self._session_uid) else self._conn
@@ -358,6 +447,15 @@ class RacePipeline:
             self._coach = None
             self._lift_coach = None
             self._advisor = None
+            self._praise = None
+            self._reaction = None
+            self._strategy = None
+            self._strategy_narrator = None
+            self._cancel_strategy_tasks()
+            # 접전 판정은 레이스 세션에서만 한다(SCRUM-124).
+            self._player_in_traffic = False
+            self._player_position = None
+            self._position_changed = False
 
         weather = _int(body.get("weather"))
         if weather is not None:
@@ -368,6 +466,18 @@ class RacePipeline:
         length = _float(body.get("track_length"))
         if length is not None and length > 0:
             self._track_length = length
+
+        # 섹터 경계(랩 거리). 게임이 보내는 공식 값이 있으면 그대로 쓴다.
+        sector2 = _float(body.get("sector2_lap_distance_start"))
+        sector3 = _float(body.get("sector3_lap_distance_start"))
+        self._sector2_m = sector2 if sector2 is not None and sector2 > 0 else None
+        self._sector3_m = sector3 if sector3 is not None and sector3 > 0 else None
+        if self._praise is not None:
+            self._praise.configure(
+                track_length_m=self._track_length or 0.0,
+                sector2_m=self._sector2_m,
+                sector3_m=self._sector3_m,
+            )
 
         if _int(body.get("game_paused")):
             self._mark_invalid("paused")
@@ -416,6 +526,11 @@ class RacePipeline:
             self._coach = None
             self._lift_coach = None
             self._advisor = None
+            self._praise = None
+            self._reaction = None
+            self._strategy = None
+            self._strategy_narrator = None
+            self._cancel_strategy_tasks()
 
     def _resolve_track(self) -> Track | None:
         """데이터 파일 트랙, 없으면 자동 탐지로 만든 트랙."""
@@ -502,6 +617,43 @@ class RacePipeline:
             track=track,
         )
         self._advisor_active = False
+        # 칭찬(SCRUM-125): 랩 완료 때 한 번만, 우선순위대로 하나를 말한다.
+        self._praise = PraiseTracker(
+            queue=self._radio_queue, player_car_index=player
+        )
+        self._praise.configure(
+            track_length_m=track.length_m,
+            sector2_m=self._sector2_m,
+            sector3_m=self._sector3_m,
+        )
+        # 추월 리액션(SCRUM-125): OVTK 사건을 모아 레이스에서만 반응한다.
+        self._reaction = OvertakeReactionTracker(queue=self._radio_queue)
+
+        # 서킷 추월 지점 기반 공격·방어 전략(SCRUM-130). 지점 데이터가 있는
+        # 트랙에서만 만들고, 없으면 기존 추월 안내(`OvertakeAdvisor`)만 쓴다.
+        # 데모 세션은 네트워크 없이 결정적으로 동작하도록 템플릿 문장만 쓴다.
+        self._strategy = None
+        self._strategy_narrator = None
+        if track.overtaking_spots:
+            kb = None
+            try:
+                kb = load_track_kb(track.track_id)
+            except Exception:  # KB 손상이 세션 시작을 막지 않게 한다.
+                logger.warning("서킷 KB를 읽지 못했습니다: %s", track.track_id)
+            generator = (
+                None
+                if is_demo_session_uid(self._session_uid)
+                else self._llm_generator
+            )
+            self._strategy = OvertakeStrategy(
+                track, StrategyConfig.from_app_config(self._config)
+            )
+            self._strategy_narrator = StrategyNarrator(
+                generator,
+                queue=self._radio_queue,
+                kb=kb,
+                clock=self._clock,
+            )
 
         # 트랙을 알기 전에 끝난 랩을 반영한다(코너 자동 탐지 직후 등).
         for trace in self._pending_traces:
@@ -547,6 +699,20 @@ class RacePipeline:
             return
         self._player_lap = entry
 
+        # 접전 판정(SCRUM-124): 레이스에서만 앞/뒤차 간격과 순위 변동을 본다.
+        if is_race_session(self._session_type):
+            self._player_in_traffic = battle_traffic(entries, index)
+            position = _int(entry.get("car_position"))
+            if position is not None:
+                if (
+                    self._player_position is not None
+                    and position != self._player_position
+                ):
+                    self._position_changed = True
+                self._player_position = position
+        else:
+            self._player_in_traffic = False
+
         lap = _int(entry.get("current_lap_num"))
         if lap is not None and lap > 0:
             if self._player_lap_number is None or lap > self._player_lap_number:
@@ -589,13 +755,61 @@ class RacePipeline:
         if isinstance(entry, dict):
             self._player_motion = entry
 
-    def _on_event(self, body: dict[str, Any]) -> None:
+    def _on_event(self, body: dict[str, Any], recv_ns: int) -> None:
         code = str(body.get("event_string_code", "")).strip()
         if code == "FLBK":
             self._mark_invalid("flashback")
         elif code == "SEND":
             # 세션 끝. 기준 랩·집중 코너를 저장한다(설계 6.3).
             self._enqueue(_ITEM_SAVE, None)
+        elif code == "OVTK":
+            # 내가 앞차를 넘었다(추월 리액션, SCRUM-125). 실제 추월 사건만
+            # 세므로 순위 값 변화로 인한 오탐(스타트·피트·리타이어)이 없다.
+            self._note_overtake_event(body, recv_ns)
+
+    def _note_overtake_event(self, body: dict[str, Any], recv_ns: int) -> None:
+        reaction = self._reaction
+        if reaction is None or self._player_index is None:
+            return
+        if not is_race_session(self._session_type):
+            return
+        details = body.get("event_details")
+        if not isinstance(details, dict):
+            return
+        if _int(details.get("overtaking_vehicle_idx")) != self._player_index:
+            return
+        # 넘어선 차가 리타이어(차고)나 피트 레인에 있으면 실제 주행 추월이 아니다.
+        # Lap Data에 그 차 칸이 없으면 판단하지 않고 허용한다(옛 입력·테스트).
+        if not self._overtaken_car_on_track(
+            _int(details.get("being_overtaken_vehicle_idx"))
+        ):
+            return
+        reaction.note_overtake(int(recv_ns))
+
+    def _overtaken_car_on_track(self, car_index: int | None) -> bool:
+        """넘어선 차가 실제 주행 중인가(리타이어·피트로 인한 오탐 방지)."""
+        body = self._latest_lap_body
+        if car_index is None or not isinstance(body, dict):
+            return True
+        entries = body.get("lap_data")
+        if not isinstance(entries, list) or not 0 <= car_index < len(entries):
+            return True
+        entry = entries[car_index]
+        if not isinstance(entry, dict):
+            return True
+        # F1 25 result_status: 0 무효, 1 비활성, 2 주행 중(Active), 3 완주, 4 DNF, 5 실격, 6 미분류, 7 리타이어.
+        result_status = _int(entry.get("result_status"))
+        if result_status is not None and result_status != 2:
+            return False
+        # driver_status: 0 차고, 2 인랩, 3 아웃랩, 7 피트.
+        if _int(entry.get("driver_status")) in {
+            0,
+            DRIVER_IN_LAP,
+            DRIVER_OUT_LAP,
+            DRIVER_IN_PIT,
+        }:
+            return False
+        return True
 
     def _on_car_telemetry(self, body: dict[str, Any], recv_ns: int) -> None:
         coach = self._coach
@@ -621,6 +835,8 @@ class RacePipeline:
             coach.on_sample(car_state, distance, now)
         if lift is not None:
             lift.on_sample(car_state, distance, now)
+        # 순위 변동 표시는 샘플 하나에만 붙인다(SCRUM-124).
+        self._position_changed = False
 
     def _car_state(self, telemetry: Mapping[str, Any]) -> dict[str, Any] | None:
         """Car Telemetry·Lap Data·Status·Motion을 코치 입력 하나로 묶는다."""
@@ -668,6 +884,8 @@ class RacePipeline:
             "surface": _surface_types(telemetry.get("surface_type")),
             "lap_valid": not invalid,
             "invalid_reason": next(iter(self._invalid_reasons), None),
+            "in_traffic": self._player_in_traffic,
+            "position_changed": self._position_changed,
             "in_pit": _int(lap.get("pit_status")) in (1, 2),
             "driver_status": _int(lap.get("driver_status")),
             "pit_status": _int(lap.get("pit_status")),
@@ -749,6 +967,10 @@ class RacePipeline:
                 coach.on_lap_completed(trace, now)
                 if self._lift_coach is not None:
                     self._lift_coach.on_lap_completed(trace, now)
+                if self._praise is not None:
+                    self._praise.on_lap_completed(
+                        trace, self._praise_context(), now
+                    )
                 if trace.valid:
                     await self._update_corner_metrics(trace)
                     self._save_reference()
@@ -996,8 +1218,84 @@ class RacePipeline:
             car_index: list(items)
             for car_index, items in self._traces_by_car.items()
         }
-        advisor.evaluate(snapshot, traces, int(self._clock()))
+        now = int(self._clock())
+        advisor.evaluate(snapshot, traces, now)
         self._advisor_active = advisor.active
+        # 서킷 추월 지점 기반 공격·방어 전략(SCRUM-130).
+        self._evaluate_strategy(snapshot, traces, now)
+        # 추월 리액션(SCRUM-125): 같은 10Hz 주기에 대기 중인 OVTK 사건을 낸다.
+        if self._reaction is not None:
+            self._reaction.observe(self._reaction_context(), now)
+
+    def _evaluate_strategy(
+        self,
+        snapshot: Mapping[str, Any],
+        traces: Mapping[int, Sequence[LapTrace]],
+        now_ns: int,
+    ) -> None:
+        """전략 계획을 만들고, LLM이면 별도 태스크로, 아니면 즉시 무전을 낸다.
+
+        LLM 네트워크 호출(기본 타임아웃 1.5초)이 10Hz 추월 판단 주기를 막지
+        않도록 `announce_all()`은 asyncio 태스크로 띄운다. 템플릿만 쓸 때는
+        기다릴 것이 없으므로 같은 주기에서 바로 큐에 넣는다.
+        """
+        strategy = self._strategy
+        narrator = self._strategy_narrator
+        if strategy is None or narrator is None:
+            return
+        plans: list[StrategyPlan] = strategy.evaluate(snapshot, traces, now_ns)
+        if not plans:
+            return
+        if narrator.uses_llm:
+            task = asyncio.create_task(
+                narrator.announce_all(plans, now_ns=now_ns),
+                name="f1re-pipeline-strategy-radio",
+            )
+            self._strategy_tasks.add(task)
+            task.add_done_callback(self._strategy_task_done)
+        else:
+            narrator.announce_now(plans, now_ns=now_ns)
+
+    def _strategy_task_done(self, task: asyncio.Task[Any]) -> None:
+        """LLM 태스크를 목록에서 지우고, 예외가 있으면 로그만 남긴다."""
+        self._strategy_tasks.discard(task)
+        if task.cancelled():
+            return
+        error = task.exception()
+        if error is not None:
+            logger.error("전략 무전 태스크가 실패했습니다", exc_info=error)
+
+    def _praise_context(self) -> PraiseContext:
+        """랩 완료 시점의 칭찬 판단 정보(순위·세션 종류·총 랩)."""
+        lap_entry = self._player_lap or {}
+        return PraiseContext(
+            session_type=self._session_type,
+            total_laps=self._total_laps,
+            position=_int(lap_entry.get("car_position")),
+        )
+
+    def _reaction_context(self) -> ReactionContext:
+        """지금 추월 리액션을 내도 되는지 판단할 현재 상태."""
+        lap_entry = self._player_lap or {}
+        lap = _int(lap_entry.get("current_lap_num"))
+        driver_status = _int(lap_entry.get("driver_status"))
+        pit_status = _int(lap_entry.get("pit_status"))
+        in_pit = driver_status in {
+            DRIVER_IN_LAP,
+            DRIVER_OUT_LAP,
+            DRIVER_IN_PIT,
+        } or pit_status in PIT_LANE_STATUSES
+        session = self._latest_session or {}
+        safety_car = _int(session.get("safety_car_status")) in (1, 2)
+        return ReactionContext(
+            session_type=self._session_type,
+            lap=lap,
+            in_pit=in_pit,
+            safety_car=safety_car,
+            gap_s=_gap_seconds(lap_entry),
+            position=_int(lap_entry.get("car_position")),
+            total_laps=self._total_laps,
+        )
 
     # ------------------------------------------------------------------
     # 웹 API용 상태
@@ -1185,6 +1483,18 @@ def _max_front_tyre_temp(telemetry: Mapping[str, Any]) -> float | None:
     if len(numbers) >= 4:
         return max(numbers[2], numbers[3])
     return max(numbers)
+
+
+def _gap_seconds(entry: Mapping[str, Any]) -> float | None:
+    """Lap Data의 앞차와의 시간 간격(초). 분 파트 + ms 파트.
+
+    추월 리액션의 "0.5초 이내 접전" 판정에 쓴다(`overtake.advisor`와 같은 식).
+    """
+    minutes = _int(entry.get("delta_to_car_in_front_minutes_part"))
+    milliseconds = _int(entry.get("delta_to_car_in_front_ms_part"))
+    if minutes is None and milliseconds is None:
+        return None
+    return max(0, minutes or 0) * 60.0 + max(0, milliseconds or 0) / 1000.0
 
 
 __all__ = ["LAP_QUEUE_MAX", "OVERTAKE_INTERVAL_S", "RacePipeline"]

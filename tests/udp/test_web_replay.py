@@ -99,7 +99,7 @@ class PacketBuilder:
     def session(self, **overrides: Any) -> bytes:
         body = _default_body(PacketId.SESSION)
         body.update(
-            weather=0, track_id=13, session_type=13, game_paused=0, total_laps=0
+            weather=0, track_id=13, session_type=18, game_paused=0, total_laps=0
         )
         body.update(overrides)
         return self.raw(PacketId.SESSION, body)
@@ -188,7 +188,7 @@ def recording_meta(**overrides: Any) -> dict[str, Any]:
         "session_uid": SESSION_UID,
         "segment": 1,
         "category": "race",
-        "session_type": 10,
+        "session_type": 15,
         "track_id": 13,
         "duration_ms": 300,
     }
@@ -302,7 +302,7 @@ async def test_replay_runs_pipeline_and_alerts_without_db_or_tts(
     builder = PacketBuilder()
     records = [
         # 경쟁 세션(10)이라 상대 참가자 팀 정보가 있어야 코치가 만들어진다.
-        (BASE_NS, builder.session(session_type=10, total_laps=10)),
+        (BASE_NS, builder.session(session_type=15, total_laps=10)),
         (BASE_NS + 20_000_000, builder.participants(player_team_id=0)),
         (BASE_NS + 40_000_000, builder.lap(lap=1, distance=100.0)),
         (BASE_NS + 60_000_000, builder.telemetry(speed=120, gear=4, throttle=0.8)),
@@ -431,7 +431,7 @@ async def test_replay_seek_resets_state_and_rebuilds_to_position(
     """시크는 상태·파이프라인·경고 기억을 새로 만들고 목표 직전까지 재구성한다."""
     builder = PacketBuilder()
     records = [
-        (BASE_NS, builder.session(session_type=13)),
+        (BASE_NS, builder.session(session_type=18)),
         (BASE_NS + 10_000_000, builder.damage(wear=90.0)),
         (BASE_NS + 100_000_000, builder.telemetry(speed=15, gear=2)),
         (BASE_NS + 200_000_000, builder.telemetry(speed=20, gear=3)),
@@ -522,7 +522,7 @@ async def test_replay_reads_learned_outline_without_writing_db(
     path = write_recording(
         tmp_path / "learned.f1rec",
         [
-            (BASE_NS, builder.session(track_id=99, session_type=13)),
+            (BASE_NS, builder.session(track_id=99, session_type=18)),
             (BASE_NS + 50_000_000, builder.telemetry(speed=80, gear=3)),
         ],
     )
