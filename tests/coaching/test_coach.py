@@ -145,6 +145,29 @@ def _with_surface(
     )
 
 
+def _delay(trace: LapTrace, corner: Corner, ms: float) -> LapTrace:
+    """코너 진입~탈출 시간을 `ms`만큼 늘려 양의 코너 손실을 만든다.
+
+    SCRUM-144부터 트랙 이탈 없이 손실이 0 이하인 코너는 집중 코너여도
+    코칭하지 않는다. 데모 송신기의 늦은 브레이크 시나리오는 손실이 음수라,
+    기존 발화 규칙을 확인하는 테스트는 이 도우미로 손실을 만들어야 한다.
+    """
+    span = max(1e-6, corner.exit_m - corner.entry_m)
+    return dataclasses.replace(
+        trace,
+        samples=[
+            dataclasses.replace(
+                sample,
+                t_ms=sample.t_ms
+                + round(ms * min(1.0, (sample.dist_m - corner.entry_m) / span)),
+            )
+            if sample.dist_m > corner.entry_m
+            else sample
+            for sample in trace.samples
+        ],
+    )
+
+
 def _effects(track: Track, events: Iterable[dict]) -> dict:
     numbers = [corner.number for corner in track.corners]
     return corner_effects(parse_scenarios(list(events)), numbers)
@@ -337,7 +360,9 @@ def test_line_wide_still_judged_within_line_dev_cap() -> None:
             }
         ],
     )
-    lap = _suzuka(1, effects=wide)
+    # 라인 이탈 시나리오 자체는 손실이 0이다. SCRUM-144의 손실 0 이하 억제에
+    # 걸리지 않도록 코너 시간을 늘려 양의 손실을 만든다.
+    lap = _delay(_suzuka(1, effects=wide), _corner(SUZUKA, 5), 150.0)
 
     messages = _messages(_feed(coach, lap))
 
@@ -445,7 +470,14 @@ def test_not_twice_same_lap() -> None:
 def test_coaching_speaks_right_after_corner_exit() -> None:
     """모나코 10번(시케인) 코칭은 다음 직선까지 미루지 않고 탈출 직후 나간다."""
     coach = _coach(MONACO, focus=[10])
-    lap = _monaco(1, effects=_late_brake(MONACO, 10, meters=10.0))
+    # 늦은 브레이크만으로는 손실이 음수(기준보다 빠름)라, SCRUM-144의 손실
+    # 0 이하 억제에 걸린다. 탈출 지연(스로틀 재개 없음)은 그대로 두고 코너
+    # 시간만 늘려 양의 손실을 만든다.
+    lap = _delay(
+        _monaco(1, effects=_late_brake(MONACO, 10, meters=10.0)),
+        _corner(MONACO, 10),
+        150.0,
+    )
     corner10 = _corner(MONACO, 10)
     corner11 = _corner(MONACO, 11)
 
@@ -500,7 +532,12 @@ def test_coaching_message_in_queue_immediately() -> None:
     """큐를 주면 코너 탈출 샘플에서 곧바로 큐에 들어간다(미룸 없음)."""
     queue = RadioQueue(clock=lambda: _BASE_NS)
     coach = _coach(MONACO, focus=[10], queue=queue)
-    lap = _monaco(1, effects=_late_brake(MONACO, 10, meters=10.0))
+    # SCRUM-144의 손실 0 이하 억제를 피하려고 코너 시간을 늘린다.
+    lap = _delay(
+        _monaco(1, effects=_late_brake(MONACO, 10, meters=10.0)),
+        _corner(MONACO, 10),
+        150.0,
+    )
     corner10 = _corner(MONACO, 10)
 
     _feed_until(coach, lap, corner10.exit_m + 1.0)
@@ -690,9 +727,18 @@ def test_time_trial_is_not_hyped_even_near_the_end() -> None:
 
 
 def test_late_brake_is_the_cause_when_line_also_wide() -> None:
-    """브레이크가 늦고 라인이 밖으로 밀리면 '브레이크 늦음'을 원인으로 고른다."""
+    """브레이크가 늦고 탈출 스로틀이 늦으면 '브레이크 늦음'을 원인으로 고른다.
+
+    SCRUM-144: 늦은 브레이크에 정점·탈출·라인 악화가 동반되면 기존처럼
+    브레이크 늦음을 말한다. 이 시나리오는 탈출 구간에서 스로틀을 다시 밟지
+    못하고 라인이 1.5m 밀리며, 코너 시간도 기준보다 길다.
+    """
     coach = _coach(MONACO, focus=[10])
-    lap = _monaco(1, effects=_late_brake(MONACO, 10, meters=10.0))
+    lap = _delay(
+        _monaco(1, effects=_late_brake(MONACO, 10, meters=10.0)),
+        _corner(MONACO, 10),
+        150.0,
+    )
 
     messages = _messages(_feed(coach, lap))
 

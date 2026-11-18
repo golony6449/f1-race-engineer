@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import random
 import time
 from collections.abc import Iterable
@@ -109,6 +110,30 @@ def _late_brake(corner: int, meters: float = 10.0) -> dict:
                 "kind": "late_brake",
                 "params": {"meters": meters, "width_m": 1.5},
             }
+        ],
+    )
+
+
+def _delay_corner(trace: LapTrace, corner_number: int, ms: float) -> LapTrace:
+    """코너 진입~탈출 시간을 `ms`만큼 늘려 양의 코너 손실을 만든다.
+
+    SCRUM-144부터 트랙 이탈 없이 손실이 0 이하인 코너는 집중 코너여도
+    코칭하지 않는다. 데모의 늦은 브레이크 시나리오는 손실이 음수라, 원인이
+    바뀌는지 확인하려면 이 도우미로 발화 조건을 넘겨야 한다.
+    """
+    corner = next(c for c in SUZUKA.corners if c.number == corner_number)
+    span = max(1e-6, corner.exit_m - corner.entry_m)
+    return dataclasses.replace(
+        trace,
+        samples=[
+            dataclasses.replace(
+                sample,
+                t_ms=sample.t_ms
+                + round(ms * min(1.0, (sample.dist_m - corner.entry_m) / span)),
+            )
+            if sample.dist_m > corner.entry_m
+            else sample
+            for sample in trace.samples
         ],
     )
 
@@ -223,7 +248,12 @@ def test_different_cause_resets_streak() -> None:
     _feed(coach, _trace(SUZUKA, 1, effects=_early_brake(9)))
     _feed(coach, _trace(SUZUKA, 2, effects=_early_brake(9)))
 
-    third = _feed(coach, _trace(SUZUKA, 3, effects=_late_brake(9)))
+    third = _feed(
+        coach,
+        _delay_corner(
+            _trace(SUZUKA, 3, effects=_late_brake(9)), 9, 150.0
+        ),
+    )
 
     assert len(third) == 1
     message = third[0]
