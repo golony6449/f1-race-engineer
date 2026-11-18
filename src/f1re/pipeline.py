@@ -16,6 +16,11 @@
   `OvertakeStrategy`가 공격·방어 계획을 고르고 `StrategyNarrator`가 Qwen LLM
   또는 템플릿 문장으로 무전을 만든다. LLM 호출은 별도 태스크라 10Hz 판단을
   막지 않는다. 지점 데이터가 없는 트랙(모나코 등)은 기존 추월 안내만 쓴다.
+- **랩 거리 프레임 보정**(SCRUM-143): 실제 게임 `lap_distance`는 트랙 JSON의
+  중심선 라벨보다 `lap_distance_offset_m`(스즈카 130m)만큼 앞서 있다. 코치·
+  리프트 앤 코스트·추월 판단에는 `Track.in_lap_distance_frame()` 사본을
+  넘겨 코너 번호와 무전 시점이 실제 코너와 맞게 한다. 데모 세션은 중심선
+  좌표를 그대로 쓰므로 보정하지 않고, 표시용 `self._track`도 원본 그대로다.
 - **칭찬**(SCRUM-125): 완료 랩마다 `PraiseTracker.on_lap_completed`가 개인 최고
   랩·섹터 최고·순위 상승·클린 랩을 우선순위대로 하나만, 한 랩에 최대 한 번
   말한다(`RadioKind.IMPROVEMENT`). 퀄리파잉·스프린트 슛아웃은 짧은 문장이다.
@@ -167,6 +172,9 @@ class RacePipeline:
         self._generation = 0
         self._track_id: int | None = None
         self._track: Track | None = None
+        # 실제 게임 세션에서 코칭·추월이 쓰는 게임 lap_distance 프레임 사본.
+        # 데모 세션(중심선 좌표를 lap_distance로 보냄)은 None이고 원본을 쓴다.
+        self._coach_track: Track | None = None
         self._auto_track: Track | None = None
         self._track_length: float | None = None
         self._session_type: int | None = None
@@ -376,6 +384,7 @@ class RacePipeline:
         self._key = None
         self._conditions_match = True
         self._track = None
+        self._coach_track = None
         self._auto_track = None
         self._track_id = None
         self._track_length = None
@@ -554,7 +563,13 @@ class RacePipeline:
         데모 세션(UID 위 32비트 `0x5EED0000`)은 저장된 기준을 불러오지 않고
         빈 `ReferenceSet`으로 시작한다. 데모 좌표는 게임 좌표와 달라 실제
         세션 기준으로 쓸 수 없고, 반대로 데모 기준이 실제 세션에 섞이면 안 된다.
+
+        실제 게임 세션은 코너 라벨을 게임 `lap_distance` 프레임으로 옮긴 사본을
+        코치·추월 판단에 넘긴다(SCRUM-143). 표시용 `self._track`은 중심선
+        프레임 그대로 두어 지도·코너 좌표가 바뀌지 않게 한다.
         """
+        coach_track = self._lap_distance_track(track)
+        self._coach_track = coach_track
         player = int(self._player_index or 0)
         references: ReferenceSet | None = None
         focus_seed: tuple[int, ...] = ()
@@ -578,19 +593,19 @@ class RacePipeline:
             if stored is not None:
                 self._conditions_match = stored.conditions_match
                 references = _adopt_reference(
-                    stored.reference, track, player, self._session_type
+                    stored.reference, coach_track, player, self._session_type
                 )
                 focus_seed = stored.focus
         if references is None:
             self._conditions_match = True
             references = ReferenceSet(
-                track.corners,
+                coach_track.corners,
                 player_car_index=player,
                 session_type=self._session_type,
             )
 
         coach = Coach(
-            track,
+            coach_track,
             references=references,
             queue=self._radio_queue,
             config=CoachConfig.from_app_config(self._config),
@@ -602,7 +617,7 @@ class RacePipeline:
         if focus_seed:
             coach.seed_focus(focus_seed)
         lift = LiftCoastCoach(
-            track,
+            coach_track,
             queue=self._radio_queue,
             coach_config=CoachConfig.from_app_config(self._config),
             thresholds=self._thresholds,
@@ -614,7 +629,7 @@ class RacePipeline:
         self._advisor = OvertakeAdvisor(
             OvertakeConfig.from_app_config(self._config),
             queue=self._radio_queue,
-            track=track,
+            track=coach_track,
         )
         self._advisor_active = False
         # 칭찬(SCRUM-125): 랩 완료 때 한 번만, 우선순위대로 하나를 말한다.
@@ -634,7 +649,7 @@ class RacePipeline:
         # 데모 세션은 네트워크 없이 결정적으로 동작하도록 템플릿 문장만 쓴다.
         self._strategy = None
         self._strategy_narrator = None
-        if track.overtaking_spots:
+        if coach_track.overtaking_spots:
             kb = None
             try:
                 kb = load_track_kb(track.track_id)
@@ -646,7 +661,7 @@ class RacePipeline:
                 else self._llm_generator
             )
             self._strategy = OvertakeStrategy(
-                track, StrategyConfig.from_app_config(self._config)
+                coach_track, StrategyConfig.from_app_config(self._config)
             )
             self._strategy_narrator = StrategyNarrator(
                 generator,
@@ -674,6 +689,30 @@ class RacePipeline:
                 self._prefetch(coach, cache), name="f1re-pipeline-prefetch"
             )
             self._tasks.append(task)
+
+    def _lap_distance_track(self, track: Track) -> Track:
+        """코칭·추월이 쓸 게임 `lap_distance` 프레임 트랙을 고른다.
+
+        실제 게임 세션은 `lap_distance`가 중심선 라벨보다
+        `lap_distance_offset_m`만큼 앞서 있으므로 코너 라벨을 옮긴 사본을 쓴다.
+        데모 세션은 송신기가 중심선 좌표를 `lap_distance`로 보내므로 원본을
+        그대로 쓴다. 옮길 수 없는 데이터(코너가 랩 끝을 넘는 트랙)면 원본으로
+        돌아가 코칭을 멈추지 않는다.
+        """
+        if is_demo_session_uid(self._session_uid):
+            return track
+        if track.lap_distance_offset_m == 0.0:
+            return track
+        try:
+            return track.in_lap_distance_frame()
+        except TrackDataError:
+            logger.warning(
+                "코너 라벨을 게임 lap_distance 프레임으로 옮기지 못해 "
+                "중심선 프레임을 그대로 씁니다: %s",
+                track.name,
+                exc_info=True,
+            )
+            return track
 
     async def _prefetch(self, coach: Coach, cache: Any) -> None:
         try:
@@ -1031,7 +1070,8 @@ class RacePipeline:
     async def _update_corner_metrics(self, trace: LapTrace) -> None:
         """완료 랩의 코너 지표를 기준 랩과 비교해 지도·리포트용으로 남긴다."""
         coach = self._coach
-        track = self._track
+        # 기준 랩과 같은 프레임(실제 세션은 게임 lap_distance)의 코너를 쓴다.
+        track = self._coach_track or self._track
         if coach is None or track is None:
             return
         points = lap_time_points(trace)

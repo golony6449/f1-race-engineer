@@ -458,16 +458,121 @@ def test_coaching_speaks_right_after_corner_exit() -> None:
     assert corner10.exit_m <= dist < corner11.entry_m
 
 
+def _shift_to_game_frame(trace: LapTrace, offset_m: float) -> LapTrace:
+    """중심선 프레임 랩을 실제 게임 lap_distance처럼 +offset 만큼 옮긴다."""
+    return dataclasses.replace(
+        trace,
+        samples=[
+            dataclasses.replace(sample, dist_m=sample.dist_m + offset_m)
+            for sample in trace.samples
+        ],
+    )
+
+
+def test_corner_coaching_uses_game_lap_distance_frame() -> None:
+    """실제 게임 lap_distance(+130m)에서도 9번 탈출 뒤에 9번 코칭이 나간다."""
+    shifted = SUZUKA.in_lap_distance_frame()
+    offset = SUZUKA.lap_distance_offset_m
+    references = ReferenceSet(shifted.corners)
+    references.update(_shift_to_game_frame(_suzuka(99, car_index=1), offset))
+    coach = Coach(
+        shifted,
+        references=references,
+        config=CoachConfig(sensitivity=_RELAXED_SENSITIVITY),
+        focus_config=FocusConfig(count=5, recent_laps=3),
+    )
+    coach.seed_focus([9])
+    lap = _shift_to_game_frame(_suzuka(1, effects=_early_brake(SUZUKA, 9)), offset)
+
+    events = _feed(coach, lap)
+
+    corner_messages = [
+        (dist, message) for dist, message in events if message.corner == 9
+    ]
+    assert len(corner_messages) == 1
+    dist, message = corner_messages[0]
+    corner9 = next(corner for corner in shifted.corners if corner.number == 9)
+    assert dist >= corner9.exit_m
+    assert "9번" in message.text
+
+
 def test_coaching_message_in_queue_immediately() -> None:
     """큐를 주면 코너 탈출 샘플에서 곧바로 큐에 들어간다(미룸 없음)."""
     queue = RadioQueue(clock=lambda: _BASE_NS)
     coach = _coach(MONACO, focus=[10], queue=queue)
     lap = _monaco(1, effects=_late_brake(MONACO, 10, meters=10.0))
+    corner10 = _corner(MONACO, 10)
 
-    _feed(coach, lap)
+    _feed_until(coach, lap, corner10.exit_m + 1.0)
 
     assert queue.pending_count == 1
     assert queue.pending()[0].corner == 10
+
+
+def _feed_until(coach: Coach, lap: LapTrace, until_m: float) -> list:
+    base_ns = _BASE_NS + lap.lap * 200_000_000_000
+    collected: list = []
+    for sample in lap.samples:
+        if sample.dist_m > until_m:
+            break
+        collected.extend(
+            coach.on_sample(
+                _state(sample, lap.lap),
+                sample.dist_m,
+                base_ns + sample.t_ms * 1_000_000,
+            )
+        )
+    return collected
+
+
+def _feed_sample(coach: Coach, lap: LapTrace, sample: Sample) -> list:
+    base_ns = _BASE_NS + lap.lap * 200_000_000_000
+    return coach.on_sample(
+        _state(sample, lap.lap), sample.dist_m, base_ns + sample.t_ms * 1_000_000
+    )
+
+
+def test_coaching_skipped_when_next_corner_already_entered() -> None:
+    """연속 코너에서 다음 코너로 들어간 뒤엔 앞선 코너 코칭을 만들지 않는다."""
+    coach = _coach(SUZUKA, focus=[3])
+    lap = _suzuka(1, effects=_early_brake(SUZUKA, 3))
+    corner3 = _corner(SUZUKA, 3)
+    corner5 = _corner(SUZUKA, 5)
+
+    # 3번 탈출 직전까지 정상 주행한 뒤, 패킷이 끊겨 3·4번 탈출을 한 번에
+    # 지나 5번 구간으로 들어온 샘플 하나를 넣는다.
+    _feed_until(coach, lap, corner3.exit_m - 1.0)
+    jumped = next(
+        sample for sample in lap.samples if sample.dist_m >= corner5.entry_m + 10.0
+    )
+
+    messages = _feed_sample(coach, lap, jumped)
+
+    assert [message.corner for message in messages if message.corner in {3, 4}] == []
+
+
+def test_pending_coaching_discarded_when_next_corner_entered() -> None:
+    """재생 전 옛 코칭은 다음 코너로 들어가면 버린다(SCRUM-143)."""
+    dropped: list[tuple[int | None, str]] = []
+    queue = RadioQueue(
+        clock=lambda: _BASE_NS,
+        on_drop=lambda message, reason: dropped.append((message.corner, reason)),
+    )
+    coach = _coach(SUZUKA, focus=[3], queue=queue)
+    lap = _suzuka(1, effects=_early_brake(SUZUKA, 3))
+    corner3 = _corner(SUZUKA, 3)
+    corner5 = _corner(SUZUKA, 5)
+
+    _feed_until(coach, lap, corner3.exit_m + 1.0)
+    assert [message.corner for message in queue.pending()] == [3]
+
+    jumped = next(
+        sample for sample in lap.samples if sample.dist_m >= corner5.entry_m + 10.0
+    )
+    _feed_sample(coach, lap, jumped)
+
+    assert queue.pending_count == 0
+    assert dropped == [(3, "stale")]
 
 
 def test_defer_until_straight_helper() -> None:
@@ -673,8 +778,9 @@ def test_queue_receives_messages_and_muting_filters_them() -> None:
     queue = RadioQueue()
     coach = _coach(SUZUKA, focus=[9], queue=queue)
     lap = _suzuka(1, effects=_early_brake(SUZUKA, 9))
+    corner9 = _corner(SUZUKA, 9)
 
-    messages = _messages(_feed(coach, lap))
+    messages = _feed_until(coach, lap, corner9.exit_m + 1.0)
 
     assert len(messages) == 1
     assert queue.pending_count == 1
@@ -762,6 +868,83 @@ def test_improvement_uses_ordinal_wording_for_unofficial_corners() -> None:
 
     assert len(messages) == 1
     assert messages[0].text == "오~ 3번째 코너 좋아졌어~"
+
+
+def test_improvement_ttl_covers_main_straight_only() -> None:
+    """개선 알림은 1번 코너까지(6초)만 유효하다(SCRUM-143)."""
+    coach = _coach(SUZUKA, focus=[3])
+    coach.on_lap_completed(_suzuka(1, effects=_early_brake(SUZUKA, 3)))
+
+    messages = coach.on_lap_completed(_suzuka(2), now_ns=1_000)
+
+    assert len(messages) == 1
+    message = messages[0]
+    assert message.created_ns == 1_000
+    assert message.expires_ns - message.created_ns == 6 * 10**9
+
+
+def test_only_one_focus_improvement_per_lap() -> None:
+    """한 랩에 코너 여러 곳이 좋아져도 개선 알림은 하나만 낸다(SCRUM-143)."""
+    coach = _coach(SUZUKA, focus=[3, 5])
+    bad = _effects(
+        SUZUKA,
+        [
+            {
+                "lap": 1,
+                "corner": number,
+                "kind": "early_brake",
+                "params": {"meters": 10.0},
+            }
+            for number in (3, 5)
+        ],
+    )
+    coach.on_lap_completed(_suzuka(1, effects=bad))
+    expected = coach.focus_corners[0]
+
+    messages = coach.on_lap_completed(_suzuka(2))
+
+    assert len(messages) == 1
+    # 이전 집중 코너 순서(손실이 큰 순)의 첫 코너만 알린다.
+    assert messages[0].corner == expected
+
+
+def test_improvement_dropped_when_first_corner_already_entered() -> None:
+    """1번 코너 진입 뒤까지 남은 개선 알림은 버린다(SCRUM-143)."""
+    dropped: list[tuple[str, str]] = []
+    queue = RadioQueue(
+        on_drop=lambda message, reason: dropped.append((message.kind, reason))
+    )
+    coach = _coach(SUZUKA, focus=[3], queue=queue)
+    coach.on_lap_completed(_suzuka(1, effects=_early_brake(SUZUKA, 3)))
+    messages = coach.on_lap_completed(_suzuka(2))
+    assert len(messages) == 1
+    assert queue.pending_count == 1
+
+    # 다음 랩에서 1번 코너 구간(중심선 510m)으로 들어왔다.
+    sample = _suzuka(3).samples[0]
+    coach.on_sample(_state(sample, 3), _corner(SUZUKA, 1).entry_m + 10.0, _BASE_NS)
+
+    assert queue.pending_count == 0
+    assert dropped == [(RadioKind.IMPROVEMENT, "stale")]
+
+
+def test_improvement_not_emitted_when_lap_processing_is_late() -> None:
+    """다음 랩에서 이미 1번 코너를 지난 뒤 완료 랩을 처리하면 내지 않는다."""
+    coach = _coach(SUZUKA, focus=[3])
+    coach.on_lap_completed(_suzuka(1, effects=_early_brake(SUZUKA, 3)))
+
+    # 완료 랩 처리 전에 코치가 이미 다음 랩 1번 코너를 지난 샘플을 받았다.
+    later = _suzuka(3)
+    sample = next(
+        sample
+        for sample in later.samples
+        if sample.dist_m >= _corner(SUZUKA, 1).entry_m + 10.0
+    )
+    coach.on_sample(_state(sample, 3), sample.dist_m, _BASE_NS)
+
+    assert coach.on_lap_completed(_suzuka(2)) == []
+    # 집중 코너 갱신은 그대로 반영된다.
+    assert 3 not in coach.focus_corners
 
 
 # ---------------------------------------------------------------------------

@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import dataclasses
 import math
 from importlib import resources
 
 import pytest
 
-from f1re.tracks.model import load_outline, load_track
+from f1re.tracks.model import TrackDataError, load_outline, load_track
 from f1re.tracks.outline import TrackOutline
 
 # (트랙 ID, 이름, 공식 길이 m, 코너 수)
@@ -76,6 +77,82 @@ def test_lap_distance_offset_defaults_and_suzuka_calibration() -> None:
     assert monaco is not None
     assert suzuka.lap_distance_offset_m == pytest.approx(130.0)
     assert monaco.lap_distance_offset_m == 0.0
+
+
+def test_in_lap_distance_frame_shifts_corner_drs_and_spot_labels() -> None:
+    """게임 프레임 사본은 코너·DRS·추월 창을 130m 옮기고 오프셋을 지운다."""
+    suzuka = load_track(13)
+    assert suzuka is not None
+
+    shifted = suzuka.in_lap_distance_frame()
+
+    assert shifted is not suzuka
+    assert shifted.lap_distance_offset_m == 0.0
+    first = shifted.corners[0]
+    assert first.entry_m == pytest.approx(640.0)
+    assert first.apex_m == pytest.approx(710.19)
+    assert first.exit_m == pytest.approx(760.0)
+    assert shifted.corners[-1].exit_m == pytest.approx(5750.0)
+    zone = shifted.drs_zones[0]
+    assert zone.activation_start_m == pytest.approx(5750.0)
+    assert zone.activation_end_m == pytest.approx(640.0)
+    assert zone.activation_wraps
+    spots = {spot.name: spot for spot in shifted.overtaking_spots}
+    # 중심선 5,800m → 게임 5,930m는 랩 길이(5,807m)를 감아 123m가 된다.
+    window = spots["1번 코너"].entry_window_m
+    assert window is not None
+    assert window[0] == pytest.approx(123.0)
+    assert window[1] == pytest.approx(560.0)
+    kasio = spots["카시오 시케인"].entry_window_m
+    assert kasio is not None
+    assert kasio[0] == pytest.approx(5220.0)
+    assert kasio[1] == pytest.approx(5270.0)
+    # 원본 데이터는 중심선 프레임 그대로다.
+    assert suzuka.corners[0].entry_m == 510.0
+    assert suzuka.drs_zones[0].activation_start_m == 5620.0
+    assert suzuka.lap_distance_offset_m == pytest.approx(130.0)
+    # 이미 게임 프레임인 사본은 다시 옮겨도 그대로다.
+    assert shifted.in_lap_distance_frame() is shifted
+
+
+def test_corner_at_applies_lap_distance_offset() -> None:
+    """corner_at(lap_distance=True)은 게임 랩 거리를 중심선 거리로 바꿔 판정한다."""
+    suzuka = load_track(13)
+    assert suzuka is not None
+
+    corner = suzuka.corner_at(640.0, lap_distance=True)
+    assert corner is not None and corner.number == 1
+    assert suzuka.corner_at(639.9, lap_distance=True) is None
+    # 2026-11-15 실녹화(recording-6) 구간: 게임 3,013m는 헤어핀(11번) 탈출
+    # 직후(~2,883m)다. 보정하지 않으면 200R(12번) 구간으로 잘못 본다.
+    assert suzuka.track_distance(3013.0) == pytest.approx(2883.0)
+    assert suzuka.corner_at(3013.0, lap_distance=True) is None
+    assert suzuka.corner_at(3013.0) is not None
+    assert suzuka.corner_at(3013.0).number == 12
+
+
+def test_in_lap_distance_frame_rejects_corner_crossing_lap_end() -> None:
+    """코너가 랩 끝을 넘는 트랙은 게임 프레임으로 옮길 수 없다."""
+    suzuka = load_track(13)
+    assert suzuka is not None
+    corners = [
+        dataclasses.replace(corner, exit_m=corner.exit_m + 100.0)
+        if corner.number == 18
+        else corner
+        for corner in suzuka.corners
+    ]
+    too_wide = dataclasses.replace(suzuka, corners=corners)
+
+    with pytest.raises(TrackDataError):
+        too_wide.in_lap_distance_frame()
+
+
+def test_monaco_stays_in_centerline_frame() -> None:
+    monaco = load_track(5)
+    assert monaco is not None
+
+    assert monaco.in_lap_distance_frame() is monaco
+    assert monaco.track_distance(123.0) == pytest.approx(123.0)
 
 
 def test_data_files_are_packaged() -> None:

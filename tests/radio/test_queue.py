@@ -7,6 +7,7 @@ import pytest
 from f1re.radio.queue import (
     COACHING_TTL_NS,
     DROP_REASON_EXPIRED,
+    DROP_REASON_STALE,
     DROP_REASON_SUPERSEDED,
     PRIORITY_BY_KIND,
     Priority,
@@ -42,6 +43,7 @@ def _msg(
 
 
 def test_priority_order() -> None:
+    """안전 > 박스 > 개선 알림 > 코칭 > 추월(SCRUM-143)."""
     queue = RadioQueue()
     queue.push(_msg(RadioKind.IMPROVEMENT, "개선"))
     queue.push(_msg(RadioKind.OVERTAKE, "추월"))
@@ -54,7 +56,7 @@ def test_priority_order() -> None:
         order.append(message.kind)
         queue.complete()
 
-    assert order == ["safety", "box", "coaching", "overtake", "improvement"]
+    assert order == ["safety", "box", "improvement", "coaching", "overtake"]
 
 
 def test_same_priority_is_fifo() -> None:
@@ -98,13 +100,27 @@ def test_higher_priority_interrupts() -> None:
     assert queue.next(1).text == "경고"
 
 
-@pytest.mark.parametrize("kind", [RadioKind.COACHING, RadioKind.OVERTAKE, RadioKind.IMPROVEMENT])
+@pytest.mark.parametrize("kind", [RadioKind.COACHING, RadioKind.OVERTAKE])
 def test_lower_or_equal_priority_does_not_interrupt(kind: str) -> None:
     queue = RadioQueue()
     queue.push(_msg(RadioKind.COACHING, "코칭"))
     assert queue.next(1) is not None
 
     assert queue.interrupt_if_higher(_msg(kind, "낮은 말")) is False
+
+
+def test_improvement_interrupts_coaching_but_not_box() -> None:
+    """개선 알림은 코칭·추월을 끊고 먼저 나가지만, 박스·안전은 끊지 않는다."""
+    queue = RadioQueue()
+    queue.push(_msg(RadioKind.COACHING, "코칭"))
+    assert queue.next(1).text == "코칭"
+    assert queue.interrupt_if_higher(_msg(RadioKind.IMPROVEMENT, "개선")) is True
+
+    queue.complete()
+    queue.push(_msg(RadioKind.BOX, "박스"))
+    assert queue.next(1).text == "박스"
+    assert queue.interrupt_if_higher(_msg(RadioKind.IMPROVEMENT, "개선")) is False
+    assert queue.interrupt_if_higher(_msg(RadioKind.SAFETY, "경고")) is True
 
 
 def test_interrupt_without_current_returns_false() -> None:
@@ -240,9 +256,9 @@ def test_new_coaching_drops_pending_coaching_only() -> None:
     assert [msg.text for msg in queue.pending()] == [
         "경고",
         "박스",
+        "개선",
         "새 코칭",
         "추월",
-        "개선",
     ]
     assert dropped == [("옛 코칭", DROP_REASON_SUPERSEDED)]
     assert DROP_REASON_SUPERSEDED == "superseded"
@@ -338,3 +354,44 @@ def test_pending_and_clear() -> None:
     assert queue.pending_count == 0
     assert queue.current is None
     assert queue.next(1) is None
+
+
+# ---------------------------------------------------------------------------
+# 위치가 지나 버리는 무전(SCRUM-143)
+
+
+def test_discard_pending_drops_only_that_kind_and_reports_stale() -> None:
+    """코치가 위치를 지난 코칭만 버리고, 다른 종류는 그대로 둔다."""
+    dropped: list[tuple[str, str]] = []
+    queue = RadioQueue(on_drop=lambda msg, reason: dropped.append((msg.text, reason)))
+    queue.push(_msg(RadioKind.COACHING, "옛 코칭"))
+    queue.push(_msg(RadioKind.IMPROVEMENT, "개선"))
+    queue.push(_msg(RadioKind.OVERTAKE, "추월"))
+
+    discarded = queue.discard_pending(RadioKind.COACHING)
+
+    assert [message.text for message in discarded] == ["옛 코칭"]
+    assert [message.text for message in queue.pending()] == ["개선", "추월"]
+    assert dropped == [("옛 코칭", DROP_REASON_STALE)]
+    assert DROP_REASON_STALE == "stale"
+
+
+def test_discard_pending_keeps_current_message() -> None:
+    """재생 중인 무전은 건드리지 않고 대기 중인 같은 종류만 버린다."""
+    queue = RadioQueue()
+    queue.push(_msg(RadioKind.IMPROVEMENT, "재생 중"))
+    assert queue.next(1).text == "재생 중"
+    queue.push(_msg(RadioKind.IMPROVEMENT, "대기 중"))
+
+    discarded = queue.discard_pending(RadioKind.IMPROVEMENT)
+    assert [message.text for message in discarded] == ["대기 중"]
+    assert queue.current is not None and queue.current.text == "재생 중"
+    assert queue.pending_count == 0
+
+
+def test_discard_pending_without_match_is_noop() -> None:
+    queue = RadioQueue()
+    queue.push(_msg(RadioKind.COACHING, "코칭"))
+
+    assert queue.discard_pending(RadioKind.IMPROVEMENT) == ()
+    assert [message.text for message in queue.pending()] == ["코칭"]

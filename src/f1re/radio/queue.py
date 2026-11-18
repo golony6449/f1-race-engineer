@@ -3,7 +3,9 @@
 설계 6.7의 전달 계층이다. 모든 무전은 이 큐 하나를 지나며, 재생기는
 `next()`로 가장 높은 우선순위의 무전을 꺼내 말한다.
 
-- 우선순위: 안전·위험 경고 > 박스 지시 > 코너 코칭 > 추월 > 개선 알림.
+- 우선순위: 안전·위험 경고 > 박스 지시 > 개선 알림(랩 완료 칭찬) > 코너 코칭 >
+  추월. 개선 알림은 랩 완료 직후 메인 스트레이트에서만 유효하므로, 몇 초 동안
+  쓸모 있는 코너 코칭보다 먼저 나간다(SCRUM-143).
 - 말하는 중에 더 높은 우선순위 무전이 오면 `interrupt_if_higher()`가 True를
   돌려준다. 재생기는 지금 소리를 끊고 `complete()` 뒤 `next()`로 새 무전을 꺼낸다.
 - 낮은 우선순위 무전은 대기하고, 유효 시간이 지나면 `next()`가 버린다.
@@ -11,9 +13,13 @@
   못하면 버린다**(SCRUM-94). 코칭 종류 판정과 5초는 이 모듈 한 곳에만 둔다.
 - **새 코칭이 들어오면 아직 재생 전인 옛 코칭은 버린다.** 재생 중인 무전과
   다른 종류(안전·박스·추월·개선 알림)는 건드리지 않는다(SCRUM-94).
+- **위치가 지나 버린 무전은 코치가 `discard_pending()`으로 버린다**(SCRUM-143).
+  다음 코너로 넘어간 옛 코칭, 1번 코너에 들어간 뒤 남은 개선 알림이 여기에
+  해당한다.
 - 버린 무전은 `set_drop_handler()`로 넘긴 처리기(무전 기록 등)에 이유와 함께
   알린다. 재생되지 않은 무전도 세션 뒤에 왜 사라졌는지 볼 수 있다(SCRUM-81).
-  유효 시간 만료는 `"expired"`, 새 코칭으로 밀려난 것은 `"superseded"`다.
+  유효 시간 만료는 `"expired"`, 새 코칭으로 밀려난 것은 `"superseded"`,
+  코너를 지나 더 이상 맞지 않는 것은 `"stale"`이다.
 - 안전 경고는 끌 수 없다(`set_muted`가 False를 돌려주고 아무것도 바꾸지 않는다).
 """
 
@@ -29,13 +35,18 @@ from typing import Any
 
 
 class Priority(IntEnum):
-    """작을수록 먼저 나간다. 설계 6.7의 순서 그대로다."""
+    """작을수록 먼저 나간다.
+
+    안전 경고 > 박스 > 개선 알림 > 코너 코칭 > 추월. 개선 알림은 랩 완료 직후
+    메인 스트레이트에서만 유효하므로(SCRUM-143), 몇 초 동안 유효한 코너 코칭과
+    추월 안내보다 먼저 나간다. 안전·박스의 최상위 순서는 그대로다.
+    """
 
     SAFETY = 0
     BOX = 1
-    COACHING = 2
-    OVERTAKE = 3
-    IMPROVEMENT = 4
+    IMPROVEMENT = 2
+    COACHING = 3
+    OVERTAKE = 4
 
 
 class RadioKind(StrEnum):
@@ -67,6 +78,8 @@ COACHING_TTL_NS = 5 * 10**9
 # 큐가 무전을 버린 이유.
 DROP_REASON_EXPIRED = "expired"
 DROP_REASON_SUPERSEDED = "superseded"
+# 코너·랩 위치가 지나 더 이상 맞지 않아 코치가 버린 무전(SCRUM-143).
+DROP_REASON_STALE = "stale"
 
 
 @dataclass(frozen=True)
@@ -269,6 +282,28 @@ class RadioQueue:
     def is_muted(self, kind: str) -> bool:
         with self._lock:
             return kind in self._muted
+
+    def discard_pending(
+        self, kind: str, *, reason: str = DROP_REASON_STALE
+    ) -> tuple[RadioMessage, ...]:
+        """아직 재생 전인 한 종류의 무전을 모두 버리고 그 목록을 돌려준다.
+
+        재생 중인 무전은 건드리지 않는다. 코치가 다음 코너로 넘어갔거나 1번
+        코너에 들어갔을 때, 위치가 지나 더 이상 맞지 않는 옛 코칭·개선 알림을
+        버리는 데 쓴다(SCRUM-143). 버린 무전은 처리기에 이유와 함께 알린다.
+        """
+        with self._lock:
+            dropped = [
+                entry.msg for entry in self._pending if entry.msg.kind == kind
+            ]
+            if dropped:
+                self._pending = [
+                    entry for entry in self._pending if entry.msg.kind != kind
+                ]
+            handler = self._on_drop
+        for message in dropped:
+            self._notify_drop(handler, message, reason)
+        return tuple(dropped)
 
     def set_drop_handler(self, handler: DropHandler | None) -> None:
         """유효 시간이 지나 버린 무전을 받을 처리기를 정한다(없애려면 None)."""

@@ -3,6 +3,9 @@
 - 트랙 ID: 13 (`suzuka.json`)
 - 길이: 5,807 m, 공식 코너 18개
 - 근거: `docs/research/suzuka-overtaking.md` (SCRUM-127, 공개 자료와 `suzuka.json` 정리)
+- 이 문서의 랩 거리는 `suzuka.json`의 중심선 프레임이다. 실제 게임 세션의 코칭·
+  추월 판정은 여기에 130 m(`lap_distance_offset_m`)를 더한 게임 `lapDistance`
+  프레임을 쓴다(SCRUM-143). 데모 세션은 중심선 프레임 그대로다.
 - 이 문서는 LLM 무전 프롬프트와 규칙 엔진이 참고한다. `## 코너 <번호>:` 섹션 단위로
   읽으며, 한 번호는 `suzuka.json`의 공식 코너 번호와 같다.
 
