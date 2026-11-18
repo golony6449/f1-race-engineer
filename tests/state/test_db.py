@@ -731,3 +731,144 @@ def test_pending_backups_retry_list_and_delete_row(tmp_path: Path) -> None:
     finally:
         conn.close()
 
+
+# --- SCRUM-140: uint64 session_uid -------------------------------------------
+#
+# F1 25의 session_uid는 uint64다. 2**63 이상은 SQLite INTEGER 범위를 넘으므로
+# 2의 보수 int64로 저장하고, 읽을 때 원래 양수 값으로 되돌린다. 2**63 미만은
+# 값이 그대로라 기존 DB와 완전히 호환된다.
+
+_HIGH_UID = 0xF000_0000_0000_0001
+_MAX_UID = 0xFFFF_FFFF_FFFF_FFFF
+
+
+@pytest.mark.parametrize(
+    ("uid", "stored"),
+    [
+        (0, 0),
+        (42, 42),
+        (2**63 - 1, 2**63 - 1),  # int64 최댓값은 그대로
+        (2**63, -(2**63)),       # int64 최솟값(2의 보수)
+        (_HIGH_UID, _HIGH_UID - 2**64),
+        (_MAX_UID, -1),
+    ],
+)
+def test_session_uid_encode_decode_preserves_bits(uid: int, stored: int) -> None:
+    assert db.encode_session_uid(uid) == stored
+    assert db.decode_session_uid(stored) == uid
+
+
+def test_session_uid_helpers_keep_none_and_reject_out_of_range() -> None:
+    assert db.encode_session_uid(None) is None
+    assert db.decode_session_uid(None) is None
+    for invalid in (-1, 2**64):
+        with pytest.raises(ValueError):
+            db.encode_session_uid(invalid)
+
+
+def test_high_uint64_session_uid_roundtrips_through_sessions(
+    tmp_path: Path,
+) -> None:
+    """sessions 표의 저장·UPDATE가 OverflowError 없이 원래 값으로 돌아온다."""
+    conn = db.open_db(tmp_path / "f1re.db")
+    try:
+        db.save_session(
+            conn,
+            _HIGH_UID,
+            started_at_ns=1_000,
+            track_id=7,
+            session_type=15,
+        )
+        # 기존(최상위 비트 0) UID는 같은 정수로 저장돼 호환된다.
+        db.save_session(conn, 42, started_at_ns=2_000)
+        stored = {
+            row[0] for row in conn.execute("SELECT session_uid FROM sessions")
+        }
+        assert stored == {42, _HIGH_UID - 2**64}
+
+        db.update_session_progress(
+            conn, _HIGH_UID, packets_received=99, unsupported_count=3
+        )
+        db.finish_session(conn, _HIGH_UID, ended_at_ns=5_000)
+
+        row = conn.execute(
+            "SELECT * FROM sessions WHERE session_uid = ?",
+            (db.encode_session_uid(_HIGH_UID),),
+        ).fetchone()
+        assert row["packets_received"] == 99
+        assert row["unsupported_count"] == 3
+        assert row["ended_at_ns"] == 5_000
+        # 낮은 UID 행은 손대지 않는다.
+        low = conn.execute(
+            "SELECT * FROM sessions WHERE session_uid = 42"
+        ).fetchone()
+        assert low["started_at_ns"] == 2_000
+    finally:
+        conn.close()
+
+
+def test_high_uint64_session_uid_roundtrips_through_session_recordings(
+    tmp_path: Path,
+) -> None:
+    """녹화 행도 int64로 저장하고 dict로 돌려줄 때 uint64로 복원한다."""
+    conn = db.open_db(tmp_path / "f1re.db")
+    try:
+        assert db.next_recording_segment(conn, _HIGH_UID) == 1
+        first = db.create_recording(
+            conn, session_uid=_HIGH_UID, segment=1, started_at_ns=1_000
+        )
+        second = db.create_recording(
+            conn, session_uid=_MAX_UID, segment=1, started_at_ns=2_000
+        )
+        # 같은 (UID, 부 번호)는 인코딩 뒤에도 유니크 제약이 막는다.
+        with pytest.raises(sqlite3.IntegrityError):
+            db.create_recording(
+                conn, session_uid=_HIGH_UID, segment=1, started_at_ns=3_000
+            )
+        assert db.next_recording_segment(conn, _HIGH_UID) == 2
+        assert db.next_recording_segment(conn, _MAX_UID) == 2
+        assert db.next_recording_segment(conn, 7) == 1
+
+        raw = conn.execute(
+            "SELECT session_uid FROM session_recordings WHERE id = ?", (first,)
+        ).fetchone()[0]
+        assert raw == _HIGH_UID - 2**64
+        got = db.get_recording(conn, first)
+        assert got is not None
+        assert got["session_uid"] == _HIGH_UID
+        assert db.get_recording(conn, second)["session_uid"] == _MAX_UID
+        assert [row["session_uid"] for row in db.list_recordings(conn)] == [
+            _MAX_UID,
+            _HIGH_UID,
+        ]
+
+        # 마감·백업 목록·정리 대상도 같은 복원 규칙을 쓴다.
+        db.finalize_recording(
+            conn,
+            first,
+            end_reason="session_end",
+            ended_at_ns=2_000,
+            packet_count=10,
+            duration_ms=1_000,
+            local_path="data/recordings/race/a.f1rec.zst",
+            local_exists=True,
+            file_size_bytes=10,
+            backup_status="pending",
+        )
+        assert [
+            row["session_uid"] for row in db.list_pending_backup_recordings(conn)
+        ] == [_HIGH_UID]
+        db.mark_recording_backup(
+            conn,
+            first,
+            backup_status="uploaded",
+            gcs_object="race/a.f1rec.zst",
+            backed_up_at_ns=3_000,
+        )
+        assert [
+            row["session_uid"]
+            for row in db.find_local_prune_targets(conn, keep_count=0)
+        ] == [_HIGH_UID]
+    finally:
+        conn.close()
+

@@ -9,12 +9,16 @@ from __future__ import annotations
 
 import re
 import time
+from pathlib import Path
 from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
 
+from f1re import db
 from f1re.engine import Engine, Runtime
+from f1re.radio.log import RadioLog
+from f1re.radio.queue import RadioMessage
 from f1re.state.store import StateStore
 from f1re.udp.formats import f2025
 from f1re.udp.packer import pack_packet
@@ -478,3 +482,41 @@ def test_radio_script_keeps_stale_and_engine_off_states() -> None:
     assert "response.status === 503" in script
     assert 'setEngineState("off");' in script
     assert "clearDataStatus();" in script
+
+
+# ---------------------------------------------------------------------------
+# uint64 세션 UID(SCRUM-140)
+
+HIGH_SESSION_UID = 0xF000_0000_0000_0001
+
+
+def test_radio_log_api_resolves_high_uint64_session_uid(tmp_path: Path) -> None:
+    """DB에 int64로 저장된 세션 UID도 무전·리포트 API로는 uint64 양수로 나온다."""
+    conn = db.open_db(tmp_path / "f1re.db")
+    try:
+        RadioLog(conn, session_uid=HIGH_SESSION_UID).record(
+            RadioMessage.create(
+                kind="coaching",
+                text="높은 UID 세션.",
+                now_ns=1_000,
+                ttl_ns=10**15,
+                evidence={"loss_ms": 100},
+                lap=5,
+                corner=3,
+            ),
+            played=True,
+            latency_ms=40,
+        )
+        with TestClient(create_app(StateStore(), conn=conn)) as client:
+            log = client.get("/api/radio/log").json()
+            report = client.get("/api/report").json()
+
+        # `?session=`이 없으면 DB의 마지막 세션을 고른다(`_latest_session_uid`).
+        assert log["session_uid"] == HIGH_SESSION_UID
+        assert [message["session_uid"] for message in log["messages"]] == [
+            HIGH_SESSION_UID
+        ]
+        assert report["session_uid"] == HIGH_SESSION_UID
+        assert [item["corner"] for item in report["corner_losses"]] == [3]
+    finally:
+        conn.close()

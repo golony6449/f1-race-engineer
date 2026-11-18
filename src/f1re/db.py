@@ -37,6 +37,59 @@ def default_db_path() -> Path:
     return repo_root() / DEFAULT_DB_RELPATH
 
 
+# --- 세션 UID <-> SQLite INTEGER 변환(SCRUM-140) -----------------------------
+#
+# F1 25 패킷의 `session_uid`는 uint64(`0 <= uid < 2**64`)지만 SQLite INTEGER는
+# 부호 있는 64비트(`-2**63 .. 2**63 - 1`)만 담는다. 최상위 비트가 1인 UID를
+# 그대로 바인딩하면 `OverflowError`가 난다. DB 경계에서만 2의 보수로 바꿔
+# 저장하고 읽을 때 되돌리면, `0 <= uid < 2**63`인 기존 행은 값이 그대로라
+# 마이그레이션 없이 100% 호환된다. 파일명·서비스 키·API 응답은 원래 uint64를
+# 그대로 쓴다(변환은 이 모듈을 거치는 SQL 경로에서만 한다).
+
+# uint64 범위와 int64 최댓값. `UINT64_MASK`는 음수 int64에서 uint64를 복원한다.
+UINT64_MASK = 0xFFFF_FFFF_FFFF_FFFF
+INT64_MAX = 0x7FFF_FFFF_FFFF_FFFF
+_UINT64_MODULUS = 1 << 64
+
+
+def encode_session_uid(uid: int | None) -> int | None:
+    """uint64 세션 UID를 SQLite INTEGER에 담을 수 있는 int64로 바꾼다.
+
+    `0 <= uid < 2**63`은 그대로 두어 기존 DB 행과 완전히 호환된다.
+    `uid >= 2**63`은 2의 보수(`uid - 2**64`, 음수)로 저장하며,
+    :func:`decode_session_uid`가 읽을 때 되돌린다. `None`은 그대로 `None`이다.
+    uint64 범위를 벗어난 값은 조용히 저장하지 않고 `ValueError`로 알린다.
+    """
+    if uid is None:
+        return None
+    value = int(uid)
+    if not 0 <= value <= UINT64_MASK:
+        raise ValueError(f"session_uid는 uint64 범위여야 합니다: {uid!r}")
+    if value <= INT64_MAX:
+        return value
+    return value - _UINT64_MODULUS
+
+
+def decode_session_uid(value: int | None) -> int | None:
+    """SQLite에서 읽은 세션 UID를 원래 uint64로 되돌린다.
+
+    `0 <= value < 2**63`은 그대로 돌려주고, 음수(2의 보수로 저장된
+    `uid >= 2**63`)는 `value & 0xFFFF_FFFF_FFFF_FFFF`로 복원한다.
+    `None`은 그대로 `None`이다.
+    """
+    if value is None:
+        return None
+    return int(value) & UINT64_MASK
+
+
+def _recording_dict(row: sqlite3.Row) -> dict[str, Any]:
+    """`session_recordings` 행을 dict로 바꾸며 세션 UID를 uint64로 복원한다."""
+    data = dict(row)
+    if "session_uid" in data:
+        data["session_uid"] = decode_session_uid(data["session_uid"])
+    return data
+
+
 def _migration_001_sessions(conn: sqlite3.Connection) -> None:
     """세션 한 번을 한 행으로 남긴다."""
     conn.execute(
@@ -299,7 +352,13 @@ def save_session(
                 session_type = COALESCE(excluded.session_type, sessions.session_type),
                 recorded_file = COALESCE(excluded.recorded_file, sessions.recorded_file)
             """,
-            (session_uid, started_at_ns, track_id, session_type, recorded_file),
+            (
+                encode_session_uid(session_uid),
+                started_at_ns,
+                track_id,
+                session_type,
+                recorded_file,
+            ),
         )
 
 
@@ -318,7 +377,11 @@ def update_session_progress(
             SET packets_received = ?, unsupported_count = ?
             WHERE session_uid = ?
             """,
-            (packets_received, unsupported_count, session_uid),
+            (
+                packets_received,
+                unsupported_count,
+                encode_session_uid(session_uid),
+            ),
         )
 
 
@@ -329,7 +392,7 @@ def finish_session(
     with conn:
         conn.execute(
             "UPDATE sessions SET ended_at_ns = ? WHERE session_uid = ?",
-            (ended_at_ns, session_uid),
+            (ended_at_ns, encode_session_uid(session_uid)),
         )
 
 
@@ -417,7 +480,7 @@ def create_recording(
             VALUES (?, ?, ?, ?, ?, ?)
             """,
             (
-                session_uid,
+                encode_session_uid(session_uid),
                 segment,
                 started_at_ns,
                 category,
@@ -436,7 +499,7 @@ def next_recording_segment(conn: sqlite3.Connection, session_uid: int) -> int:
     """
     row = conn.execute(
         "SELECT MAX(segment) FROM session_recordings WHERE session_uid = ?",
-        (session_uid,),
+        (encode_session_uid(session_uid),),
     ).fetchone()
     if row is None or row[0] is None:
         return 1
@@ -567,17 +630,17 @@ def list_recordings(
         params.append(category)
     query += " ORDER BY started_at_ns DESC, id DESC LIMIT ?"
     params.append(max(0, int(limit)))
-    return [dict(row) for row in conn.execute(query, params)]
+    return [_recording_dict(row) for row in conn.execute(query, params)]
 
 
 def get_recording(
     conn: sqlite3.Connection, recording_id: int
 ) -> dict[str, Any] | None:
-    """녹화 한 행. 없으면 `None`."""
+    """녹화 한 행. 없으면 `None`. `session_uid`는 uint64로 복원해 돌려준다."""
     row = conn.execute(
         "SELECT * FROM session_recordings WHERE id = ?", (recording_id,)
     ).fetchone()
-    return None if row is None else dict(row)
+    return None if row is None else _recording_dict(row)
 
 
 def find_local_prune_targets(
@@ -596,7 +659,7 @@ def find_local_prune_targets(
     """
     excluded = {int(item) for item in exclude_ids}
     rows = [
-        dict(row)
+        _recording_dict(row)
         for row in conn.execute(
             """
             SELECT * FROM session_recordings
@@ -632,7 +695,7 @@ def list_pending_backup_recordings(
     올릴 수 없으므로 제외한다.
     """
     return [
-        dict(row)
+        _recording_dict(row)
         for row in conn.execute(
             """
             SELECT * FROM session_recordings

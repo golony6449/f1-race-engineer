@@ -15,6 +15,7 @@ import time
 from collections.abc import Callable
 from typing import Any
 
+from f1re.db import decode_session_uid, encode_session_uid
 from f1re.radio.queue import RadioMessage
 
 # `recent()`에서 세션 조건을 생략했을 때와 "전체"를 구분하는 표식.
@@ -64,7 +65,7 @@ class RadioLog:
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
-                    self._session_uid,
+                    encode_session_uid(self._session_uid),
                     int(recorded_at_ns),
                     msg.lap,
                     msg.corner,
@@ -101,7 +102,7 @@ class RadioLog:
             )
             if target is not None:
                 sql += " WHERE session_uid = ?"
-                params.append(int(target))
+                params.append(encode_session_uid(int(target)))
         sql += " ORDER BY recorded_at_ns DESC, id DESC LIMIT ?"
         params.append(min(int(limit), 1000))
         rows = self._conn.execute(sql, params).fetchall()
@@ -115,7 +116,7 @@ class RadioLog:
         else:
             row = self._conn.execute(
                 "SELECT COUNT(*) FROM radio_messages WHERE session_uid = ?",
-                (int(target),),
+                (encode_session_uid(int(target)),),
             ).fetchone()
         return int(row[0]) if row is not None else 0
 
@@ -128,7 +129,7 @@ class RadioLog:
             evidence = {}
         return {
             "id": int(row["id"]),
-            "session_uid": row["session_uid"],
+            "session_uid": decode_session_uid(row["session_uid"]),
             "recorded_at_ns": int(row["recorded_at_ns"]),
             "lap": row["lap"],
             "corner": row["corner"],

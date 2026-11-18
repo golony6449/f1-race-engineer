@@ -211,3 +211,68 @@ def test_evidence_survives_json_roundtrip_with_korean(tmp_path: Path) -> None:
         assert log.recent()[0]["evidence"] == evidence
     finally:
         conn.close()
+
+
+# --- SCRUM-140: uint64 session_uid -------------------------------------------
+
+_HIGH_UID = 0xF000_0000_0000_0001
+_MAX_UID = 0xFFFF_FFFF_FFFF_FFFF
+
+
+def test_high_uint64_session_uid_roundtrips_through_radio_messages(
+    tmp_path: Path,
+) -> None:
+    """2**63 이상 UID도 OverflowError 없이 저장하고 조회하면 양수로 돌아온다."""
+    conn = _open(tmp_path)
+    try:
+        log = RadioLog(conn, session_uid=_HIGH_UID)
+        log.record(_message("높은 UID", created_ns=1_000), played=True, latency_ms=10)
+
+        raw = conn.execute("SELECT session_uid FROM radio_messages").fetchone()[0]
+        assert raw == _HIGH_UID - 2**64
+
+        [row] = log.recent()
+        assert row["text"] == "높은 UID"
+        assert row["session_uid"] == _HIGH_UID
+        assert log.count() == 1
+        assert log.count(session_uid=_HIGH_UID) == 1
+        assert log.recent(session_uid=_HIGH_UID)[0]["session_uid"] == _HIGH_UID
+
+        # 기존(최상위 비트 0) 세션과 섞여도 서로의 기록만 보인다.
+        RadioLog(conn, session_uid=7).record(
+            _message("낮은 UID", created_ns=2_000)
+        )
+        assert [row["text"] for row in log.recent()] == ["높은 UID"]
+        assert [row["text"] for row in log.recent(session_uid=7)] == ["낮은 UID"]
+        assert log.count(session_uid=7) == 1
+    finally:
+        conn.close()
+
+
+def test_high_uint64_session_uid_max_value_and_none_are_preserved(
+    tmp_path: Path,
+) -> None:
+    """uint64 최댓값(-1로 저장)과 `None` 세션이 같은 표에 공존한다."""
+    conn = _open(tmp_path)
+    try:
+        RadioLog(conn, session_uid=_MAX_UID).record(
+            _message("최대 UID", created_ns=2_000)
+        )
+        RadioLog(conn).record(_message("세션 밖", created_ns=1_000))
+
+        stored = [
+            row[0]
+            for row in conn.execute(
+                "SELECT session_uid FROM radio_messages ORDER BY id"
+            )
+        ]
+        assert stored == [-1, None]
+
+        rows = RadioLog(conn).recent(all_sessions=True)
+        assert [(row["text"], row["session_uid"]) for row in rows] == [
+            ("최대 UID", _MAX_UID),
+            ("세션 밖", None),
+        ]
+        assert RadioLog(conn).count() == 2
+    finally:
+        conn.close()

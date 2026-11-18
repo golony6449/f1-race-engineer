@@ -39,6 +39,7 @@ from typing import TYPE_CHECKING, Any
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
+from f1re.db import decode_session_uid
 from f1re.radio.log import RadioLog
 from f1re.radio.queue import MUTABLE_KINDS, RadioKind
 
@@ -555,7 +556,9 @@ def _latest_session_uid(conn: sqlite3.Connection | None) -> int | None:
     if row is None:
         return None
     value = row["session_uid"] if hasattr(row, "keys") else row[0]
-    return _as_int(value)
+    resolved = _as_int(value)
+    # DB에는 uint64가 2의 보수 int64로 들어 있으므로 원래 양수 값으로 되돌린다.
+    return None if resolved is None else decode_session_uid(resolved)
 
 
 def _query_rows(
