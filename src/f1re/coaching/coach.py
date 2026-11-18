@@ -20,6 +20,17 @@
   미루지 않는다. 코칭 무전의 5초 유효 시간과 "새 코칭이 오면 옛 코칭 버리기"는
   `radio.queue.RadioQueue`가 맡는다. `defer_until_straight`는 리프트 앤 코스트
   (SCRUM-71)가 개선 알림을 미룰 때 그대로 쓴다.
+- **연속 코너 순서 보정**(SCRUM-143): 코너 탈출을 지나 코칭을 만들 시점에
+  이미 다음 코너 진입을 넘었다면(패킷 끊김·큰 거리 점프) 그 코칭은 만들지
+  않는다. 또 코너 탈출을 하나라도 새로 지날 때마다 아직 재생 전인 옛 코칭을
+  버려, "3번" 무전이 5번 구간에서 나가지 않게 한다. 코치가 받는 랩 거리는
+  `Track` 코너 라벨과 같은 프레임이어야 하며, 실제 게임 세션은 파이프라인이
+  `Track.in_lap_distance_frame()` 사본을 넘긴다.
+- **개선 알림 적시성**(SCRUM-143): 랩 완료 개선 알림은 한 랩에 하나만 내고,
+  큐 우선순위상 코너 코칭·추월보다 먼저 나간다. 만든 뒤 1번 코너 진입 전에
+  말을 시작하지 못하면(유효 시간 만료 또는 1번 코너 진입 감지) 버려 엉뚱한
+  코너에서 나가지 않게 한다. 랩 처리 큐가 밀려 다음 랩에서 이미 1번 코너를
+  지난 뒤 완료 랩을 처리한 경우에도 개선 알림을 내지 않는다.
 - 같은 랩에 같은 코너는 한 번만 말한다. 무효 랩·피트·SC/VSC·레이스 1랩은
   `car_state` 플래그로 받아 코칭하지 않는다(리뷰 포커스 4).
 - **반복 실수 강조**(SCRUM-125): 코너별로 직전 코칭 원인과 랩을 기억해, 같은
@@ -88,6 +99,7 @@ from f1re.laps.traces import (
 from f1re.race_distance import remaining_race_laps
 from f1re.radio.queue import (
     COACHING_TTL_NS,
+    DROP_REASON_STALE,
     RadioKind,
     RadioMessage,
     RadioQueue,
@@ -154,6 +166,11 @@ _CAUSE_TEMPLATES: dict[str, str] = {
 
 # 같은 코너·같은 원인이 몇 랩 연속이면 반복 실수 강조 틀을 쓰는가(SCRUM-125).
 REPEAT_STREAK_LAPS = 3
+
+# 랩 완료 개선 알림은 한 랩에 하나만 낸다(SCRUM-143). 여러 코너가 한꺼번에
+# 좋아져도 메인 스트레이트에서 다 읽을 수 없고, 뒤 문장이 1번 코너를 넘겨
+# 엉뚱한 코너에서 나가게 된다.
+MAX_IMPROVEMENTS_PER_LAP = 1
 
 # 원인 → 반복 실수 강조 틀. 3랩째부터 이 틀을 강한 어조(urgent/hyped)로 쓴다.
 _REPEAT_TEMPLATES: dict[str, str] = {
@@ -442,8 +459,10 @@ class CoachConfig:
     defer_s: float = 3.0
     # 다음 코너 브레이크 지점을 진입 지점보다 이만큼 앞으로 본다.
     brake_lead_m: float = 40.0
-    # 개선 알림 무전 유효 시간(초).
-    improvement_ttl_s: float = 10.0
+    # 개선 알림 무전 유효 시간(초). 랩 완료(결승선) 뒤 1번 코너(스즈카 게임
+    # lap_distance 기준 약 640m)까지를 덮는 값이다. 이 안에 말을 시작하지
+    # 못하면 큐가 버려, 1번 코너 이후 엉뚱한 코너에서 나가지 않는다(SCRUM-143).
+    improvement_ttl_s: float = 6.0
     # 원인 판정 민감도·손실 하한(SCRUM-124). `config/default.toml`의 `[coaching]`.
     sensitivity: CoachingSensitivityConfig = field(
         default_factory=CoachingSensitivityConfig
@@ -460,6 +479,13 @@ class CoachConfig:
             raise ValueError("손실 문턱값은 0 이상이어야 합니다")
         if not math.isfinite(self.defer_s) or self.defer_s < 0:
             raise ValueError("defer_s는 0 이상의 유한한 값이어야 합니다")
+        if (
+            not math.isfinite(self.improvement_ttl_s)
+            or self.improvement_ttl_s < 0
+        ):
+            raise ValueError(
+                "improvement_ttl_s는 0 이상의 유한한 값이어야 합니다"
+            )
 
     @classmethod
     def from_app_config(cls, config: AppConfig) -> CoachConfig:
@@ -506,6 +532,20 @@ class Coach:
         self._track = track
         self._ordered_corners = tuple(sorted(track.corners, key=lambda c: c.exit_m))
         self._by_number = {corner.number: corner for corner in track.corners}
+        # 결승선(랩 시작) 뒤 첫 코너와 코너별 다음 코너. 개선 알림 만료와
+        # 연속 코너 지연 발화 판정에 쓴다(SCRUM-143).
+        self._first_corner = (
+            min(track.corners, key=lambda corner: corner.entry_m)
+            if track.corners
+            else None
+        )
+        self._next_by_number: dict[int, Corner] = {}
+        if len(self._ordered_corners) > 1:
+            for index, corner in enumerate(self._ordered_corners):
+                following = self._ordered_corners[
+                    (index + 1) % len(self._ordered_corners)
+                ]
+                self._next_by_number[corner.number] = following
         self._config = config or CoachConfig()
         self._references = references or ReferenceSet(
             track.corners,
@@ -597,6 +637,11 @@ class Coach:
         if lap != self._lap or self._rewound(distance):
             self._start_lap(lap, distance, now)
 
+        # 랩 완료 개선 알림은 1번 코너 진입 전까지만 유효하다. 새 랩에서 그
+        # 지점을 이미 지났다면(패킷 끊김·처리 지연) 아직 대기 중인 개선 알림을
+        # 버려 엉뚱한 코너에서 나가지 않게 한다(SCRUM-143).
+        self._expire_improvements_at_first_corner(distance)
+
         # 감정 단계(SCRUM-91): 남은 랩과 레이스 여부를 매 샘플에서 갱신한다.
         # 무효 랩·SC 중에도 갱신해 두어야 다음 랩 완료 때 개선 알림 단계가 맞다.
         self._remaining_laps = _remaining_laps_from_state(
@@ -622,9 +667,21 @@ class Coach:
         mood = mood_for(last_laps=self._in_last_laps)
         race = self._is_race(state)
         if previous is not None and distance >= previous:
-            for corner in self._crossed_exits(previous, distance):
+            crossed = self._crossed_exits(previous, distance)
+            if crossed:
+                # 다음 코너로 넘어갔다. 아직 재생 전인 옛 코칭은 위치가 지나
+                # 더 이상 맞지 않으므로, 새 코칭이 나가지 않는 경우에도 버린다.
+                self._discard_pending_coaching()
+            for corner in crossed:
                 messages.extend(
-                    self._coach_corner(corner, sample, now, mood, race=race)
+                    self._coach_corner(
+                        corner,
+                        sample,
+                        now,
+                        mood,
+                        race=race,
+                        distance=distance,
+                    )
                 )
         self._last_dist = distance
         return messages
@@ -642,9 +699,17 @@ class Coach:
             return []
 
         messages: list[RadioMessage] = []
-        for change in self._focus.update([trace]):
-            if change.reason is not FocusReason.IMPROVED:
-                continue
+        changes = self._focus.update([trace])
+        improvements = [
+            change
+            for change in changes
+            if change.reason is FocusReason.IMPROVED
+        ]
+        # 랩 처리 큐가 밀려 다음 랩에서 이미 1번 코너를 지난 뒤라면 개선
+        # 알림을 내지 않는다. 집중 코너 목록 갱신은 그대로 반영한다(SCRUM-143).
+        if not improvements or not self._improvement_timely(trace.lap):
+            return messages
+        for change in improvements[:MAX_IMPROVEMENTS_PER_LAP]:
             message = self._improvement_message(change, trace.lap, now)
             if message is not None:
                 self._emit(message, messages)
@@ -851,6 +916,55 @@ class Coach:
             and previous < corner.exit_m <= distance
         ]
 
+    def _coaching_too_late(self, corner: Corner, distance: float) -> bool:
+        """코너 탈출 뒤 이미 다음 코너 진입을 넘었는가.
+
+        연속 코너(S자·시케인)에서 패킷이 끊겨 여러 코너 탈출을 한 샘플에서
+        지나면, 앞선 코너 코칭은 지금 위치와 어긋난다. 마지막 코너의 다음
+        코너는 다음 랩 첫 코너라 이번 랩에서는 늦지 않은 것으로 본다.
+        """
+        following = self._next_by_number.get(corner.number)
+        if following is None:
+            return False
+        if following.entry_m <= corner.exit_m:
+            # 다음 코너가 랩을 넘어 이어지거나(마지막 코너) 같은 지점이다.
+            return False
+        return distance >= following.entry_m
+
+    def _discard_pending_coaching(self) -> None:
+        """아직 재생 전인 옛 코칭을 버린다(위치가 지나 더 이상 맞지 않을 때)."""
+        queue = self._queue
+        if queue is not None:
+            queue.discard_pending(
+                RadioKind.COACHING.value, reason=DROP_REASON_STALE
+            )
+
+    def _expire_improvements_at_first_corner(self, distance: float) -> None:
+        """1번 코너 진입을 지나면 대기 중인 개선 알림을 버린다(SCRUM-143)."""
+        first = self._first_corner
+        if first is None or distance < first.entry_m:
+            return
+        queue = self._queue
+        if queue is not None:
+            queue.discard_pending(
+                RadioKind.IMPROVEMENT.value, reason=DROP_REASON_STALE
+            )
+
+    def _improvement_timely(self, lap: int) -> bool:
+        """랩 완료 개선 알림을 지금 내도 되는가(1번 코너 진입 전).
+
+        코치는 이미 다음 랩 샘플을 받았을 수 있다. 그 랩에서 1번 코너를
+        지났거나 완료 랩보다 두 랩 이상 앞서 있으면, 개선 알림은 지금 위치와
+        어긋나므로 내지 않는다.
+        """
+        if self._lap > lap + 1:
+            return False
+        if self._lap == lap + 1 and self._last_dist is not None:
+            first = self._first_corner
+            if first is not None and self._last_dist >= first.entry_m:
+                return False
+        return True
+
     # --- 코너 판단 ---------------------------------------------------------
 
     def _coach_corner(
@@ -861,8 +975,13 @@ class Coach:
         mood: Mood = Mood.CALM,
         *,
         race: bool = False,
+        distance: float,
     ) -> list[RadioMessage]:
         self._crossed.add(corner.number)
+        # 탈출을 지나 만든 코칭 시점에 이미 다음 코너 구간으로 들어갔다면
+        # 지금 위치와 다른 코너를 말하게 되므로 내보내지 않는다(SCRUM-143).
+        if self._coaching_too_late(corner, distance):
+            return []
         if len(self._samples) < 2:
             return []
         # 레이스 접전 코너는 코칭하지 않는다(SCRUM-124). 접전 중의 속도·조향·라인
