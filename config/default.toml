@@ -44,7 +44,9 @@ voice = "Katerina"
 # 말 속도. 음 높이는 유지하고 서버에서 WSOLA로 시간만 늘인다(1.0이면 그대로).
 speed = 1.2
 # 요청 전체 타임아웃 (초). 넘으면 TTSUnavailable로 올린다.
-timeout_s = 2.0
+# 국제(싱가포르) 리전 응답 지연을 감안해 5초로 둔다(SCRUM-141). 2초는 실제
+# 세션에서 첫 응답이 늦어 무전이 무음으로 건너뛰는 원인이었다.
+timeout_s = 5.0
 # 공용 시크릿 모듈(claude_secrets.get)에서 읽을 키 이름
 secret_key = "qwen"
 # Model Studio 국제 리전 TTS 엔드포인트.

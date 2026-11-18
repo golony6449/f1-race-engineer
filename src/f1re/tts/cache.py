@@ -9,8 +9,11 @@
 - 캐시 미스는 `QwenTTS.stream()`의 첫 조각부터 내보낸다. 시작 효과음(과 무음)을
   먼저 내보내고 바로 첫 음성 조각을 잇는다. 전체를 받은 뒤에 `render_radio_voice()`
   로 저장본을 만들어 캐시에 넣는다(스트리밍 조각 자체에는 무전 효과를 입히지 않는다).
-- API 실패·타임아웃(기본 2초)이면 `TTSUnavailable`을 올리고 `status`를
-  "offline"으로 바꾼다. 재생 계층은 캐시에 있는 다른 문장만 내보내면 된다.
+- 캐시 미스에서 실시간 스트리밍이 첫 조각 전에 실패·타임아웃되면 일반 합성
+  (`synthesize()`)으로 한 번 더 시도한다(SCRUM-141). 폴백까지 실패했을 때만
+  `TTSUnavailable`을 올리고 `status`를 "offline"으로 바꾼다. 재생 계층은
+  캐시에 있는 다른 문장만 내보내면 된다. 호출 쪽 잘못(`TTSInvalidRequest`)은
+  폴백하지 않는다.
 """
 
 from __future__ import annotations
@@ -182,8 +185,10 @@ class VoiceCache:
     ) -> AudioSource:
         """캐시에 있으면 파일에서, 없으면 Qwen 스트리밍으로 재생 소스를 만든다.
 
-        캐시 미스에서 API가 실패하면 첫 조각을 내보내기 전에 `TTSUnavailable`이
-        올라온다(시작 효과음도 내보내지 않는다). 실패는 `status`에 남는다.
+        캐시 미스에서 스트리밍이 첫 조각 전에 실패하면 일반 합성으로 한 번 더
+        시도한다(SCRUM-141). 폴백까지 실패하면 첫 조각을 내보내기 전에
+        `TTSUnavailable`이 올라온다(시작 효과음도 내보내지 않는다). 폴백 성공
+        여부는 재생을 시작할 때 정해지므로 실패는 그때 `status`에 남는다.
         """
         resolved_voice = self._resolved_voice(voice)
         path = self._cache_dir / f"{self.cache_key(text, resolved_voice)}.wav"
@@ -313,6 +318,20 @@ class VoiceCache:
         stream = self._tts.stream(text, voice)
         try:
             first = await self._first_chunk(stream)
+        except TTSInvalidRequest:
+            # 호출 쪽 잘못(빈 문장 등)은 폴백해도 같은 결과다.
+            await _aclose(stream)
+            raise
+        except TTSUnavailable as stream_error:
+            # 일시적인 스트리밍 실패·타임아웃만으로 문장을 포기하지 않는다.
+            # 일반 합성으로 한 번 더 시도하고, 그것도 실패할 때만 오프라인으로
+            # 바꾼다(SCRUM-141). 아직 아무 조각도 내보내지 않아 안전하다.
+            await _aclose(stream)
+            async for chunk in self._synthesize_and_store(
+                text, voice, path, stream_error
+            ):
+                yield chunk
+            return
         except BaseException:
             await _aclose(stream)
             raise
@@ -328,6 +347,7 @@ class VoiceCache:
                     collected.extend(chunk)
                     yield chunk
             except TTSUnavailable as exc:
+                # 이미 소리를 내보낸 뒤라 폴백하면 같은 문장을 두 번 재생한다.
                 self._set_offline(exc)
                 raise
         finally:
@@ -351,19 +371,64 @@ class VoiceCache:
         except OSError:
             logger.exception("무전 음성을 캐시에 저장하지 못했습니다: %s", path)
 
+    async def _synthesize_and_store(
+        self, text: str, voice: str, path: Path, stream_error: BaseException
+    ) -> AsyncIterator[bytes]:
+        """스트리밍 실패 뒤 일반 합성으로 문장 전체를 만들어 내보낸다.
+
+        성공하면 렌더한 WAV를 캐시에 넣고 그 PCM(시작 효과음 포함)을 낸다.
+        폴백 합성까지 실패해야 `TTSUnavailable`을 올리고 오프라인으로 바꾼다.
+        `TTSInvalidRequest`는 폴백 대상이 아니므로 그대로 올린다.
+        """
+        try:
+            wav = await self._tts.synthesize(text, voice)
+        except TTSInvalidRequest:
+            raise
+        except TTSUnavailable as exc:
+            self._set_offline(exc)
+            raise exc from stream_error
+        self._set_online()
+        rendered: bytes | None = None
+        try:
+            rendered = await asyncio.to_thread(
+                render_radio_voice,
+                wav,
+                self._config,
+                fx_config=self._fx_config,
+                intro=self._intro,
+            )
+            pcm, _ = await asyncio.to_thread(wav_to_pcm, rendered)
+        except Exception:
+            # 렌더가 실패해도 합성 자체는 성공했다. 효과 없는 원본 PCM이라도
+            # 재생하고, 캐시에는 넣지 않는다(다음에 다시 만든다).
+            logger.exception("무전 음성을 렌더하지 못했습니다: %s", text)
+            try:
+                pcm, _ = await asyncio.to_thread(wav_to_pcm, wav)
+            except ValueError as exc:
+                error = TTSUnavailable("Qwen TTS 응답 오디오가 잘못됐습니다")
+                self._set_offline(error)
+                raise error from exc
+            yield pcm
+            return
+        try:
+            await asyncio.to_thread(self._store, path, rendered)
+        except OSError:
+            logger.exception("무전 음성을 캐시에 저장하지 못했습니다: %s", path)
+        yield pcm
+
     async def _first_chunk(self, stream: AsyncIterator[bytes]) -> bytes:
+        """스트림에서 첫 비어있지 않은 조각을 꺼낸다.
+
+        실패는 그대로 올린다. 오프라인 전환은 폴백까지 실패한 호출 쪽
+        (`_synthesize_and_store`)이 맡는다(SCRUM-141).
+        """
         try:
             while True:
                 chunk = await anext(stream)
                 if chunk:
                     return chunk
         except StopAsyncIteration as exc:
-            error = TTSUnavailable("Qwen TTS가 빈 스트림을 돌려줬습니다")
-            self._set_offline(error)
-            raise error from exc
-        except TTSUnavailable as exc:
-            self._set_offline(exc)
-            raise
+            raise TTSUnavailable("Qwen TTS가 빈 스트림을 돌려줬습니다") from exc
         except TTSError:
             raise
 

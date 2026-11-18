@@ -43,7 +43,8 @@ class TTSConfig:
     realtime_model: str = "qwen3-tts-flash-realtime"
     voice: str = "Katerina"
     speed: float = 1.2
-    timeout_s: float = 2.0
+    # 국제(싱가포르) 리전 응답 지연을 감안한 값(SCRUM-141).
+    timeout_s: float = 5.0
     secret_key: str = "qwen"
     endpoint: str = (
         "https://dashscope-intl.aliyuncs.com"
