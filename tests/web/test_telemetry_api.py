@@ -883,6 +883,141 @@ def test_telemetry_html_has_three_pane_layout_and_assets() -> None:
         assert token in script, token
 
 
+# ---------------------------------------------------------------------------
+# 7. 실제 게임 녹화 픽스처 end-to-end 스모크(SCRUM-137, 계획 Task 6 Step 3)
+# ---------------------------------------------------------------------------
+
+#: 2026-11-15 스즈카 실전 레이스(recording id 6)의 짧은 연속 구간 픽스처.
+REAL_FIXTURE = (
+    Path(__file__).resolve().parent.parent
+    / "fixtures"
+    / "real"
+    / "recording-6-suzuka-race-snippet.f1rec"
+)
+
+
+def test_telemetry_real_recording_fixture_end_to_end(tmp_path: Path) -> None:
+    """실제 F1 25 녹화 조각으로 open→summary→series→map_frames를 검증한다.
+
+    합성 패킷이 아닌 게임 원본 패킷에서도 인덱스·다운샘플·10Hz 지도 프레임이
+    오류 없이 만들어지는지 확인하는 스모크다(설계 5.1, 계획 Task 6 Step 3).
+    """
+    assert REAL_FIXTURE.is_file(), REAL_FIXTURE
+    app, db_path, store, manager = _build_router_app(tmp_path)
+    recording_id = _add_recording(
+        db_path,
+        local_path=REAL_FIXTURE,
+        duration_ms=2_500,
+        packet_count=100,
+    )
+
+    with TestClient(app) as client:
+        opened = client.post(
+            "/api/replay/telemetry/open", json={"recording_id": recording_id}
+        )
+        assert opened.status_code == 200, opened.text
+        _wait_ready(client, store, recording_id)
+
+        summary = client.get(
+            "/api/replay/telemetry/summary",
+            params={"recording_id": recording_id},
+        )
+        assert summary.status_code == 200, summary.text
+        payload = summary.json()
+        assert payload["status"] == "ready"
+        assert len(payload["catalog"]) == 5
+        assert len(payload["participants"]) == 22
+        assert payload["track"]["outline"]
+        assert payload["duration_ms"] > 0
+        assert set(payload["markers"]) == {
+            "radio",
+            "events",
+            "intervals",
+            "laps",
+        }
+
+        duration = payload["duration_ms"]
+        series = client.get(
+            "/api/replay/telemetry/series",
+            params={
+                "recording_id": recording_id,
+                "metrics": "speed,throttle,brake,gear,g_lat,gap_front_s",
+                "from_ms": 0,
+                "to_ms": duration,
+                "max_points": 2_000,
+            },
+        )
+        assert series.status_code == 200, series.text
+        body = series.json()
+        # 내 차 CarTelemetry·Motion·LapData 시계열이 실제 패킷에서 나온다.
+        assert body["series"]["speed"]["series"]
+        assert body["series"]["g_lat"]["series"]
+        assert body["series"]["gear"]["step"] is True
+        times = [point[0] for point in body["series"]["speed"]["series"]]
+        assert times == sorted(times)
+        assert "NaN" not in series.text
+
+        single = client.get(
+            "/api/replay/telemetry/map_frames",
+            params={"recording_id": recording_id, "t_ms": duration // 2},
+        )
+        assert single.status_code == 200, single.text
+        assert single.json()["frame"]["cars"]
+
+        ranged = client.get(
+            "/api/replay/telemetry/map_frames",
+            params={
+                "recording_id": recording_id,
+                "from_ms": 0,
+                "to_ms": duration,
+            },
+        )
+        assert ranged.status_code == 200, ranged.text
+        assert ranged.json()["frames"]
+
+        # 분석 API를 모두 쓴 뒤에도 전역 ReplayManager 재생은 꺼져 있다.
+        assert manager.active_recording_id is None
+        assert client.get("/api/replay/state").json()["replay"]["active"] is False
+
+
+def test_telemetry_script_has_task6_chart_interactions() -> None:
+    """Task 6의 다중 축·점선·마커·줌/팬·호버/Δ 연동이 정적 자산에 있다.
+
+    브라우저 JS를 실행하지 않는 테스트라, 서버가 서빙하는 스크립트에 계획
+    Task 6의 핵심 동작(시리즈 재조회, 비교 점선, 비공개 안내, 미리보기,
+    자동 따라가기, 포인터 상호작용)이 실제로 들어 있는지 문자열로 확인한다.
+    """
+    client = TestClient(web_app.create_app(StateStore()))
+    response = client.get("/static/telemetry.js")
+    assert response.status_code == 200
+    script = response.text
+    for token in (
+        "/api/replay/telemetry/series",
+        "/api/replay/telemetry/map_frames",
+        "[5, 4]",
+        "compare_restricted",
+        "비공개 텔레메트리",
+        "미리보기",
+        "setPreviewLabel",
+        "followCursor",
+        "resetZoom",
+        "pointerdown",
+        "pointermove",
+        "wheel",
+        "dblclick",
+        "shiftKey",
+        "CLICK_DRAG_PX",
+        "SERIES_DEBOUNCE_MS",
+        "PREVIEW_DEBOUNCE_MS",
+        "Δ",
+    ):
+        assert token in script, token
+
+    css = client.get("/static/telemetry.css").text
+    assert "cursor: crosshair" in css
+    assert ".chart-wrap.panning" in css
+
+
 async def test_backup_worker_prune_keeps_open_telemetry_recording(
     tmp_path: Path,
 ) -> None:
