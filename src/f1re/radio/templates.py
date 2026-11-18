@@ -42,6 +42,12 @@ SCRUM-130 틀
   지점 기반 공격·방어 전략 무전. 지점 이름과 코너 묶음(``16번, 17번``)은 규칙
   엔진(`overtake/strategy.py`)이 만들어 슬롯으로 넘긴다. LLM을 쓸 수 없을 때의
   폴백 문장이기도 하다.
+
+SCRUM-145 틀
+------------
+- ``overtake.success_*``: 추월 성공을 1.5초 안정 확인한 뒤 추월 직전 자료에서
+  고른 기여 요인 하나를 칭찬한다. 요인은 DRS/ERS, 코너 탈출 속도, 늦은
+  브레이킹, 스로틀 우위, 깔끔한 추월이다. 슬롯 없는 문장은 미리 합성한다.
 """
 
 from __future__ import annotations
@@ -1154,6 +1160,145 @@ _TEMPLATES: tuple[Template, ...] = (
         ),
         note="짧은 시간 안에 2대 이상 추월을 한 무전으로 묶음",
     ),
+    # --- 추월 성공 긍정 코칭 (SCRUM-145) ----------------------------------
+    # 직전 앞차를 넘은 뒤 1.5초 동안 재역전·피트 변동·트랙 이탈·접촉이 없음을
+    # 확인했을 때, 추월 직전 자료에서 고른 기여 요인 하나만 말한다. 슬롯 없는
+    # 틀은 세션 시작 때 미리 합성한다(`PRELOAD_KEYS`).
+    Template(
+        "overtake.success_drs_ers",
+        RadioKind.OVERTAKE,
+        _moods(
+            calm=(
+                "DRS랑 ERS 제대로 썼어. 직선에서 깔끔하게 넘었어.",
+                "DRS에 ERS까지 붙여서 넘었어. 좋았어.",
+            ),
+            warm=(
+                "오~ DRS랑 ERS 타이밍 좋았어~ 직선에서 깔끔하게 넘었어~",
+                "좋아~ DRS에 ERS까지~ 그대로 가~",
+            ),
+            hyped=(
+                "DRS랑 ERS 완벽했어! 직선에서 넘었다! 가자!",
+                "DRS에 ERS까지! 그 속도야! 계속 밀어!",
+            ),
+        ),
+        note="추월 성공: DRS·ERS 활용",
+    ),
+    Template(
+        "overtake.success_drs",
+        RadioKind.OVERTAKE,
+        _moods(
+            calm=(
+                "DRS 잘 썼어. 직선에서 붙어서 넘었어.",
+                "DRS 열린 틈에 바로 붙었어. 좋았어.",
+            ),
+            warm=(
+                "오~ DRS 타이밍 좋았어~ 그대로 가~",
+                "좋아~ DRS 잘 썼어~ 이대로 밀어~",
+            ),
+            hyped=(
+                "DRS 완벽했어! 직선에서 넘었다! 가자!",
+                "DRS 켜고 바로 넘었어! 좋아!",
+            ),
+        ),
+        note="추월 성공: DRS 활용",
+    ),
+    Template(
+        "overtake.success_ers",
+        RadioKind.OVERTAKE,
+        _moods(
+            calm=(
+                "ERS 타이밍 좋았어. 직선에서 밀어붙여 넘었어.",
+                "ERS 제대로 터뜨렸어. 그 힘으로 넘었어.",
+            ),
+            warm=(
+                "오~ ERS 타이밍 좋았어~ 그 힘이야~",
+                "좋아~ ERS 잘 썼어~ 이대로 가~",
+            ),
+            hyped=(
+                "ERS 완벽했어! 직선에서 밀어붙여 넘었다! 가자!",
+                "ERS 제대로! 그 힘으로 넘었어! 계속!",
+            ),
+        ),
+        note="추월 성공: ERS 활용",
+    ),
+    Template(
+        "overtake.success_exit",
+        RadioKind.OVERTAKE,
+        _moods(
+            calm=(
+                "{corner_label} 탈출에서 {kmh}킬로 더 빨랐어. "
+                "그 흐름으로 넘었어.",
+                "{corner_label} 탈출 속도 우위야. {kmh}킬로 더 붙었어.",
+            ),
+            warm=(
+                "오~ {corner_label} 탈출 좋았어~ {kmh}킬로 우위야~",
+                "좋아~ {corner_label} 탈출에서 {kmh}킬로 더! 그렇지~",
+            ),
+            hyped=(
+                "{corner_label} 탈출 완벽했어! {kmh}킬로 우위! 이 기세로!",
+                "{corner_label}에서 {kmh}킬로 더! 그 속도로 넘었다! 가자!",
+            ),
+        ),
+        note="추월 성공: 직전 코너 탈출 속도 우위",
+    ),
+    Template(
+        "overtake.success_brake",
+        RadioKind.OVERTAKE,
+        _moods(
+            calm=(
+                "{corner_label} 브레이크 {meters}미터 늦게 잡았어. "
+                "그게 추월이 됐어.",
+                "{corner_label}에서 {meters}미터 늦게 브레이크! 좋은 판단이야.",
+            ),
+            warm=(
+                "오~ {corner_label} 브레이크 {meters}미터 늦게! 좋았어~",
+                "좋아~ {corner_label} {meters}미터 늦게 잡았어~ 멋졌어~",
+            ),
+            hyped=(
+                "{corner_label} 브레이크 {meters}미터 늦게! 멋졌어! 계속 가!",
+                "{corner_label}에서 {meters}미터 늦게! 그 브레이크야!",
+            ),
+        ),
+        note="추월 성공: 늦은 브레이킹",
+    ),
+    Template(
+        "overtake.success_throttle",
+        RadioKind.OVERTAKE,
+        _moods(
+            calm=(
+                "탈출 스로틀을 {percent}퍼센트 더 밟았어. 그 힘으로 넘었어.",
+                "스로틀 우위 {percent}퍼센트야. 그대로 밀어붙였어.",
+            ),
+            warm=(
+                "오~ 스로틀 {percent}퍼센트 더~ 좋았어~",
+                "좋아~ 탈출 스로틀 {percent}퍼센트 우위~",
+            ),
+            hyped=(
+                "스로틀 {percent}퍼센트 더! 그 힘으로 넘었다! 가자!",
+                "탈출 스로틀 완벽했어! {percent}퍼센트 우위!",
+            ),
+        ),
+        note="추월 성공: 스로틀 우위",
+    ),
+    Template(
+        "overtake.success_clean",
+        RadioKind.OVERTAKE,
+        _moods(
+            calm=(
+                "깔끔한 추월이야. 그대로 밀어.",
+                "깔끔하게 넘었어. 좋은 추월이야.",
+            ),
+            warm=(
+                "오~ 깔끔하게 넘었어~ 이대로 가~",
+                "좋아~ 깔끔한 추월이야~ 그대로~",
+            ),
+            hyped=(
+                "깔끔한 추월! 좋아! 계속 밀어!",
+                "깔끔하게 넘었다! 이 기세로 가자!",
+            ),
+        ),
+        note="추월 성공: 깔끔한 추월(사고 없음·속도 우위)",
+    ),
     # --- 개선 알림 --------------------------------------------------------
     Template(
         "improvement.corner_improved",
@@ -1494,6 +1639,11 @@ PRELOAD_KEYS: tuple[str, ...] = (
     "box.box_box",
     "improvement.fuel_lift_stop",
     "overtake.reaction",
+    # 추월 성공 긍정 코칭(SCRUM-145): 슬롯 없는 기여 요인 문장.
+    "overtake.success_drs_ers",
+    "overtake.success_drs",
+    "overtake.success_ers",
+    "overtake.success_clean",
     "praise.personal_best_short",
     "praise.clean_lap",
     "praise.clean_lap_short",
