@@ -661,9 +661,13 @@ class BackupWorker:
             SELECT * FROM session_recordings
             WHERE session_uid = ? AND segment = ?
             """,
-            (session_uid, segment),
+            (db.encode_session_uid(session_uid), segment),
         ).fetchone()
-        return None if row is None else dict(row)
+        if row is None:
+            return None
+        data = dict(row)
+        data["session_uid"] = db.decode_session_uid(data["session_uid"])
+        return data
 
     # --- 공용 도우미 -------------------------------------------------------
 

@@ -462,3 +462,55 @@ def test_disabled_recording_does_nothing(
     assert list_recordings(conn) == []
     assert queue.jobs == []
     assert manager.check_inactivity(10**18) is False
+
+
+# ---------------------------------------------------------------------------
+# uint64 세션 UID(SCRUM-140)
+
+
+@pytest.mark.parametrize(
+    "uid",
+    [0xF000_0000_0000_0001, 0xFFFF_FFFF_FFFF_FFFF],
+    ids=["high", "max"],
+)
+def test_high_uint64_session_uid_records_and_resumes_segment(
+    tmp_path: Path, conn: sqlite3.Connection, uid: int
+) -> None:
+    """2**63 이상 UID도 파일명·마감 작업은 uint64, DB는 int64로 일관되게 쓴다."""
+    root = tmp_path / "recordings"
+    queue = _FakeQueue()
+    clock = _Clock(1_000_000_000)
+    manager = SessionRecordingManager(
+        conn,
+        _config(root, inactivity_timeout_s=600.0),
+        queue,
+        clock_ns=clock,
+    )
+
+    manager.on_packet_bytes(clock.now, b"first", _packet(uid))
+    # 파일 이름은 원래의 양수 uint64 그대로다.
+    assert manager.active_path == _active_path(root, f"{uid}_s1.f1rec")
+    [row] = list_recordings(conn)
+    assert row["session_uid"] == uid
+    raw = conn.execute("SELECT session_uid FROM session_recordings").fetchone()[0]
+    assert raw == uid - 2**64
+
+    # 무수신 타임아웃으로 마감한 뒤 같은 UID가 재개되면 2부로 이어 받는다.
+    clock.now += 600 * 1_000_000_000
+    assert manager.check_inactivity() is True
+    [job] = queue.jobs
+    assert job.session_uid == uid
+    assert job.active_path == _active_path(root, f"{uid}_s1.f1rec")
+
+    clock.now += 1_000_000_000
+    manager.on_packet_bytes(clock.now, b"resumed", _packet(uid))
+    assert manager.active_path == _active_path(root, f"{uid}_s2.f1rec")
+    assert [
+        (row["session_uid"], row["segment"]) for row in list_recordings(conn)
+    ] == [(uid, 2), (uid, 1)]
+
+    manager.close_active("engine_off")
+    assert [job.session_uid for job in queue.jobs] == [uid, uid]
+    assert list(iter_recording(_active_path(root, f"{uid}_s2.f1rec"))) == [
+        (clock.now, b"resumed")
+    ]
