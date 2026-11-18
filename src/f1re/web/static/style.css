@@ -530,6 +530,46 @@ body {
   display: none;
 }
 
+/*
+  지도 우측 상단 배지 줄(SCRUM-139). 내 차 순위(P1 등)를 깃발 배지 옆에
+  나란히 둔다. 자리 계산은 이 줄이 맡고, 배지들은 흐름대로 늘어선다.
+*/
+.map-badges {
+  position: absolute;
+  top: 10px;
+  right: 12px;
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  pointer-events: none;
+}
+
+/* 기존 깃발 배지는 배지 줄 안에서만 흐름 배치로 바꾼다(다른 화면은 그대로). */
+.map-badges .map-flag {
+  position: static;
+  top: auto;
+  right: auto;
+}
+
+/*
+  내 차 현재 순위 배지(SCRUM-139). 깃발 배지와 같은 반투명 어두운 배경과
+  둥근 테두리를 쓰고, 글자를 더 굵게 해 지도 위에서도 잘 읽히게 한다.
+*/
+.map-position {
+  padding: 3px 10px;
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  color: var(--text);
+  background: rgba(11, 14, 19, 0.72);
+  border: 1px solid #3a4658;
+  border-radius: 999px;
+}
+
+.map-position[hidden] {
+  display: none;
+}
+
 .map-flag {
   position: absolute;
   top: 10px;

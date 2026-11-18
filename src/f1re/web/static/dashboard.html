@@ -265,7 +265,15 @@
         <div class="map-wrap" id="track-map">
           <canvas id="track-canvas" aria-label="서킷 지도"></canvas>
           <p class="map-waiting">지도 없음 · 첫 유효 랩의 위치를 기다리는 중</p>
-          <span class="map-flag" hidden></span>
+          <!--
+            지도 우측 상단 배지 줄(SCRUM-139). 내 차 현재 순위(P1 등)를
+            깃발 배지(SC·VSC·적기) 왼쪽에 나란히 둔다. 순위가 없는 세션
+            (타임 트라이얼 등)이나 초기 대기 상태에서는 둘 다 숨긴다.
+          -->
+          <div class="map-badges">
+            <span class="map-position" hidden></span>
+            <span class="map-flag" hidden></span>
+          </div>
         </div>
         <div class="map-info" id="map-info"></div>
       </section>

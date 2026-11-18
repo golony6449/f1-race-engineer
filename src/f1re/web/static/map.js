@@ -11,6 +11,8 @@
  * - SC·VSC·적기면 트랙 선 색을 바꾼다.
  * - 깃발 줄(SCRUM-80)은 `/ws/state`의 `flags`만 보고 켜고 끈다. 옐로 구역
  *   (`yellow_zones`, 랩 거리 비율)은 트랙 선 위에 노랗게 덧칠한다.
+ * - 지도 우측 상단에 내 차 현재 순위를 `P1`처럼 배지로 보여 준다(SCRUM-139).
+ *   순위가 없는 세션(타임 트라이얼 등)에서는 숨긴다.
  * - 서킷 모양이 캔버스에 가장 크게 들어가도록 윤곽을 0~179도에서 돌려 본
  *   뒤 각도·배율·이동을 하나의 변환으로 만든다. 윤곽·차 점·코너·옐로 구역·
  *   클릭 판정이 모두 이 변환을 쓴다(코너 번호 글자는 똑바로 그린다).
@@ -65,6 +67,8 @@ export class TrackMapView {
     this.canvas = root ? root.querySelector("canvas") : null;
     this.waiting = root ? root.querySelector(".map-waiting") : null;
     this.badge = root ? root.querySelector(".map-flag") : null;
+    // 내 차 현재 순위 배지(SCRUM-139). 다른 화면처럼 요소가 없으면 건너뛴다.
+    this.positionBadge = root ? root.querySelector(".map-position") : null;
     this.info = root && root.parentElement
       ? root.parentElement.querySelector(".map-info")
       : null;
@@ -100,11 +104,15 @@ export class TrackMapView {
       this.resizeObserver.observe(this.root);
     }
     this._renderInfo(null);
+    // 차량이 아직 없으므로 순위 배지는 숨김 상태로 시작한다(SCRUM-139).
+    this._updatePosition();
   }
 
   /** `/api/track` 응답. 윤곽·코너·팀 색을 한 번만 받는다. */
   setTrack(track) {
     this.track = track || null;
+    // 지도가 초기화되면(다시 보기 진입·복귀) 이전 세션의 차와 순위도 지운다.
+    if (!this.track) this.cars = [];
     this.teamColors = (track && track.team_colors) || {};
     if (track && track.flag) this.flag = track.flag;
     // 윤곽이 새로 오면 같은 서킷 ID라도 각도를 다시 고른다.
@@ -112,6 +120,7 @@ export class TrackMapView {
     this.selectedCorner = null;
     this._renderInfo(null);
     this._updateBadge();
+    this._updatePosition();
     this._draw();
     this._loadLiftCoast();
     if (this.liftTimer === null) {
@@ -153,7 +162,15 @@ export class TrackMapView {
     this.stale = Boolean(payload.connection && payload.connection.stale);
     if (this.root) this.root.classList.toggle("stale", this.stale);
     this._updateBadge();
+    this._updatePosition();
     this._renderFlags();
+    this._draw();
+  }
+
+  /** 지도를 빈 상태로 되돌린다. 내 차 순위 배지도 함께 숨긴다(SCRUM-139). */
+  clear() {
+    this.cars = [];
+    this._updatePosition();
     this._draw();
   }
 
@@ -467,6 +484,21 @@ export class TrackMapView {
     this.badge.hidden = !style.label;
     this.badge.style.color = style.line;
     this.badge.style.borderColor = style.line;
+  }
+
+  /**
+   * 내 차 현재 순위 배지(SCRUM-139). `/ws/state`의 `cars`에서 `is_player`
+   * 차량의 `position`을 읽어 `P1`·`P4`처럼 보여 준다. 타임 트라이얼처럼
+   * 순위가 없는 세션(미존재·0·음수·비정수)에서는 배지를 숨긴다.
+   */
+  _updatePosition() {
+    if (!this.positionBadge) return;
+    const cars = Array.isArray(this.cars) ? this.cars : [];
+    const player = cars.find((car) => car && car.is_player === true);
+    const position = player ? player.position : null;
+    const hasPosition = Number.isInteger(position) && position >= 1;
+    this.positionBadge.textContent = hasPosition ? `P${position}` : "";
+    this.positionBadge.hidden = !hasPosition;
   }
 
   /** 깃발 줄 다섯 칸을 서버가 준 `flags` 값으로 켜고 끈다. */
