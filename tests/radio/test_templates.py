@@ -8,6 +8,7 @@ from f1re.radio.queue import RadioKind
 from f1re.radio.templates import (
     AMOUNT_SLOTS,
     PRELOAD_KEYS,
+    PRELOAD_WITH_SLOTS,
     TEMPLATES,
     WHERE_SLOTS,
     MissingSlot,
@@ -230,8 +231,16 @@ def test_prefetch_phrases_include_corners_and_fixed_warnings() -> None:
         )
     for key in PRELOAD_KEYS:
         expected.extend(all_phrases(key, **_sample_for(key)))
+    for key, slots in PRELOAD_WITH_SLOTS:
+        expected.extend(all_phrases(key, **slots))
     assert phrases == list(dict.fromkeys(expected))
     assert len(phrases) == len(set(phrases))
+    # 자주 나가는 추월 리액션·칭찬 고정 문구가 미리 만들기 목록에 있다.
+    assert render("overtake.reaction") in phrases
+    assert (
+        render("overtake.reaction_bundle", count=2) in phrases
+    )
+    assert render("praise.clean_lap") in phrases
 
 
 def test_templates_by_category_splits_kinds() -> None:
