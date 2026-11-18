@@ -435,6 +435,53 @@ def test_map_shows_player_position_badge_beside_flag_badge() -> None:
     assert "if (!this.track) this.cars = [];" in script
 
 
+def test_dashboard_links_to_telemetry_analysis() -> None:
+    """SCRUM-136: 대시보드 상단·엔진 OFF 안내·녹화 목록에서 /telemetry로 간다."""
+    client = _client()
+    html = client.get("/").text
+
+    # 세 진입점 모두 같은 분석 화면을 가리킨다.
+    assert html.count('href="/telemetry"') >= 3
+    assert html.count("텔레메트리 분석") >= 3
+    # 엔진 OFF 안내에서도 지난 세션을 분석할 수 있다.
+    off = re.search(
+        r'<section class="engine-off" id="engine-off">(.*?)</section>',
+        html,
+        re.S,
+    )
+    assert off, "엔진 OFF 안내를 찾지 못했습니다"
+    assert 'href="/telemetry"' in off.group(1)
+    # 녹화 목록 모달 머리 줄에도 진입 링크가 있다.
+    modal = re.search(
+        r'<div class="recordings-modal" id="recordings-modal".*?</div>\s*</div>',
+        html,
+        re.S,
+    )
+    assert modal, "녹화 목록 모달을 찾지 못했습니다"
+    assert 'href="/telemetry"' in modal.group(0)
+
+    # 녹화 행마다 해당 recording_id로 바로 여는 "그래프 분석" 링크를 만든다.
+    script = client.get("/static/dashboard.js").text
+    assert '"/telemetry?id=' in script or "`/telemetry?id=" in script
+    assert "recording-analyze" in script
+    assert "그래프 분석" in script
+    assert 'end_reason !== "recording"' in script
+
+    css = client.get("/static/style.css").text
+    assert ".recording-analyze" in css
+    assert ".recordings-analyze" in css
+    assert ".engine-off-actions" in css
+
+    # TrackMapView는 분석 화면에서 lift-coast 폴링을 건너뛰고 비교 차량·호버
+    # 미리보기 배지를 지원한다(기존 `/` 동작은 기본값으로 유지).
+    map_script = client.get("/static/map.js").text
+    assert "skipLiftCoast = false" in map_script
+    assert "setCompareCar(carIndex)" in map_script
+    assert "setPreviewLabel(text)" in map_script
+    assert "_stopLiftCoast" in map_script
+    assert "map-preview" in map_script
+
+
 def test_radio_page_shows_engine_off_notice() -> None:
     """SCRUM-82: 무전 페이지도 엔진이 꺼져 있으면 '꺼짐'을 안내한다."""
     client = _client()

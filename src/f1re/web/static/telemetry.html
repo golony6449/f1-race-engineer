@@ -1,0 +1,207 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>텔레메트리 분석 · F1 레이스 엔지니어</title>
+    <!--
+      다시 보기 텔레메트리 분석 화면(SCRUM-136, 설계 5.2).
+
+      대시보드(`/`)와 무전 페이지(`/radio`)와 나란히 동작하는 3단 분석 화면이다.
+      녹화 선택·비교 차량·재생 컨트롤은 이 페이지의 로컬 `ReplayClock`만
+      움직이며, 전역 `ReplayManager` 재생 상태와 완전히 독립적이다. 메트릭
+      라벨·단위·그룹은 모두 서버 `/api/replay/telemetry/summary`의 `catalog`를
+      그대로 쓴다. 외부 차트 라이브러리·CDN 없이 순수 Canvas 2D로 그린다.
+    -->
+    <link rel="stylesheet" href="/static/style.css" />
+    <link rel="stylesheet" href="/static/telemetry.css" />
+  </head>
+  <body class="telemetry-page">
+    <!--
+      상단 컨트롤 바(설계 5.2): 대시보드 복귀 · 녹화 선택 · 비교 차량 선택 ·
+      독립 재생(재생/일시정지, 1x/2x/5x/10x, 시크바, 시각) · 줌 초기화 ·
+      자동 따라가기 · 무전/사건 마커 토글.
+    -->
+    <header class="telemetry-bar">
+      <a class="telemetry-back" href="/">← 대시보드</a>
+      <label class="telemetry-field">
+        <span>녹화</span>
+        <select id="recording-select" aria-label="녹화 선택"></select>
+      </label>
+      <label class="telemetry-field">
+        <span>비교 차량</span>
+        <select id="compare-select" aria-label="비교 차량 선택" disabled>
+          <option value="">없음</option>
+        </select>
+      </label>
+      <div class="telemetry-playback" role="group" aria-label="재생 컨트롤">
+        <button
+          class="play-button"
+          id="play-toggle"
+          type="button"
+          aria-label="재생"
+        >
+          ▶
+        </button>
+        <div
+          class="telemetry-speeds"
+          id="playback-speeds"
+          role="group"
+          aria-label="배속"
+        >
+          <button
+            class="speed-button on"
+            type="button"
+            data-speed="1"
+            aria-pressed="true"
+          >
+            1x
+          </button>
+          <button
+            class="speed-button"
+            type="button"
+            data-speed="2"
+            aria-pressed="false"
+          >
+            2x
+          </button>
+          <button
+            class="speed-button"
+            type="button"
+            data-speed="5"
+            aria-pressed="false"
+          >
+            5x
+          </button>
+          <button
+            class="speed-button"
+            type="button"
+            data-speed="10"
+            aria-pressed="false"
+          >
+            10x
+          </button>
+        </div>
+        <input
+          class="telemetry-seek"
+          id="playback-seek"
+          type="range"
+          min="0"
+          max="0"
+          step="100"
+          value="0"
+          aria-label="재생 위치"
+        />
+        <span class="telemetry-time" id="playback-time">0:00 / 0:00</span>
+        <button class="tool-button" id="zoom-reset" type="button">
+          줌 초기화
+        </button>
+        <button
+          class="tool-button"
+          id="auto-follow"
+          type="button"
+          aria-pressed="false"
+        >
+          자동 따라가기
+        </button>
+        <label class="marker-toggle">
+          <input id="toggle-radio-markers" type="checkbox" checked />
+          무전
+        </label>
+        <label class="marker-toggle">
+          <input id="toggle-event-markers" type="checkbox" checked />
+          사건
+        </label>
+      </div>
+    </header>
+
+    <main class="telemetry-main">
+      <!-- 좌측: 프리셋·Canvas 2D 그래프 / 계층 메트릭 체크박스 -->
+      <div class="telemetry-column">
+        <section class="telemetry-panel chart-panel">
+          <!-- 프리셋 버튼은 요약의 `presets` 정의로 이 자리에 만들어진다. -->
+          <div
+            class="preset-bar"
+            id="preset-bar"
+            role="group"
+            aria-label="프리셋"
+          ></div>
+          <div class="chart-wrap" id="telemetry-chart">
+            <canvas
+              id="telemetry-canvas"
+              aria-label="텔레메트리 시계열 그래프"
+            ></canvas>
+            <!-- 그래프 호버 툴팁 자리(Task 6에서 상호작용을 연결한다). -->
+            <div class="chart-tooltip" id="chart-tooltip" hidden></div>
+            <!-- 비교 차량이 비공개일 때 상단 안내 배지 자리. -->
+            <div class="private-badge" id="private-badge" hidden>
+              비교 차량이 비공개라 CarTelemetry·CarStatus·CarDamage 메트릭
+              비교는 제한됩니다.
+            </div>
+            <!-- 로딩·인덱싱 진행률 오버레이. 준비되면 숨긴다. -->
+            <div class="chart-overlay" id="chart-overlay">
+              <p class="chart-overlay-text" id="chart-overlay-text">
+                녹화를 여는 중…
+              </p>
+              <div class="overlay-progress" id="index-progress-wrap" hidden>
+                <div class="overlay-progress-fill" id="index-progress"></div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!--
+          카테고리 → 항목 2단계 체크박스(설계 5.2-1). 4륜 항목은 한 줄
+          `[전좌][전우][후좌][후우]` 그룹으로 묶고 바퀴별 선택도 허용한다.
+          트리는 서버 `catalog`로 telemetry.js가 만든다.
+        -->
+        <section class="telemetry-panel metric-panel">
+          <div class="metric-head">
+            <h2>메트릭 선택</h2>
+            <span class="metric-count" id="metric-count">0/0</span>
+          </div>
+          <div class="metric-tree" id="metric-tree"></div>
+        </section>
+      </div>
+
+      <!-- 우측: 기존 TrackMapView 서킷 지도 + 코너/시점 요약 -->
+      <aside class="telemetry-column telemetry-side">
+        <section class="telemetry-panel telemetry-map-panel">
+          <div class="map-head">
+            <h2>서킷 지도</h2>
+          </div>
+          <div class="map-wrap" id="telemetry-map">
+            <canvas id="telemetry-map-canvas" aria-label="서킷 지도"></canvas>
+            <p class="map-waiting">지도 없음 · 녹화를 열면 표시합니다</p>
+            <!--
+              지도 우측 상단 배지 줄. 호버 미리보기·내 차 순위(SCRUM-139)·
+              깃발 배지를 한 줄에 둔다. 순위·깃발 배지 자리는 그대로 유지한다.
+            -->
+            <div class="map-badges">
+              <span class="map-preview" hidden></span>
+              <span class="map-position" hidden></span>
+              <span class="map-flag" hidden></span>
+            </div>
+          </div>
+          <div class="map-info" id="telemetry-map-info"></div>
+        </section>
+
+        <section class="telemetry-panel summary-panel">
+          <h2>코너 · 시점 요약</h2>
+          <div class="summary-static" id="summary-static">
+            <p class="summary-hint">녹화를 열면 세션 요약이 표시됩니다.</p>
+          </div>
+          <p class="summary-current" id="summary-current">—</p>
+          <div class="summary-corners" id="summary-corners"></div>
+        </section>
+      </aside>
+    </main>
+
+    <!--
+      map.js를 먼저 참조한다(테스트·문서에서 스크립트 구성을 바로 확인).
+      telemetry.js는 같은 모듈을 import하므로 브라우저는 한 번만 실행한다.
+    -->
+    <script type="module" src="/static/map.js"></script>
+    <script type="module" src="/static/telemetry.js"></script>
+  </body>
+</html>

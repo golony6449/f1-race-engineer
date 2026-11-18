@@ -8,6 +8,10 @@
  *   (Motion 패킷이 없어도 그릴 수 있게).
  * - 팀 색: `/api/track`의 `team_colors`. 모르는 팀은 회색.
  * - 내 차는 흰 테두리, 앞차(추월 대상)는 노란 점선 테두리로 강조한다.
+ * - 비교 차량은 청록 점선 고리와 "비교" 라벨로 강조한다(SCRUM-136).
+ *   `/telemetry`는 `setCompareCar()`로, 나머지 화면은 `render()`의
+ *   `car.is_compare`로 같은 강조를 켠다. 호버 미리보기는 `setPreviewLabel()`이
+ *   지도 우측 상단에 "미리보기 12:34.2" 배지를 보여 준다.
  * - SC·VSC·적기면 트랙 선 색을 바꾼다.
  * - 깃발 줄(SCRUM-80)은 `/ws/state`의 `flags`만 보고 켜고 끈다. 옐로 구역
  *   (`yellow_zones`, 랩 거리 비율)은 트랙 선 위에 노랗게 덧칠한다.
@@ -43,6 +47,11 @@ const ROTATION_LIMIT_DEG = 180;
 const LIFT_COAST_COLOR = "#22d3ee";
 const LIFT_COAST_REFRESH_MS = 15000;
 
+// 비교 차량 강조(SCRUM-136). 리프트 앤 코스트와 같은 청록 계열을 쓰되,
+// 앞차 추월 대상의 노란 점선과 구분되도록 라벨 글자를 함께 그린다.
+const COMPARE_COLOR = "#22d3ee";
+const COMPARE_LABEL = "비교";
+
 const METRIC_LABELS = {
   brake_start_m: "브레이크 지점",
   brake_peak: "최대 브레이크",
@@ -69,6 +78,11 @@ export class TrackMapView {
     this.badge = root ? root.querySelector(".map-flag") : null;
     // 내 차 현재 순위 배지(SCRUM-139). 다른 화면처럼 요소가 없으면 건너뛴다.
     this.positionBadge = root ? root.querySelector(".map-position") : null;
+    // 호버 미리보기 배지(SCRUM-136). `/telemetry`에만 있고 없으면 건너뛴다.
+    this.preview = root ? root.querySelector(".map-preview") : null;
+    this.previewLabel = null;
+    // 비교 차량 인덱스(SCRUM-136). `null`이면 지도 강조를 켜지 않는다.
+    this.compareCarIndex = null;
     this.info = root && root.parentElement
       ? root.parentElement.querySelector(".map-info")
       : null;
@@ -108,8 +122,15 @@ export class TrackMapView {
     this._updatePosition();
   }
 
-  /** `/api/track` 응답. 윤곽·코너·팀 색을 한 번만 받는다. */
-  setTrack(track) {
+  /**
+   * `/api/track` 응답. 윤곽·코너·팀 색을 한 번만 받는다.
+   *
+   * `skipLiftCoast`가 참이면 `/api/lift-coast` 폴링을 하지 않고 기존 타이머도
+   * 정리한다. `/telemetry`는 엔진과 무관한 다시 보기 분석 화면이라 라이브
+   * 추천 구간이 필요 없고, 엔진 OFF에서 503 요청을 반복하지 않아야 한다
+   * (SCRUM-136). 기본값은 거짓이라 기존 `/` 동작은 그대로다.
+   */
+  setTrack(track, { skipLiftCoast = false } = {}) {
     this.track = track || null;
     // 지도가 초기화되면(다시 보기 진입·복귀) 이전 세션의 차와 순위도 지운다.
     if (!this.track) this.cars = [];
@@ -122,13 +143,56 @@ export class TrackMapView {
     this._updateBadge();
     this._updatePosition();
     this._draw();
-    this._loadLiftCoast();
-    if (this.liftTimer === null) {
-      this.liftTimer = window.setInterval(
-        () => this._loadLiftCoast(),
-        LIFT_COAST_REFRESH_MS,
-      );
+    if (skipLiftCoast) {
+      this._stopLiftCoast();
+    } else {
+      this._loadLiftCoast();
+      if (this.liftTimer === null) {
+        this.liftTimer = window.setInterval(
+          () => this._loadLiftCoast(),
+          LIFT_COAST_REFRESH_MS,
+        );
+      }
     }
+  }
+
+  /**
+   * 비교 차량 인덱스를 지정한다(SCRUM-136). 지도에서 그 차를 청록 점선 고리와
+   * "비교" 라벨로 강조한다. `null`이거나 정수가 아니면 강조를 끈다.
+   */
+  setCompareCar(carIndex) {
+    const number =
+      carIndex === null || carIndex === undefined || carIndex === ""
+        ? NaN
+        : Number(carIndex);
+    this.compareCarIndex = Number.isInteger(number) ? number : null;
+    this._draw();
+  }
+
+  /**
+   * 미리보기 배지 문구를 정한다(SCRUM-136). 그래프 호버 시 `"미리보기 12:34.2"`
+   * 같은 문구를 지도 우측 상단에 보여 주고, `null`이면 배지를 숨긴다.
+   */
+  setPreviewLabel(text) {
+    this.previewLabel =
+      text === null || text === undefined || text === "" ? null : String(text);
+    this._updatePreview();
+  }
+
+  /** 리프트 앤 코스트 폴링 타이머와 추천 구간을 정리한다(SCRUM-136). */
+  _stopLiftCoast() {
+    if (this.liftTimer !== null) {
+      window.clearInterval(this.liftTimer);
+      this.liftTimer = null;
+    }
+    this.liftZones.clear();
+  }
+
+  /** 미리보기 배지 DOM을 현재 문구에 맞춘다(SCRUM-136). */
+  _updatePreview() {
+    if (!this.preview) return;
+    this.preview.textContent = this.previewLabel || "";
+    this.preview.hidden = !this.previewLabel;
   }
 
   /** 리프트 앤 코스트 추천 구간. 서버가 고른 구간만 지도에 강조한다. */
@@ -161,6 +225,22 @@ export class TrackMapView {
         : [];
     this.stale = Boolean(payload.connection && payload.connection.stale);
     if (this.root) this.root.classList.toggle("stale", this.stale);
+    // 호버 미리보기 문구는 서버 상태가 아니라 화면이 직접 넣는 값이다.
+    // `preview_label`(서버/프런트 공통 snake_case)과 `previewLabel`을 모두 받는다.
+    if (
+      payload.preview_label !== undefined ||
+      payload.previewLabel !== undefined
+    ) {
+      const label =
+        payload.preview_label !== undefined
+          ? payload.preview_label
+          : payload.previewLabel;
+      this.previewLabel =
+        label === null || label === undefined || label === ""
+          ? null
+          : String(label);
+      this._updatePreview();
+    }
     this._updateBadge();
     this._updatePosition();
     this._renderFlags();
@@ -331,6 +411,11 @@ export class TrackMapView {
       if (!Number.isFinite(car.x) || !Number.isFinite(car.z)) continue;
       const [x, y] = this._toCanvas(fit, car.x, car.z);
       const color = this.teamColors[String(car.team_id)] || FALLBACK_TEAM_COLOR;
+      // 비교 차량 강조(SCRUM-136): 인덱스로 지정했거나 페이로드가 표시한다.
+      const isCompare =
+        car.is_compare === true ||
+        (this.compareCarIndex !== null &&
+          Number(car.car) === this.compareCarIndex);
 
       if (car.is_target) {
         ctx.save();
@@ -357,6 +442,22 @@ export class TrackMapView {
         ctx.strokeStyle = "#ffffff";
         ctx.lineWidth = 2;
         ctx.stroke();
+      }
+
+      if (isCompare) {
+        // 내 차 흰 테두리·앞차 노란 점선과 겹쳐도 구분되게 점선 고리를 하나 더
+        // 그리고, 어떤 차를 비교 중인지 글자로도 남긴다.
+        ctx.save();
+        ctx.beginPath();
+        ctx.arc(x, y, 10, 0, Math.PI * 2);
+        ctx.setLineDash([4, 3]);
+        ctx.strokeStyle = COMPARE_COLOR;
+        ctx.lineWidth = 2;
+        ctx.stroke();
+        ctx.font = "700 10px system-ui, sans-serif";
+        ctx.fillStyle = COMPARE_COLOR;
+        ctx.fillText(COMPARE_LABEL, x + 11, y - 8);
+        ctx.restore();
       }
     }
     ctx.restore();

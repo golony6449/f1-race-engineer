@@ -485,6 +485,27 @@ function recordingItem(recording, splitSession) {
   play.addEventListener("click", () => startReplay(recording, play));
   actions.append(play);
 
+  // 그래프 분석(SCRUM-136, 설계 5.2). `/telemetry?id=<id>`로 바로 연다.
+  // 다시 보기와 같은 기준(파일이 있고 녹화가 끝났는지)을 쓴다. 녹화 중이면
+  // 분석 API가 409로 답하므로 링크 대신 흐린 글자로 이유를 보여 준다.
+  const analyzable = downloadable && recording.end_reason !== "recording";
+  if (analyzable) {
+    const analyze = document.createElement("a");
+    analyze.className = "recording-analyze";
+    analyze.href = `/telemetry?id=${encodeURIComponent(recording.id)}`;
+    analyze.textContent = "그래프 분석";
+    actions.append(analyze);
+  } else {
+    const analyze = document.createElement("span");
+    analyze.className = "recording-analyze disabled";
+    analyze.textContent = "그래프 분석 불가";
+    analyze.title =
+      recording.end_reason === "recording"
+        ? "아직 녹화가 끝나지 않은 세션입니다"
+        : "로컬 파일도 클라우드 백업도 없습니다";
+    actions.append(analyze);
+  }
+
   item.append(actions);
   return item;
 }
