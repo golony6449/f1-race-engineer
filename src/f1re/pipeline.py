@@ -28,6 +28,11 @@
 - **추월 리액션**(SCRUM-125): Event 패킷의 `OVTK`에서 내가 넘긴 사건만 모아,
   레이스 2랩 이후·SC/피트가 아닐 때 `OvertakeReactionTracker`가 짧게 반응한다.
   10초 창 안 2대 이상이면 "한 번에 N대" 한 건으로 묶는다.
+- **추월 성공 긍정 코칭**(SCRUM-145): `OvertakeAdvisor`가 직전 앞차가 뒤로 간 뒤
+  1.5초 동안 재역전·피트 변동·트랙 이탈·접촉이 없음을 확인하면, 추월 직전
+  DRS/ERS·코너 탈출 속도·늦은 브레이킹·스로틀 우위를 비교해 근거가 있는 요인
+  하나만 짧게 칭찬한다. Car Telemetry 본문을 스냅샷에 넘겨 내 차와 앞차의
+  스로틀·속도를 비교한다.
 - **무전**: 세 모듈 모두 `RadioQueue`를 직접 받아 `push()`한다(설계 6.7의
   우선순위·끄기 규칙은 큐가 맡는다).
 - **세션**: Session 패킷에서 트랙·세션 종류·날씨를 읽어 `load_track`(없으면
@@ -213,6 +218,8 @@ class RacePipeline:
         self._latest_session: dict[str, Any] | None = None
         self._latest_lap_body: dict[str, Any] | None = None
         self._latest_status_body: dict[str, Any] | None = None
+        # 추월 성공 기여 요인 비교(SCRUM-145): 내 차와 앞차의 속도·스로틀.
+        self._latest_telemetry_body: dict[str, Any] | None = None
         self._player_lap: dict[str, Any] | None = None
         self._player_status: dict[str, Any] | None = None
         self._player_motion: dict[str, Any] | None = None
@@ -399,6 +406,7 @@ class RacePipeline:
         self._latest_session = None
         self._latest_lap_body = None
         self._latest_status_body = None
+        self._latest_telemetry_body = None
         self._player_lap = None
         self._player_status = None
         self._player_motion = None
@@ -851,6 +859,9 @@ class RacePipeline:
         return True
 
     def _on_car_telemetry(self, body: dict[str, Any], recv_ns: int) -> None:
+        # 추월 성공 기여 요인 비교에 쓸 내 차·앞차 텔레메트리를 남긴다(SCRUM-145).
+        # 코치가 아직 만들어지지 않았어도 버리지 않는다.
+        self._latest_telemetry_body = body
         coach = self._coach
         lift = self._lift_coach
         if coach is None and lift is None:
@@ -1252,6 +1263,8 @@ class RacePipeline:
                 "session": self._latest_session or {},
                 "lap_data": self._latest_lap_body,
                 "car_status": self._latest_status_body or {},
+                # 추월 직전 스로틀·속도 비교(SCRUM-145).
+                "car_telemetry": self._latest_telemetry_body or {},
             },
         }
         traces = {

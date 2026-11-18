@@ -793,6 +793,37 @@ def _race_lap_data_body(
     return {"lap_data": entries}
 
 
+def _race_telemetry_body(
+    *,
+    player_speed: float = 260.0,
+    player_throttle: float = 1.0,
+    ahead_speed: float = 250.0,
+    ahead_throttle: float = 0.5,
+) -> dict[str, Any]:
+    """레이스 추월 직전 Car Telemetry(내 차 0번, 앞차 1번)."""
+    entries: list[dict[str, Any]] = [
+        {"speed": 0.0, "throttle": 0.0} for _ in range(22)
+    ]
+    entries[0] = {
+        "speed": player_speed,
+        "throttle": player_throttle,
+        "brake": 0.0,
+        "steer": 0.0,
+        "gear": 7,
+        "surface_type": [0, 0, 0, 0],
+    }
+    entries[1] = {"speed": ahead_speed, "throttle": ahead_throttle}
+    return {"car_telemetry_data": entries}
+
+
+def _success_messages(radio: _Radio) -> list[Any]:
+    return [
+        message
+        for message in radio.queue.pending()
+        if message.evidence.get("overtake_success")
+    ]
+
+
 def _race_pipeline(
     clock: _Clock,
     radio: _Radio,
@@ -1014,5 +1045,93 @@ async def test_pipeline_llm_failure_falls_back_to_template() -> None:
         assert messages[0].text == stub.calls[0]["fallback_text"]
         assert messages[0].evidence["llm_fallback_reason"] == FALLBACK_TIMEOUT
         assert "카시오 시케인" in messages[0].text
+    finally:
+        await pipeline.aclose()
+
+
+# ---------------------------------------------------------------------------
+# 추월 성공 긍정 코칭(SCRUM-145)
+
+
+async def test_pipeline_praises_successful_overtake_with_telemetry_evidence() -> None:
+    """레이스에서 추월이 확인되면 직전 스로틀 우위를 근거로 한 번 칭찬한다."""
+    clock = _Clock()
+    radio = _Radio(clock)
+    pipeline = _race_pipeline(clock, radio)
+    await pipeline.start()
+    try:
+        # 추월 직전: 1번 차가 0.6초 앞이고, 내 스로틀이 더 높다.
+        pipeline.on_packet(
+            _packet(PacketId.CAR_TELEMETRY, _race_telemetry_body()), clock()
+        )
+        pipeline.on_packet(
+            _packet(PacketId.LAP_DATA, _race_lap_data_body(gap_ahead_s=0.6)),
+            clock(),
+        )
+        pipeline._evaluate_overtake()
+        clock.advance(0.2)
+        pipeline.on_packet(
+            _packet(PacketId.LAP_DATA, _race_lap_data_body(gap_ahead_s=0.55)),
+            clock(),
+        )
+        pipeline._evaluate_overtake()
+
+        # 1번 차가 내 뒤로 갔다(추월).
+        passed = _race_lap_data_body(gap_ahead_s=None)
+        clock.advance(0.2)
+        pipeline.on_packet(_packet(PacketId.LAP_DATA, passed), clock())
+        pipeline._evaluate_overtake()
+        assert _success_messages(radio) == []
+
+        # 1.5초 안정 시간이 지나면 칭찬 무전 1건.
+        for _ in range(2):
+            clock.advance(0.8)
+            pipeline.on_packet(_packet(PacketId.LAP_DATA, passed), clock())
+            pipeline._evaluate_overtake()
+
+        successes = _success_messages(radio)
+        assert len(successes) == 1
+        message = successes[0]
+        assert message.kind == "overtake"
+        assert message.evidence["overtake_success"] == "throttle"
+        assert message.evidence["overtaken_car_index"] == 1
+        assert message.evidence["throttle_advantage_pct"] == pytest.approx(50.0)
+
+        # 추월 1건당 1회: 더 지나도 다시 나가지 않는다.
+        clock.advance(1.0)
+        pipeline.on_packet(_packet(PacketId.LAP_DATA, passed), clock())
+        pipeline._evaluate_overtake()
+        assert len(_success_messages(radio)) == 1
+    finally:
+        await pipeline.aclose()
+
+
+async def test_pipeline_does_not_praise_pit_in_pass() -> None:
+    """추월 대상 차가 피트 레인에 있었던 순위 변동은 칭찬하지 않는다."""
+    clock = _Clock()
+    radio = _Radio(clock)
+    pipeline = _race_pipeline(clock, radio)
+    await pipeline.start()
+    try:
+        # 1번 차가 피트 레인에 들어간 상태로 앞에 있다.
+        pitting = _race_lap_data_body(gap_ahead_s=0.6)
+        pitting["lap_data"][1]["pit_status"] = 1
+        pipeline.on_packet(_packet(PacketId.LAP_DATA, pitting), clock())
+        pipeline._evaluate_overtake()
+        clock.advance(0.2)
+        pipeline.on_packet(_packet(PacketId.LAP_DATA, pitting), clock())
+        pipeline._evaluate_overtake()
+
+        # 피트로 인해 그 차가 내 뒤로 갔다.
+        passed = _race_lap_data_body(gap_ahead_s=None)
+        clock.advance(0.2)
+        pipeline.on_packet(_packet(PacketId.LAP_DATA, passed), clock())
+        pipeline._evaluate_overtake()
+        for _ in range(3):
+            clock.advance(0.8)
+            pipeline.on_packet(_packet(PacketId.LAP_DATA, passed), clock())
+            pipeline._evaluate_overtake()
+
+        assert _success_messages(radio) == []
     finally:
         await pipeline.aclose()
