@@ -19,6 +19,26 @@
   무전을 끄면 `RadioQueue.push`가 거부하므로 결과에도 넣지 않는다.
 - 안전차량(SC)·VSC 중에는 추월이 금지되므로 말하지 않는다.
 
+추월 성공 긍정 코칭(SCRUM-145)
+--------------------------------
+직전 앞차(`ahead_index`)가 내 뒤로 간 것을 감지하면 곧바로 칭찬하지 않는다.
+`SUCCESS_CONFIRM_S`(1.5초) 동안 다음이 모두 유지될 때만 추월 성공으로 본다.
+
+- 그 차가 계속 내 뒤에 있다(재역전 없음).
+- 나와 그 차가 피트 레인·인랩·아웃랩·차고 상태가 아니다. 그 차가 최근
+  `PIT_RECENT_S`(30초) 안에 피트 레인에 있었으면 피트인으로 인한 순위 변동으로
+  보고 말하지 않는다.
+- 트랙 이탈(`driver_status` 5·`current_lap_invalid`)이 없고, 페널티·경고·
+  미처리 페널티·앞날개 손상이 추월 시점보다 늘지 않았다(접촉 없음).
+- 1랩(스타트 혼전)이 아니다(추월 리액션과 같은 규칙).
+
+확인되면 추월 직전 `SUCCESS_EVIDENCE_WINDOW_S`(2초)의 플레이어 상태·텔레메트리와
+최근 완료 랩을 비교해 가장 설득력 있는 기여 요인 하나를 고른다. 요인은
+DRS/ERS 활용, 직전 코너 탈출 속도 우위, 늦은 브레이킹, 스로틀 우위, 깔끔한
+추월(속도 우위) 순으로 점수를 매기며, 문턱을 넘는 근거가 하나도 없으면
+말하지 않는다(억지 칭찬 금지). 무전은 추월 1건당 1회, `overtake` 종류이고
+가이드 선택지의 랩당 횟수(`per_lap`)를 쓰지 않는다.
+
 입력:
 
 - `snapshot`: `StateStore.snapshot()` 그대로. `packets.session`의 세션 종류·트랙·
@@ -42,12 +62,20 @@ from typing import Any
 
 from f1re.coaching.metrics import corner_metrics
 from f1re.config import AppConfig
-from f1re.laps.traces import LapTrace
+from f1re.laps.traces import (
+    DRIVER_IN_LAP,
+    DRIVER_IN_PIT,
+    DRIVER_OFF_TRACK,
+    DRIVER_OUT_LAP,
+    PIT_LANE_STATUSES,
+    LapTrace,
+)
 from f1re.race_distance import remaining_race_laps
 from f1re.radio.queue import RadioKind, RadioMessage, RadioQueue
 from f1re.radio.templates import (
     CLOSE_OVERTAKE_GAP_S,
     VariantRotator,
+    corner_label,
     is_last_laps,
     mood_for,
 )
@@ -68,6 +96,52 @@ ERS_DEPLOY_OVERTAKE = 3
 DRS_TTL_S = 15.0
 SLOW_EXIT_TTL_S = 15.0
 TYRE_WAIT_TTL_S = 120.0
+
+# 추월 성공 긍정 코칭(SCRUM-145). 직전 앞차가 뒤로 간 뒤 이 시간(초) 동안
+# 재역전·피트 변동·트랙 이탈·접촉이 없어야 성공으로 인정한다.
+SUCCESS_CONFIRM_S = 1.5
+# 성공 확인 중 최소 관찰 횟수(10Hz 판단 주기에서 0.2초). 한 번의 늦은 호출만으로
+# 성공을 확정하지 않게 한다.
+SUCCESS_MIN_CHECKS = 2
+# 추월 직전 기여 요인(DRS/ERS·텔레메트리)을 찾는 시간 창(초).
+SUCCESS_EVIDENCE_WINDOW_S = 2.0
+# 성공 무전 유효 시간(초). 추월 직후 짧게만 쓸모가 있다.
+SUCCESS_TTL_S = 6.0
+# 관찰 기록 보관 시간(초).
+SUCCESS_HISTORY_S = 3.0
+# 추월 대상 차가 이 시간(초) 안에 피트 레인에 있었으면 피트인 추월로 본다.
+PIT_RECENT_S = 30.0
+# 코너 탈출 속도 우위로 인정하는 최소 차이(km/h).
+SUCCESS_EXIT_ADVANTAGE_KMH = 5.0
+# 늦은 브레이킹으로 인정하는 최소 차이(m). 내 브레이크 시작이 이만큼 뒤여야 한다.
+SUCCESS_LATE_BRAKE_M = 8.0
+# 스로틀 우위로 인정하는 최소 차이(0~1).
+SUCCESS_THROTTLE_ADVANTAGE = 0.15
+# 깔끔한 추월로 인정하는 최소 속도 우위(km/h).
+SUCCESS_SPEED_ADVANTAGE_KMH = 3.0
+# 추월 지점에서 이 거리(m) 안의 직전 코너를 기여 요인 비교에 쓴다.
+SUCCESS_CORNER_LOOKBACK_M = 400.0
+# ERS 에너지가 이 비율(퍼센트 포인트) 이상 줄면 배포로 본다.
+SUCCESS_ERS_DEPLOY_PCT = 4.0
+# 텔레메트리 비교에 필요한 최소 샘플 수.
+SUCCESS_MIN_TELEMETRY_SAMPLES = 2
+
+# 추월 성공 무전의 기여 요인 → 틀 키. 키는 `overtake.success_<요인>`이다.
+SUCCESS_TEMPLATE_PREFIX = "overtake.success_"
+
+# Lap Data에서 페널티·경고 누적값(늘면 접촉·위반이 있었다고 본다).
+LAP_PENALTY_FIELDS: tuple[str, ...] = (
+    "penalties",
+    "total_warnings",
+    "corner_cutting_warnings",
+    "num_unserved_drive_through_pens",
+    "num_unserved_stop_go_pens",
+)
+# Car Status에서 손상 누적값(%).
+DAMAGE_FIELDS: tuple[str, ...] = (
+    "front_left_wing_damage",
+    "front_right_wing_damage",
+)
 
 # 앞차가 DRS 활성 지점에서 이보다 멀면 아직 "다음 직선"이라고 말하지 않는다.
 DEFAULT_DRS_ACTIVATION_WINDOW_M = 600.0
@@ -160,6 +234,7 @@ class _View:
     safety_car: bool
     player_index: int | None
     entries: tuple[Mapping[str, Any], ...]
+    telemetry: tuple[Mapping[str, Any], ...]
     player_entry: Mapping[str, Any]
     player_status: Mapping[str, Any]
     ahead_index: int | None
@@ -168,6 +243,55 @@ class _View:
     distance: float
     gap_s: float | None
     last_laps: bool
+
+
+@dataclass(frozen=True)
+class _Observation:
+    """추월 직전 판단 재료 한 순간(10Hz).
+
+    `ahead_index`는 그때 내 바로 앞차다. `ahead_speed`·`ahead_throttle`은 그
+    차의 Car Telemetry 값이며, 추월 성공 기여 요인을 비교하는 데 쓴다.
+    """
+
+    now_ns: int
+    ahead_index: int | None
+    gap_s: float | None
+    drs_allowed: int | None
+    ers_mode: int | None
+    ers_energy_j: float | None
+    player_speed: float | None
+    player_throttle: float | None
+    ahead_speed: float | None
+    ahead_throttle: float | None
+
+
+@dataclass
+class _PendingSuccess:
+    """추월을 감지했지만 아직 안정 시간을 확인 중인 건."""
+
+    overtaken_index: int
+    detected_ns: int
+    lap: int | None
+    track_id: int | None
+    session_type: int | None
+    distance: float
+    close_battle: bool
+    last_laps: bool
+    observations: tuple[_Observation, ...]
+    pass_observation: _Observation
+    baselines: dict[str, float | None]
+    checks: int = 0
+
+
+@dataclass(frozen=True)
+class _SuccessFactor:
+    """추월 성공의 핵심 기여 요인 하나."""
+
+    kind: str
+    score: float
+    slots: dict[str, Any]
+    evidence: dict[str, Any]
+    corner: int | None = None
 
 
 class OvertakeAdvisor:
@@ -204,6 +328,13 @@ class OvertakeAdvisor:
         self._exit_cache: dict[int, tuple[LapTrace, dict[int, float]]] = {}
         # 감정 단계(SCRUM-91): 간격 0.5초 이하·마지막 3랩은 격앙, 그 밖은 calm.
         self._variants = VariantRotator()
+        # 추월 성공 긍정 코칭(SCRUM-145): 직전 구간 관찰 기록과 확인 중인 건.
+        self._observations: list[_Observation] = []
+        self._pending_success: _PendingSuccess | None = None
+        # 차 인덱스 → 마지막으로 피트 레인·인랩·아웃랩·차고 상태를 본 시각.
+        # 피트인으로 순위가 바뀐 것을 추월로 칭찬하지 않게 한다.
+        self._pit_seen_ns: dict[int, int] = {}
+        self._pit_stops: dict[int, int] = {}
 
     # --- 조회 -------------------------------------------------------------
 
@@ -232,6 +363,10 @@ class OvertakeAdvisor:
         self._gap_change = None
         self._exit_cache.clear()
         self._variants.reset()
+        self._observations.clear()
+        self._pending_success = None
+        self._pit_seen_ns.clear()
+        self._pit_stops.clear()
 
     # --- 판단 -------------------------------------------------------------
 
@@ -251,6 +386,8 @@ class OvertakeAdvisor:
         if view.player_index is None or view.lap is None:
             self._ahead_index = view.ahead_index
             self._active = False
+            self._pending_success = None
+            self._observations.clear()
             return []
 
         # 랩이 바뀌면 그 랩에 말할 수 있는 추월 무전 횟수를 새로 센다.
@@ -261,13 +398,23 @@ class OvertakeAdvisor:
         if is_time_trial_session(view.session_type) or view.safety_car:
             self._ahead_index = view.ahead_index
             self._active = False
+            self._pending_success = None
             return []
 
-        if self._overtook(view):
-            # 앞차를 추월했다. 이번 판단은 쉬고, 다음에 새 앞차로 다시 켠다.
+        # 추월 직전 구간을 기여 요인 비교에 쓸 수 있게 매 판단마다 남긴다.
+        # 추월 감지 프레임도 남지만 그 프레임의 `ahead_index`는 이미 새 앞차라
+        # 추월 대상 차의 관찰로는 쓰이지 않는다.
+        self._record_observation(view, now)
+
+        overtaken = self._overtaken_index(view)
+        if overtaken is not None:
+            # 앞차를 추월했다. 곧바로 칭찬하지 않고 안정 시간을 확인한다.
+            self._begin_success(view, now, overtaken)
             self._ahead_index = view.ahead_index
             self._active = False
             return []
+
+        success = self._observe_success(view, now, traces_by_car)
 
         gap = view.gap_s if view.ahead_index is not None else None
         self._ahead_index = view.ahead_index
@@ -275,9 +422,12 @@ class OvertakeAdvisor:
 
         if gap is None or gap > self._config.gap_s:
             self._active = False
-            return []
+            return [success] if success is not None else []
 
         self._active = True
+        if success is not None:
+            # 추월 칭찬은 한 건만 보낸다. 가이드 선택지는 다음 주기부터 다시 본다.
+            return [success]
         if self._messages_this_lap >= self._config.per_lap:
             return []
 
@@ -325,13 +475,19 @@ class OvertakeAdvisor:
 
     # --- 켜짐·꺼짐 ---------------------------------------------------------
 
-    def _overtook(self, view: _View) -> bool:
-        """직전에 보던 앞차가 이번 상태에서 내 뒤로 갔는가."""
+    def _overtaken_index(self, view: _View) -> int | None:
+        """직전에 보던 앞차가 이번 상태에서 내 뒤로 갔으면 그 차 인덱스.
+
+        새 앞차가 없는 경우(선두를 넘은 경우)도 추월로 본다. 앞차 인덱스가
+        그대로면 추월이 아니다.
+        """
         previous = self._ahead_index
         current = view.ahead_index
-        if previous is None or current is None or previous == current:
-            return False
-        return self._is_behind(previous, view)
+        if previous is None or previous == current:
+            return None
+        if not self._is_behind(previous, view):
+            return None
+        return previous
 
     def _is_behind(self, car_index: int, view: _View) -> bool:
         if not 0 <= car_index < len(view.entries):
@@ -364,6 +520,299 @@ class OvertakeAdvisor:
                 self._gap_change = (gap - self._previous_gap_s) / seconds
         self._previous_gap_s = gap
         self._previous_gap_ns = now_ns
+
+    # --- 추월 성공 긍정 코칭(SCRUM-145) ----------------------------------
+
+    def _record_observation(self, view: _View, now_ns: int) -> None:
+        """추월 직전 비교에 쓸 관찰을 남기고 차별 최근 피트 상태를 갱신한다."""
+        self._update_pit_memory(view, now_ns)
+        if view.player_index is None or view.lap is None:
+            return
+        self._observations.append(self._observation(view, now_ns))
+        cutoff = now_ns - int(SUCCESS_HISTORY_S * 1_000_000_000)
+        if self._observations[0].now_ns < cutoff:
+            self._observations = [
+                item for item in self._observations if item.now_ns >= cutoff
+            ]
+        # 판단 주기가 아주 빨라도 기록이 무한히 자라지 않게 한다.
+        if len(self._observations) > 120:
+            del self._observations[:-120]
+
+    def _observation(
+        self, view: _View, now_ns: int, *, counterpart: int | None = None
+    ) -> _Observation:
+        """현재 상태로 관찰 하나를 만든다.
+
+        `counterpart`를 주면 그 차(추월 대상)의 텔레메트리를 비교 대상으로
+        쓴다. 생략하면 지금 바로 앞차를 쓴다.
+        """
+        index = view.ahead_index if counterpart is None else counterpart
+        player_telemetry = _entry_at(view.telemetry, view.player_index)
+        ahead_telemetry = _entry_at(view.telemetry, index)
+        return _Observation(
+            now_ns=now_ns,
+            ahead_index=index,
+            gap_s=view.gap_s if counterpart is None else None,
+            drs_allowed=_integer(view.player_status.get("drs_allowed")),
+            ers_mode=_integer(view.player_status.get("ers_deploy_mode")),
+            ers_energy_j=_number(view.player_status.get("ers_store_energy")),
+            player_speed=_number(player_telemetry.get("speed")),
+            player_throttle=_number(player_telemetry.get("throttle")),
+            ahead_speed=_number(ahead_telemetry.get("speed")),
+            ahead_throttle=_number(ahead_telemetry.get("throttle")),
+        )
+
+    def _update_pit_memory(self, view: _View, now_ns: int) -> None:
+        """차가 피트 레인·인랩·아웃랩에 있던 마지막 시각을 기억한다.
+
+        피트 스톱 횟수가 늘어난 것도 같은 시각으로 친다. 추월 대상 차가
+        최근에 피트했다면 순위 변동을 추월로 칭찬하지 않는다.
+        """
+        for index, entry in enumerate(view.entries):
+            if not entry:
+                continue
+            if _pit_related(entry):
+                self._pit_seen_ns[index] = now_ns
+            stops = _integer(entry.get("num_pit_stops"))
+            if stops is None:
+                continue
+            previous = self._pit_stops.get(index)
+            if previous is not None and stops > previous:
+                self._pit_seen_ns[index] = now_ns
+            self._pit_stops[index] = stops
+
+    def _begin_success(self, view: _View, now_ns: int, overtaken: int) -> None:
+        """추월을 감지했다. 조건이 맞으면 안정 시간 확인을 시작한다."""
+        # 연속 추월이면 앞 건은 안정 시간을 채우지 못했으므로 버린다.
+        self._pending_success = None
+        # 1랩은 스타트 혼전이라 순위 변동이 실제 추월이 아닐 수 있다.
+        if view.lap is not None and view.lap < 2:
+            return
+        if _not_on_track(view.player_entry):
+            return
+        entry = _entry_at(view.entries, overtaken)
+        if _not_on_track(entry):
+            return
+        if self._recent_pit(overtaken, now_ns):
+            return
+
+        window_ns = int(SUCCESS_EVIDENCE_WINDOW_S * 1_000_000_000)
+        observations = tuple(
+            item
+            for item in self._observations
+            if item.ahead_index == overtaken
+            and item.now_ns >= now_ns - window_ns
+        )
+        gaps = [item.gap_s for item in observations if item.gap_s is not None]
+        self._pending_success = _PendingSuccess(
+            overtaken_index=overtaken,
+            detected_ns=now_ns,
+            lap=view.lap,
+            track_id=view.track_id,
+            session_type=view.session_type,
+            distance=view.distance,
+            close_battle=any(gap <= CLOSE_OVERTAKE_GAP_S for gap in gaps),
+            last_laps=view.last_laps,
+            observations=observations,
+            pass_observation=self._observation(
+                view, now_ns, counterpart=overtaken
+            ),
+            baselines=_baselines(view),
+        )
+
+    def _recent_pit(self, car_index: int, now_ns: int) -> bool:
+        seen = self._pit_seen_ns.get(car_index)
+        if seen is None:
+            return False
+        return now_ns - seen <= int(PIT_RECENT_S * 1_000_000_000)
+
+    def _observe_success(
+        self,
+        view: _View,
+        now_ns: int,
+        traces_by_car: TraceSource | None,
+    ) -> RadioMessage | None:
+        """확인 중인 추월이 안정 시간을 채웠으면 칭찬 무전 하나를 만든다."""
+        pending = self._pending_success
+        if pending is None:
+            return None
+        pending.checks += 1
+        if not self._success_stable(pending, view):
+            # 재역전·피트 변동·트랙 이탈·접촉. 이 추월은 칭찬하지 않는다.
+            self._pending_success = None
+            return None
+        if pending.checks < SUCCESS_MIN_CHECKS:
+            return None
+        if now_ns - pending.detected_ns < int(
+            SUCCESS_CONFIRM_S * 1_000_000_000
+        ):
+            return None
+
+        factor = self._choose_success_factor(pending, view, traces_by_car)
+        self._pending_success = None
+        if factor is None:
+            # 문턱을 넘는 근거가 없다. 억지 칭찬은 하지 않는다.
+            return None
+        return self._success_message(pending, factor, now_ns)
+
+    def _success_stable(self, pending: _PendingSuccess, view: _View) -> bool:
+        """재역전·피트 변동·트랙 이탈·접촉 없이 추월이 유지되는가."""
+        if view.player_index is None or view.lap is None:
+            return False
+        if _not_on_track(view.player_entry):
+            return False
+        if _integer(view.player_entry.get("driver_status")) == DRIVER_OFF_TRACK:
+            return False
+        if _integer(view.player_entry.get("current_lap_invalid")):
+            return False
+        if _penalty_grew(pending.baselines, view):
+            return False
+        if not self._is_behind(pending.overtaken_index, view):
+            # 그 차가 다시 앞으로 나갔다(재역전).
+            return False
+        entry = _entry_at(view.entries, pending.overtaken_index)
+        if _not_on_track(entry):
+            return False
+        if _integer(entry.get("driver_status")) == DRIVER_OFF_TRACK:
+            return False
+        return True
+
+    def _choose_success_factor(
+        self,
+        pending: _PendingSuccess,
+        view: _View,
+        traces_by_car: TraceSource | None,
+    ) -> _SuccessFactor | None:
+        """추월 직전 자료에서 가장 설득력 있는 기여 요인 하나를 고른다."""
+        samples = (*pending.observations, pending.pass_observation)
+        candidates = _drs_ers_factors(samples)
+        candidates.extend(self._corner_factors(pending, view, traces_by_car))
+        candidates.extend(_telemetry_factors(samples))
+        if not candidates:
+            return None
+        # 점수가 같으면 먼저 넣은 요인(DRS/ERS > 코너 > 텔레메트리)을 쓴다.
+        return max(candidates, key=lambda item: item.score)
+
+    def _corner_factors(
+        self,
+        pending: _PendingSuccess,
+        view: _View,
+        traces_by_car: TraceSource | None,
+    ) -> list[_SuccessFactor]:
+        """추월 지점 직전 코너의 탈출 속도·브레이킹을 비교한다."""
+        track = self._track(view.track_id)
+        if track is None or track.length_m <= 0 or not track.corners:
+            return []
+        corner = _pass_corner(track, pending.distance)
+        if corner is None:
+            return []
+        player_trace = _latest_valid(_traces_for(traces_by_car, view.player_index))
+        ahead_trace = _latest_valid(
+            _traces_for(traces_by_car, pending.overtaken_index)
+        )
+        if player_trace is None or ahead_trace is None:
+            return []
+        player_metrics = corner_metrics(player_trace, corner)
+        ahead_metrics = corner_metrics(ahead_trace, corner)
+        label = corner_label(corner.number, official=corner.official)
+        common = {
+            "corner": corner.number,
+            "corner_official": corner.official,
+            "player_lap": player_trace.lap,
+            "ahead_lap": ahead_trace.lap,
+        }
+        factors: list[_SuccessFactor] = []
+
+        exit_advantage = player_metrics.exit_speed - ahead_metrics.exit_speed
+        if exit_advantage >= SUCCESS_EXIT_ADVANTAGE_KMH:
+            factors.append(
+                _SuccessFactor(
+                    "exit",
+                    1.0 + min(0.4, exit_advantage / 20.0),
+                    {"corner_label": label, "kmh": int(round(exit_advantage))},
+                    {
+                        **common,
+                        "player_exit_speed_kmh": round(
+                            player_metrics.exit_speed, 1
+                        ),
+                        "ahead_exit_speed_kmh": round(
+                            ahead_metrics.exit_speed, 1
+                        ),
+                        "exit_advantage_kmh": round(exit_advantage, 1),
+                    },
+                    corner=corner.number,
+                )
+            )
+
+        if (
+            player_metrics.brake_start_m is not None
+            and ahead_metrics.brake_start_m is not None
+        ):
+            late_brake = (
+                player_metrics.brake_start_m - ahead_metrics.brake_start_m
+            )
+            if late_brake >= SUCCESS_LATE_BRAKE_M:
+                factors.append(
+                    _SuccessFactor(
+                        "brake",
+                        0.9 + min(0.4, late_brake / 25.0),
+                        {
+                            "corner_label": label,
+                            "meters": int(round(late_brake)),
+                        },
+                        {
+                            **common,
+                            "player_brake_start_m": round(
+                                player_metrics.brake_start_m, 1
+                            ),
+                            "ahead_brake_start_m": round(
+                                ahead_metrics.brake_start_m, 1
+                            ),
+                            "late_brake_m": round(late_brake, 1),
+                        },
+                        corner=corner.number,
+                    )
+                )
+        return factors
+
+    def _success_message(
+        self,
+        pending: _PendingSuccess,
+        factor: _SuccessFactor,
+        now_ns: int,
+    ) -> RadioMessage | None:
+        mood = mood_for(
+            last_laps=pending.last_laps,
+            close_battle=pending.close_battle,
+            praise=True,
+        )
+        key = f"{SUCCESS_TEMPLATE_PREFIX}{factor.kind}"
+        text = self._variants.render(key, mood=mood, **factor.slots)
+        evidence: dict[str, Any] = {
+            "overtake_success": factor.kind,
+            "mood": mood.value,
+            "session_type": pending.session_type,
+            "track_id": pending.track_id,
+            "lap": pending.lap,
+            "overtaken_car_index": pending.overtaken_index,
+            "confirm_s": SUCCESS_CONFIRM_S,
+            "checks": pending.checks,
+            "close_battle": pending.close_battle,
+            **factor.evidence,
+        }
+        message = RadioMessage.create(
+            RadioKind.OVERTAKE.value,
+            text,
+            now_ns=now_ns,
+            ttl_ns=int(SUCCESS_TTL_S * 1_000_000_000),
+            evidence=evidence,
+            lap=pending.lap,
+            corner=factor.corner,
+        )
+        # 대시보드에서 추월 무전을 끈 경우 큐가 거부한다(설계 6.7).
+        if self._queue is not None and not self._queue.push(message):
+            return None
+        return message
 
     # --- 선택지 -----------------------------------------------------------
 
@@ -591,6 +1040,9 @@ def _view(snapshot: Mapping[str, Any] | None) -> _View:
     statuses = _mapping_list(
         _mapping(packets.get("car_status")).get("car_status_data")
     )
+    telemetry = _mapping_list(
+        _mapping(packets.get("car_telemetry")).get("car_telemetry_data")
+    )
 
     player_index = _integer(source.get("player_car_index"))
     if player_index is not None and not 0 <= player_index < len(entries):
@@ -624,6 +1076,7 @@ def _view(snapshot: Mapping[str, Any] | None) -> _View:
         safety_car=_integer(session.get("safety_car_status")) in (1, 2),
         player_index=player_index,
         entries=entries,
+        telemetry=telemetry,
         player_entry=player_entry,
         player_status=player_status,
         ahead_index=ahead_index,
@@ -679,6 +1132,213 @@ def _gap_seconds(entry: Mapping[str, Any]) -> float | None:
     if minutes is None and milliseconds is None:
         return None
     return max(0, minutes or 0) * 60.0 + max(0, milliseconds or 0) / 1000.0
+
+
+# ---------------------------------------------------------------------------
+# 추월 성공 판정 도우미
+
+
+def _entry_at(
+    entries: Sequence[Mapping[str, Any]], index: int | None
+) -> Mapping[str, Any]:
+    """차 인덱스로 항목 하나를 꺼낸다. 범위 밖이면 빈 매핑."""
+    if index is None or not 0 <= index < len(entries):
+        return {}
+    return entries[index]
+
+
+def _not_on_track(entry: Mapping[str, Any]) -> bool:
+    """차가 주행 중이 아닌가(차고·인랩·아웃랩·피트·리타이어)."""
+    result_status = _integer(entry.get("result_status"))
+    if result_status is not None and result_status != 2:
+        return True
+    if _integer(entry.get("driver_status")) in {
+        0,
+        DRIVER_IN_LAP,
+        DRIVER_OUT_LAP,
+        DRIVER_IN_PIT,
+    }:
+        return True
+    return _integer(entry.get("pit_status")) in PIT_LANE_STATUSES
+
+
+def _pit_related(entry: Mapping[str, Any]) -> bool:
+    """피트 레인·인랩·아웃랩에 있던 상태인가(피트인 추월 판정)."""
+    if _integer(entry.get("pit_status")) in PIT_LANE_STATUSES:
+        return True
+    return _integer(entry.get("driver_status")) in {
+        DRIVER_IN_LAP,
+        DRIVER_OUT_LAP,
+        DRIVER_IN_PIT,
+    }
+
+
+def _pass_corner(track: Track, distance: float) -> Corner | None:
+    """추월 지점에서 가장 가까운 직전 코너. 코너 안에서 넘었으면 그 코너."""
+    if track.length_m <= 0 or not track.corners:
+        return None
+    best: Corner | None = None
+    best_gap = SUCCESS_CORNER_LOOKBACK_M
+    for corner in track.corners:
+        if corner.entry_m <= distance <= corner.exit_m:
+            return corner
+        gap = (distance - corner.exit_m) % track.length_m
+        if gap <= best_gap:
+            best = corner
+            best_gap = gap
+    return best
+
+
+def _baselines(view: _View) -> dict[str, float | None]:
+    """추월 시점의 페널티·경고·손상 누적값. 늘어나면 접촉으로 본다."""
+    values: dict[str, float | None] = {}
+    for name in LAP_PENALTY_FIELDS:
+        value = _integer(view.player_entry.get(name))
+        values[name] = None if value is None else float(value)
+    for name in DAMAGE_FIELDS:
+        values[name] = _number(view.player_status.get(name))
+    return values
+
+
+def _penalty_grew(
+    baselines: dict[str, float | None], view: _View
+) -> bool:
+    """추월 시점보다 페널티·경고·손상 값이 늘었는가(접촉·위반)."""
+    for name in LAP_PENALTY_FIELDS:
+        value = _integer(view.player_entry.get(name))
+        if _grew(baselines, name, None if value is None else float(value)):
+            return True
+    for name in DAMAGE_FIELDS:
+        if _grew(baselines, name, _number(view.player_status.get(name))):
+            return True
+    return False
+
+
+def _grew(
+    baselines: dict[str, float | None], name: str, value: float | None
+) -> bool:
+    """누적값이 기준보다 늘었는가. 기준이 없던 값은 이번에 채운다."""
+    if value is None:
+        return False
+    previous = baselines.get(name)
+    baselines[name] = value
+    return previous is not None and value > previous
+
+
+def _drs_ers_factors(
+    samples: Sequence[_Observation],
+) -> list[_SuccessFactor]:
+    """추월 직전 DRS 허용·ERS 배포 근거로 기여 요인을 만든다."""
+    drs_samples = sum(1 for item in samples if item.drs_allowed == 1)
+    ers_mode = any(item.ers_mode == ERS_DEPLOY_OVERTAKE for item in samples)
+    energies = [
+        item.ers_energy_j for item in samples if item.ers_energy_j is not None
+    ]
+    drop_j = 0.0
+    if len(energies) >= 2:
+        drop_j = max(0.0, max(energies) - min(energies))
+    ers = ers_mode or drop_j >= ERS_STORE_MAX_J * SUCCESS_ERS_DEPLOY_PCT / 100.0
+    evidence: dict[str, Any] = {
+        "drs_samples": drs_samples,
+        "ers_mode_overtake": ers_mode,
+        "ers_energy_drop_j": int(round(drop_j)),
+    }
+    factors: list[_SuccessFactor] = []
+    if drs_samples and ers:
+        factors.append(
+            _SuccessFactor(
+                "drs_ers",
+                1.5,
+                {},
+                {**evidence, "drs_used": True, "ers_used": True},
+            )
+        )
+    if drs_samples:
+        factors.append(
+            _SuccessFactor(
+                "drs", 1.3, {}, {**evidence, "drs_used": True}
+            )
+        )
+    if ers:
+        factors.append(
+            _SuccessFactor(
+                "ers", 1.2, {}, {**evidence, "ers_used": True}
+            )
+        )
+    return factors
+
+
+def _usable_speed_pair(item: _Observation) -> bool:
+    """두 차의 속도가 실제 값인가.
+
+    일부 세션(온라인 등)은 다른 차 Car Telemetry를 0으로 보낸다. 그 값을
+    그대로 비교하면 "스로틀·속도 우위"를 항상 칭찬하게 되므로 걸러낸다.
+    """
+    return (
+        item.player_speed is not None
+        and item.ahead_speed is not None
+        and item.player_speed > 0
+        and item.ahead_speed > 0
+    )
+
+
+def _telemetry_factors(
+    samples: Sequence[_Observation],
+) -> list[_SuccessFactor]:
+    """추월 직전 스로틀·속도 우위로 기여 요인을 만든다."""
+    usable = [item for item in samples if _usable_speed_pair(item)]
+    throttle_pairs = [
+        (item.player_throttle, item.ahead_throttle)
+        for item in usable
+        if item.player_throttle is not None and item.ahead_throttle is not None
+    ]
+    speed_pairs = [
+        (item.player_speed, item.ahead_speed)
+        for item in usable
+        if item.player_speed is not None and item.ahead_speed is not None
+    ]
+    factors: list[_SuccessFactor] = []
+
+    if len(throttle_pairs) >= SUCCESS_MIN_TELEMETRY_SAMPLES:
+        count = len(throttle_pairs)
+        player_avg = sum(player for player, _ in throttle_pairs) / count
+        ahead_avg = sum(ahead for _, ahead in throttle_pairs) / count
+        difference = player_avg - ahead_avg
+        if difference >= SUCCESS_THROTTLE_ADVANTAGE:
+            factors.append(
+                _SuccessFactor(
+                    "throttle",
+                    0.8 + min(0.35, difference),
+                    {"percent": int(round(difference * 100))},
+                    {
+                        "samples": count,
+                        "player_throttle_pct": round(player_avg * 100.0, 1),
+                        "ahead_throttle_pct": round(ahead_avg * 100.0, 1),
+                        "throttle_advantage_pct": round(difference * 100.0, 1),
+                    },
+                )
+            )
+
+    if len(speed_pairs) >= SUCCESS_MIN_TELEMETRY_SAMPLES:
+        count = len(speed_pairs)
+        player_avg = sum(player for player, _ in speed_pairs) / count
+        ahead_avg = sum(ahead for _, ahead in speed_pairs) / count
+        difference = player_avg - ahead_avg
+        if difference >= SUCCESS_SPEED_ADVANTAGE_KMH:
+            factors.append(
+                _SuccessFactor(
+                    "clean",
+                    0.7 + min(0.25, difference / 20.0),
+                    {},
+                    {
+                        "samples": count,
+                        "player_speed_kmh": round(player_avg, 1),
+                        "ahead_speed_kmh": round(ahead_avg, 1),
+                        "speed_advantage_kmh": round(difference, 1),
+                    },
+                )
+            )
+    return factors
 
 
 # ---------------------------------------------------------------------------
@@ -778,6 +1438,18 @@ __all__ = [
     "ERS_STORE_MAX_J",
     "OvertakeAdvisor",
     "OvertakeConfig",
+    "PIT_RECENT_S",
     "SLOW_EXIT_TTL_S",
+    "SUCCESS_CONFIRM_S",
+    "SUCCESS_CORNER_LOOKBACK_M",
+    "SUCCESS_EVIDENCE_WINDOW_S",
+    "SUCCESS_EXIT_ADVANTAGE_KMH",
+    "SUCCESS_HISTORY_S",
+    "SUCCESS_LATE_BRAKE_M",
+    "SUCCESS_MIN_CHECKS",
+    "SUCCESS_MIN_TELEMETRY_SAMPLES",
+    "SUCCESS_SPEED_ADVANTAGE_KMH",
+    "SUCCESS_THROTTLE_ADVANTAGE",
+    "SUCCESS_TTL_S",
     "TYRE_WAIT_TTL_S",
 ]

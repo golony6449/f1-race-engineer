@@ -54,6 +54,9 @@ def _lap_data_entry(
     distance: float = 0.0,
     position: int = 0,
     total: float = 0.0,
+    driver_status: int = 4,
+    pit_status: int = 0,
+    result_status: int = 2,
 ) -> dict[str, Any]:
     return {
         "current_lap_num": lap,
@@ -63,8 +66,14 @@ def _lap_data_entry(
         "delta_to_car_in_front_ms_part": 0,
         "delta_to_car_in_front_minutes_part": 0,
         "current_lap_invalid": 0,
-        "driver_status": 0,
-        "pit_status": 0,
+        "driver_status": driver_status,
+        "pit_status": pit_status,
+        "result_status": result_status,
+        "penalties": 0,
+        "total_warnings": 0,
+        "corner_cutting_warnings": 0,
+        "num_unserved_drive_through_pens": 0,
+        "num_unserved_stop_go_pens": 0,
     }
 
 
@@ -76,6 +85,8 @@ def _car_status(
     compound: int = 18,
     ers_energy: float = ERS_STORE_MAX_J * 0.9,
     ers_mode: int = 2,
+    front_left_wing_damage: int = 0,
+    front_right_wing_damage: int = 0,
 ) -> dict[str, Any]:
     return {
         "drs_allowed": drs_allowed,
@@ -84,7 +95,33 @@ def _car_status(
         "tyres_age_laps": tyre_age,
         "ers_store_energy": ers_energy,
         "ers_deploy_mode": ers_mode,
+        "front_left_wing_damage": front_left_wing_damage,
+        "front_right_wing_damage": front_right_wing_damage,
     }
+
+
+def _telemetry(
+    *,
+    player_speed: float = 250.0,
+    player_throttle: float = 1.0,
+    ahead_speed: float = 240.0,
+    ahead_throttle: float = 0.9,
+    ahead_index: int | None = AHEAD,
+) -> dict[str, Any]:
+    """Car Telemetry 본문. 추월 성공 기여 요인 비교용."""
+    entries: list[dict[str, Any]] = [
+        {"speed": 0.0, "throttle": 0.0} for _ in range(22)
+    ]
+    entries[PLAYER] = {
+        "speed": player_speed,
+        "throttle": player_throttle,
+    }
+    if ahead_index is not None:
+        entries[ahead_index] = {
+            "speed": ahead_speed,
+            "throttle": ahead_throttle,
+        }
+    return {"car_telemetry_data": entries}
 
 
 def _snapshot(
@@ -99,6 +136,7 @@ def _snapshot(
     ahead_index: int | None = AHEAD,
     player_position: int = 10,
     previous_ahead_behind: bool = False,
+    telemetry: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """차 22대 상태를 갖춘 스냅샷을 만든다.
 
@@ -150,10 +188,24 @@ def _snapshot(
             },
             "lap_data": {"lap_data": entries},
             "car_status": {"car_status_data": statuses},
+            "car_telemetry": telemetry or {},
         },
         "lap_validity": [],
         "diagnostics": {},
     }
+
+
+def _after_pass(
+    *, telemetry: dict[str, Any] | None = None, **kwargs: Any
+) -> dict[str, Any]:
+    """추월 직후 스냅샷. 원래 앞차(AHEAD)가 내 뒤에 있고 새 앞차는 없다."""
+    return _snapshot(
+        gap_s=5.0,
+        ahead_index=None,
+        previous_ahead_behind=True,
+        telemetry=telemetry,
+        **kwargs,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -696,3 +748,234 @@ def test_unofficial_corners_use_ordinal_wording() -> None:
         "9번째 코너에서 바짝 붙어서 직선에서 넘어."
     )
     assert messages[0].evidence["corner_official"] is False
+
+
+# ---------------------------------------------------------------------------
+# 추월 성공 긍정 코칭(SCRUM-145)
+
+PASS_AT_NS = NOW_NS + 10**9
+
+
+def _success_sequence(
+    *,
+    player_status: dict[str, Any] | None = None,
+    telemetry: dict[str, Any] | None = None,
+    traces: dict[int, list[LapTrace]] | None = None,
+    distance: float = 1000.0,
+) -> tuple[OvertakeAdvisor, dict[str, Any], list[Any]]:
+    """추월 직전 2프레임 → 추월 감지 → 안정 확인(1.6초)까지 돌린다."""
+    advisor = _advisor()
+    for offset, gap in ((0, 0.6), (500_000_000, 0.55)):
+        advisor.evaluate(
+            _snapshot(
+                gap_s=gap,
+                player_distance=distance,
+                player_status=player_status,
+                telemetry=telemetry,
+            ),
+            traces,
+            NOW_NS + offset,
+        )
+    after = _after_pass(
+        player_status=player_status,
+        telemetry=telemetry,
+        player_distance=distance,
+    )
+    assert advisor.evaluate(after, traces, PASS_AT_NS) == []
+    # 안정 시간(1.5초)이 지나기 전에는 말하지 않는다.
+    assert advisor.evaluate(after, traces, PASS_AT_NS + 500_000_000) == []
+    messages = advisor.evaluate(after, traces, PASS_AT_NS + 1_600_000_000)
+    return advisor, after, messages
+
+
+def test_overtake_success_praises_once_with_drs_evidence() -> None:
+    """추월 직전 DRS를 썼으면 안정 확인 뒤 한 번만 칭찬한다."""
+    advisor, after, messages = _success_sequence(
+        player_status={"drs_allowed": 1, "drs_distance": 150},
+        telemetry=_telemetry(),
+    )
+
+    assert len(messages) == 1
+    message = messages[0]
+    assert message.kind == RadioKind.OVERTAKE.value
+    assert message.priority.name == "OVERTAKE"
+    assert message.evidence["overtake_success"] == "drs"
+    assert message.evidence["overtaken_car_index"] == AHEAD
+    assert message.evidence["mood"] == "warm"
+    assert message.evidence["drs_samples"] == 3
+    assert message.text in _choices("overtake.success_drs", "warm")
+
+    # 추월 1건당 1회: 시간이 더 지나도 다시 말하지 않는다.
+    assert advisor.evaluate(after, None, PASS_AT_NS + 3_000_000_000) == []
+
+
+def test_overtake_success_with_drs_and_ers_uses_both_template() -> None:
+    """DRS와 ERS를 함께 썼으면 두 가지를 함께 짚는 틀을 쓴다."""
+    _, _, messages = _success_sequence(
+        player_status={
+            "drs_allowed": 1,
+            "drs_distance": 150,
+            "ers_mode": 3,
+        },
+        telemetry=_telemetry(),
+    )
+
+    assert len(messages) == 1
+    assert messages[0].evidence["overtake_success"] == "drs_ers"
+    assert messages[0].evidence["drs_used"] is True
+    assert messages[0].evidence["ers_used"] is True
+
+
+def test_overtake_success_requires_evidence() -> None:
+    """DRS·텔레메트리·랩 트레이스 근거가 없으면 억지 칭찬을 하지 않는다."""
+    _, _, messages = _success_sequence()
+
+    assert messages == []
+
+
+def test_overtake_success_ignores_zeroed_opponent_telemetry() -> None:
+    """다른 차 텔레메트리가 0으로 오는 세션에서는 우위를 지어내지 않는다."""
+    _, _, messages = _success_sequence(
+        telemetry=_telemetry(ahead_speed=0.0, ahead_throttle=0.0)
+    )
+
+    assert messages == []
+
+
+def test_overtake_success_uses_exit_speed_evidence() -> None:
+    """직전 코너 탈출 속도 우위가 가장 큰 근거면 그 요인으로 칭찬한다."""
+    corner = _corner(9)
+    traces = {
+        PLAYER: [_trace(car_index=PLAYER)],
+        AHEAD: [_trace(car_index=AHEAD, brake_shift_corner=9)],
+    }
+    player_exit = corner_metrics(traces[PLAYER][0], corner).exit_speed
+    ahead_exit = corner_metrics(traces[AHEAD][0], corner).exit_speed
+    assert player_exit - ahead_exit >= 5.0
+
+    _, _, messages = _success_sequence(
+        distance=corner.exit_m + 50.0,
+        traces=traces,
+        telemetry=_telemetry(ahead_throttle=1.0),
+    )
+
+    assert len(messages) == 1
+    message = messages[0]
+    assert message.evidence["overtake_success"] == "exit"
+    assert message.evidence["corner"] == 9
+    assert message.corner == 9
+    assert message.evidence["exit_advantage_kmh"] == pytest.approx(
+        round(player_exit - ahead_exit, 1)
+    )
+    assert "탈출" in message.text
+
+
+def test_overtake_success_silent_when_overtaken_car_pitted() -> None:
+    """추월 대상 차가 피트 레인에 있었으면 피트인 변동으로 보고 칭찬하지 않는다."""
+    advisor = _advisor()
+    telemetry = _telemetry()
+    advisor.evaluate(_snapshot(gap_s=0.6, telemetry=telemetry), None, NOW_NS)
+    pitting = _snapshot(gap_s=0.6, telemetry=telemetry)
+    pitting["packets"]["lap_data"]["lap_data"][AHEAD]["pit_status"] = 1
+    advisor.evaluate(pitting, None, NOW_NS + 500_000_000)
+
+    after = _after_pass(telemetry=telemetry)
+    results = [
+        advisor.evaluate(after, None, PASS_AT_NS + offset)
+        for offset in (0, 500_000_000, 1_600_000_000, 2_500_000_000)
+    ]
+    assert all(result == [] for result in results)
+
+
+def test_overtake_success_silent_on_reovertake() -> None:
+    """재역전이 나오면 그 추월은 칭찬하지 않는다."""
+    advisor = _advisor()
+    telemetry = _telemetry()
+    drs = {"drs_allowed": 1, "drs_distance": 150}
+    advisor.evaluate(
+        _snapshot(gap_s=0.6, player_status=drs, telemetry=telemetry),
+        None,
+        NOW_NS,
+    )
+    after = _after_pass(telemetry=telemetry, player_status=drs)
+    assert advisor.evaluate(after, None, PASS_AT_NS) == []
+
+    # 그 차가 다시 앞으로 나왔다(재역전).
+    reovertake = _after_pass(telemetry=telemetry, player_status=drs)
+    entries = reovertake["packets"]["lap_data"]["lap_data"]
+    entries[AHEAD]["total_distance"] = entries[PLAYER]["total_distance"] + 100.0
+    entries[AHEAD]["car_position"] = entries[PLAYER]["car_position"] - 1
+    assert advisor.evaluate(reovertake, None, PASS_AT_NS + 300_000_000) == []
+
+    # 재역전한 채로 유지되면 안정 시간이 지나도 칭찬하지 않는다.
+    assert advisor.evaluate(reovertake, None, PASS_AT_NS + 800_000_000) == []
+    assert advisor.evaluate(reovertake, None, PASS_AT_NS + 2_000_000_000) == []
+
+
+def test_overtake_success_silent_on_off_track() -> None:
+    """추월 직후 트랙 이탈로 랩이 무효가 되면 칭찬하지 않는다."""
+    advisor = _advisor()
+    telemetry = _telemetry()
+    advisor.evaluate(_snapshot(gap_s=0.6, telemetry=telemetry), None, NOW_NS)
+    after = _after_pass(telemetry=telemetry)
+    assert advisor.evaluate(after, None, PASS_AT_NS) == []
+
+    off_track = _after_pass(telemetry=telemetry)
+    off_track["packets"]["lap_data"]["lap_data"][PLAYER]["current_lap_invalid"] = 1
+    assert advisor.evaluate(off_track, None, PASS_AT_NS + 300_000_000) == []
+
+    # 이후 깨끗해져도 이미 버린 추월은 칭찬하지 않는다.
+    assert advisor.evaluate(after, None, PASS_AT_NS + 1_000_000_000) == []
+    assert advisor.evaluate(after, None, PASS_AT_NS + 2_000_000_000) == []
+
+
+def test_overtake_success_silent_on_penalty_or_damage() -> None:
+    """페널티·앞날개 손상이 늘면 접촉으로 보고 칭찬하지 않는다."""
+    telemetry = _telemetry()
+
+    # (a) 추월 직후 페널티 누적.
+    advisor = _advisor()
+    advisor.evaluate(_snapshot(gap_s=0.6, telemetry=telemetry), None, NOW_NS)
+    after = _after_pass(telemetry=telemetry)
+    assert advisor.evaluate(after, None, PASS_AT_NS) == []
+    penalty = _after_pass(telemetry=telemetry)
+    penalty["packets"]["lap_data"]["lap_data"][PLAYER]["penalties"] = 5
+    assert advisor.evaluate(penalty, None, PASS_AT_NS + 300_000_000) == []
+    assert advisor.evaluate(after, None, PASS_AT_NS + 2_000_000_000) == []
+
+    # (b) 추월 직후 앞날개 손상 증가(접촉).
+    advisor = _advisor()
+    advisor.evaluate(_snapshot(gap_s=0.6, telemetry=telemetry), None, NOW_NS)
+    assert advisor.evaluate(after, None, PASS_AT_NS) == []
+    damage = _after_pass(
+        telemetry=telemetry, player_status={"front_left_wing_damage": 25}
+    )
+    assert advisor.evaluate(damage, None, PASS_AT_NS + 300_000_000) == []
+    assert advisor.evaluate(after, None, PASS_AT_NS + 2_000_000_000) == []
+
+
+def test_overtake_success_respects_muted_kind() -> None:
+    """대시보드에서 추월 무전을 끄면 추월 칭찬도 나가지 않는다."""
+    queue = RadioQueue(clock=lambda: NOW_NS)
+    assert queue.set_muted(RadioKind.OVERTAKE.value, True)
+    advisor = OvertakeAdvisor(
+        OvertakeConfig(), queue=queue, clock=lambda: NOW_NS
+    )
+
+    advisor.evaluate(
+        _snapshot(
+            gap_s=0.6,
+            player_status={"drs_allowed": 1, "drs_distance": 150},
+            telemetry=_telemetry(),
+        ),
+        None,
+        NOW_NS,
+    )
+    after = _after_pass(
+        player_status={"drs_allowed": 1, "drs_distance": 150},
+        telemetry=_telemetry(),
+    )
+    advisor.evaluate(after, None, PASS_AT_NS)
+    assert advisor.evaluate(after, None, PASS_AT_NS + 500_000_000) == []
+    assert advisor.evaluate(after, None, PASS_AT_NS + 1_600_000_000) == []
+    assert queue.pending_count == 0

@@ -241,6 +241,11 @@ def test_prefetch_phrases_include_corners_and_fixed_warnings() -> None:
         render("overtake.reaction_bundle", count=2) in phrases
     )
     assert render("praise.clean_lap") in phrases
+    # 추월 성공 긍정 코칭(SCRUM-145)의 슬롯 없는 문장도 미리 만든다.
+    assert render("overtake.success_drs_ers") in phrases
+    assert render("overtake.success_drs") in phrases
+    assert render("overtake.success_ers") in phrases
+    assert render("overtake.success_clean") in phrases
 
 
 def test_templates_by_category_splits_kinds() -> None:
@@ -252,6 +257,56 @@ def test_templates_by_category_splits_kinds() -> None:
         "coaching.brake_late",
         "coaching.fuel_lift",
     }
+
+
+# ---------------------------------------------------------------------------
+# 추월 성공 긍정 코칭 틀 (SCRUM-145)
+
+SUCCESS_TEMPLATE_KEYS: tuple[str, ...] = (
+    "overtake.success_drs_ers",
+    "overtake.success_drs",
+    "overtake.success_ers",
+    "overtake.success_exit",
+    "overtake.success_brake",
+    "overtake.success_throttle",
+    "overtake.success_clean",
+)
+
+
+def test_overtake_success_templates_present() -> None:
+    """추월 성공 기여 요인마다 문장 틀이 있고 추월 무전 종류다."""
+    for key in SUCCESS_TEMPLATE_KEYS:
+        template = TEMPLATES[key]
+        assert template.category is RadioKind.OVERTAKE
+        assert template.text
+        assert "success" in key
+
+    assert (
+        render("overtake.success_exit", corner_label="9번", kmh=12)
+        == "9번 탈출에서 12킬로 더 빨랐어. 그 흐름으로 넘었어."
+    )
+    assert (
+        render("overtake.success_brake", corner_label="9번째 코너", meters=14)
+        == "9번째 코너 브레이크 14미터 늦게 잡았어. 그게 추월이 됐어."
+    )
+    assert (
+        render("overtake.success_throttle", percent=24)
+        == "탈출 스로틀을 24퍼센트 더 밟았어. 그 힘으로 넘었어."
+    )
+    assert render("overtake.success_clean") == "깔끔한 추월이야. 그대로 밀어."
+
+
+def test_overtake_success_templates_support_warm_and_hyped_moods() -> None:
+    """추월 칭찬은 밝은(warm)·격앙(hyped) 표현을 모두 갖는다."""
+    for key in SUCCESS_TEMPLATE_KEYS:
+        template = TEMPLATES[key]
+        assert Mood.WARM.value in template.moods
+        assert Mood.HYPED.value in template.moods
+        # 모든 단계·표현의 슬롯이 같다(공용 검증과 별도로 명시 확인).
+        base = set(template_slots(key))
+        for mood in template.moods:
+            for variant in range(len(template.texts_for(mood))):
+                assert set(template_slots_for(key, mood, variant)) == base
 
 
 # ---------------------------------------------------------------------------
