@@ -366,6 +366,75 @@ def test_dashboard_has_engine_settings_button_and_modal() -> None:
     assert ".engine-off" in css
 
 
+def test_map_shows_player_position_badge_beside_flag_badge() -> None:
+    """SCRUM-139: 지도 우측 상단에 내 차 순위(P1 등)를 깃발 배지와 나란히 둔다."""
+    client = _client()
+    html = client.get("/").text
+
+    wrap = re.search(
+        r'<div class="map-wrap"[^>]*>(.*?)<div class="map-info"',
+        html,
+        re.S,
+    )
+    assert wrap, "서킷 지도 칸을 찾지 못했습니다"
+
+    badges = re.search(r'<div class="map-badges">(.*?)</div>', wrap.group(1), re.S)
+    assert badges, "지도 우측 상단 배지 줄(.map-badges)이 없습니다"
+    badges_html = badges.group(1)
+    assert 'class="map-position"' in badges_html
+    # 기존 깃발 배지는 같은 줄에 그대로 남는다.
+    assert 'class="map-flag"' in badges_html
+    # 내 차 순위가 깃발 배지 왼쪽(먼저)에 온다.
+    assert badges_html.index("map-position") < badges_html.index("map-flag")
+    # 순위 정보가 없는 초기 상태에서는 처음부터 숨김이다.
+    position_tag = re.search(r'<span class="map-position"[^>]*>', badges_html)
+    assert position_tag, "순위 배지 요소가 없습니다"
+    assert "hidden" in position_tag.group(0)
+
+    css = client.get("/static/style.css").text
+    badges_rule = re.search(r"\n\.map-badges \{(.*?)\}", css, re.S)
+    assert badges_rule, ".map-badges 규칙이 없습니다"
+    badges_style = badges_rule.group(1)
+    assert "position: absolute;" in badges_style
+    assert "top: 10px;" in badges_style
+    assert "right: 12px;" in badges_style
+    assert "display: flex;" in badges_style
+    assert "gap: 6px;" in badges_style
+
+    # 기존 깃발 배지의 절대 위치 규칙은 그대로 두고, 배지 줄 안에서만
+    # 흐름 배치로 바꿔 두 배지가 겹치지 않게 한다.
+    assert "\n.map-flag {" in css
+    flag_override = re.search(r"\n\.map-badges \.map-flag \{(.*?)\}", css, re.S)
+    assert flag_override, "배지 줄 안 깃발 배지 배치 규칙이 없습니다"
+    assert "position: static;" in flag_override.group(1)
+
+    # 순위 배지는 깃발 배지와 같은 다크 테마(반투명 배경·테두리·굵은 글자).
+    position_rule = re.search(r"\n\.map-position \{(.*?)\}", css, re.S)
+    assert position_rule, ".map-position 규칙이 없습니다"
+    position_style = position_rule.group(1)
+    assert "background: rgba(11, 14, 19, 0.72);" in position_style
+    assert "border: 1px solid" in position_style
+    assert "border-radius: 999px;" in position_style
+    assert "font-weight: 800;" in position_style
+    hidden_rule = re.search(r"\n\.map-position\[hidden\] \{(.*?)\}", css, re.S)
+    assert hidden_rule, ".map-position 숨김 규칙이 없습니다"
+    assert "display: none;" in hidden_rule.group(1)
+
+    # map.js: 내 차(is_player)의 유효한 1 이상 정수 순위만 P<n>으로 보여 주고,
+    # 순위가 없으면(미존재·0·음수·비정수) 텍스트를 비우고 숨긴다.
+    script = client.get("/static/map.js").text
+    assert 'querySelector(".map-position")' in script
+    assert "car.is_player === true" in script
+    assert "Number.isInteger(position) && position >= 1" in script
+    assert 'this.positionBadge.textContent = hasPosition ? `P${position}` : "";' in script
+    assert "this.positionBadge.hidden = !hasPosition;" in script
+
+    # 초기·렌더·지도 초기화·clear() 어디서든 배지 상태를 다시 계산한다.
+    assert script.count("this._updatePosition();") >= 4
+    assert "clear() {" in script
+    assert "if (!this.track) this.cars = [];" in script
+
+
 def test_radio_page_shows_engine_off_notice() -> None:
     """SCRUM-82: 무전 페이지도 엔진이 꺼져 있으면 '꺼짐'을 안내한다."""
     client = _client()
