@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import json
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from importlib import resources
 from importlib.resources.abc import Traversable
 from typing import TYPE_CHECKING, Any
@@ -115,6 +115,11 @@ class Track:
     `lap_distance_offset_m`은 실제 게임 `lap_distance`와 중심선 `dist_m`의
     차이다. 게임 랩 거리에서 이 값을 빼면 중심선 거리가 된다(스즈카 130m,
     SCRUM-57 실측). 데이터 파일에 없으면 0이라 기존 파일·데모는 그대로다.
+
+    코너·DRS·추월 지점 라벨은 이 객체의 프레임(기본값은 중심선 프레임)이다.
+    실제 게임 `lap_distance`와 직접 비교해야 하는 소비자(코칭·추월)는
+    `in_lap_distance_frame()`으로 라벨을 게임 프레임으로 옮긴 사본을 쓴다.
+    데모 송신기는 중심선 좌표를 그대로 `lap_distance`로 보내므로 원본을 쓴다.
     """
 
     track_id: int
@@ -124,6 +129,104 @@ class Track:
     drs_zones: tuple[DrsZone, ...] = ()
     overtaking_spots: tuple[OvertakingSpot, ...] = ()
     lap_distance_offset_m: float = 0.0
+
+    def track_distance(self, lap_distance_m: float) -> float:
+        """게임 `lap_distance`를 이 트랙 데이터의 랩 거리로 바꾼다.
+
+        데이터 파일의 코너 라벨은 중심선 프레임이고 게임 `lap_distance`는
+        `lap_distance_offset_m`만큼 앞서 있다. 이미 게임 프레임인 사본
+        (`in_lap_distance_frame()`)은 오프셋이 0이라 그대로 돌려준다.
+        """
+        offset = self.lap_distance_offset_m
+        if offset == 0.0:
+            return float(lap_distance_m)
+        return (float(lap_distance_m) - offset) % self.length_m
+
+    def corner_at(
+        self, dist_m: float, *, lap_distance: bool = False
+    ) -> Corner | None:
+        """랩 거리 지점이 코너 구간 안이면 그 코너를 돌려준다.
+
+        `lap_distance=True`면 입력이 게임 `lap_distance`라고 보고
+        `lap_distance_offset_m`을 적용한다. 구간 경계는 진입 포함·탈출 미포함이다.
+        """
+        distance = self.track_distance(dist_m) if lap_distance else float(dist_m)
+        for corner in self.corners:
+            if corner.entry_m <= distance < corner.exit_m:
+                return corner
+        return None
+
+    def in_lap_distance_frame(self) -> Track:
+        """코너·DRS·추월 지점 라벨을 게임 `lap_distance` 프레임으로 옮긴 사본.
+
+        오프셋이 0이면 자기 자신을 돌려준다. 옮긴 사본은
+        `lap_distance_offset_m`이 0이라 다시 옮겨도 값이 바뀌지 않는다.
+        코너 구간이 랩 끝을 넘어가게 되는 트랙(결승선 바로 앞 코너)은
+        표현할 수 없으므로 `TrackDataError`를 낸다. 스즈카 코너(마지막 탈출
+        5,620m + 130m = 5,750m)는 5,807m 안에 들어온다.
+        """
+        offset = float(self.lap_distance_offset_m)
+        if offset == 0.0:
+            return self
+        length = self.length_m
+        corners: list[Corner] = []
+        for corner in self.corners:
+            exit_m = corner.exit_m + offset
+            if exit_m > length:
+                raise TrackDataError(
+                    f"{self.name}: {corner.number}번 코너를 게임 lap_distance "
+                    f"프레임으로 옮기면 랩 끝({length:.1f}m)을 넘습니다"
+                )
+            corners.append(
+                replace(
+                    corner,
+                    entry_m=corner.entry_m + offset,
+                    apex_m=corner.apex_m + offset,
+                    exit_m=exit_m,
+                )
+            )
+        drs_zones = tuple(
+            replace(
+                zone,
+                detection_start_m=_shift_distance(
+                    zone.detection_start_m, offset, length
+                ),
+                detection_end_m=_shift_distance(zone.detection_end_m, offset, length),
+                activation_start_m=_shift_distance(
+                    zone.activation_start_m, offset, length
+                ),
+                activation_end_m=_shift_distance(
+                    zone.activation_end_m, offset, length
+                ),
+            )
+            for zone in self.drs_zones
+        )
+        overtaking_spots = tuple(
+            replace(
+                spot,
+                entry_window_m=(
+                    None
+                    if spot.entry_window_m is None
+                    else (
+                        _shift_distance(spot.entry_window_m[0], offset, length),
+                        _shift_distance(spot.entry_window_m[1], offset, length),
+                    )
+                ),
+            )
+            for spot in self.overtaking_spots
+        )
+        return replace(
+            self,
+            corners=corners,
+            drs_zones=drs_zones,
+            overtaking_spots=overtaking_spots,
+            lap_distance_offset_m=0.0,
+        )
+
+
+def _shift_distance(value: float, offset: float, length_m: float) -> float:
+    """랩 거리 라벨을 오프셋만큼 옮기고 랩 길이로 감는다."""
+    return (float(value) + offset) % length_m
 
 
 def load_track(track_id: int) -> Track | None:
@@ -543,7 +646,8 @@ def detect_corners(trace: LapTrace, track_length_m: float) -> list[Corner]:
             continue
         corners.append(
             Corner(
-                number=order + 1,
+                # 중간 후보가 버려져도 번호가 비지 않게 찾은 순서대로 다시 매긴다.
+                number=len(corners) + 1,
                 official=False,
                 entry_m=entry_m,
                 apex_m=apex_m,

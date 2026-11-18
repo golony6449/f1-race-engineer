@@ -210,8 +210,11 @@ z 반전이 명확하지만 같은 랩 거리의 점을 그대로 비교하면 1
 
 ## 남은 일
 
-- 실제 게임 세션 코칭의 코너 창에 `lap_distance_offset_m`을 적용하는 후속 작업
-  (데모 세션과 저장 기준 랩은 중심선 프레임 유지).
+- ~~실제 게임 세션 코칭의 코너 창에 `lap_distance_offset_m`을 적용하는 후속 작업~~
+  → SCRUM-143에서 적용했다. 파이프라인이 실제 세션의 코치·리프트 앤 코스트·
+  추월 판단에 `Track.in_lap_distance_frame()` 사본을 넘기고, 데모 세션과 저장
+  기준 랩은 중심선 프레임을 그대로 쓴다. 회귀 테스트는
+  `tests/test_real_fixture.py::test_real_fixture_lap_distance_maps_to_expected_suzuka_section`.
 - 모나코 중심선의 결승선 오프셋은 실측하지 않았다. 모나코 녹화가 생기면 같은
   방법으로 `monaco.json`에 값을 추가한다.
 - 지도 오버레이에 게임 세계 좌표를 직접 그릴 때는 위 ICP 변환을 트랙 JSON

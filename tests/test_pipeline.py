@@ -29,6 +29,7 @@ from f1re.radio.queue import RadioQueue
 from f1re.state.store import StateStore
 from f1re.tracks.model import load_outline, load_track
 from f1re.udp.parser import Packet
+from f1re.udp.session_uid import demo_session_uid
 from f1re.udp.spec import PACKET_FORMAT, Header, PacketId
 
 SUZUKA_ID = 13
@@ -192,6 +193,47 @@ async def test_session_uid_change_rebuilds_pipeline() -> None:
         assert pipeline.session_uid == 2
         assert pipeline.coach is not None
         assert pipeline.coach is not first_coach
+    finally:
+        await pipeline.aclose()
+
+
+async def test_real_session_coaching_uses_game_lap_distance_frame() -> None:
+    """실제 게임 세션은 코너 라벨을 lap_distance 프레임으로 옮긴 사본을 쓴다."""
+    pipeline = RacePipeline(StateStore(), _Radio(), None, config=AppConfig())
+    await pipeline.start()
+    try:
+        pipeline.on_packet(
+            _packet(PacketId.SESSION, _session_body(SUZUKA_ID)), time.time_ns()
+        )
+
+        coach_track = pipeline._coach_track
+        assert coach_track is not None
+        assert coach_track.lap_distance_offset_m == 0.0
+        assert coach_track.corners[0].entry_m == pytest.approx(640.0)
+        # 표시용 트랙(지도·코너 좌표)은 중심선 프레임 그대로다.
+        assert pipeline.track is not None
+        assert pipeline.track.corners[0].entry_m == 510.0
+    finally:
+        await pipeline.aclose()
+
+
+async def test_demo_session_keeps_centerline_corner_labels() -> None:
+    """데모 세션은 송신기가 중심선 lap_distance를 보내므로 보정하지 않는다."""
+    pipeline = RacePipeline(StateStore(), _Radio(), None, config=AppConfig())
+    await pipeline.start()
+    try:
+        pipeline.on_packet(
+            _packet(
+                PacketId.SESSION,
+                _session_body(SUZUKA_ID),
+                uid=demo_session_uid(1),
+            ),
+            time.time_ns(),
+        )
+
+        assert pipeline._coach_track is not None
+        assert pipeline._coach_track is pipeline.track
+        assert pipeline._coach_track.corners[0].entry_m == 510.0
     finally:
         await pipeline.aclose()
 
@@ -694,12 +736,16 @@ class _StrategyStubGenerator:
 def _race_lap_data_body(
     *,
     lap: int = 2,
-    distance: float = 5100.0,
+    distance: float = 5230.0,
     gap_ahead_s: float | None = 0.6,
     gap_behind_s: float | None = None,
     player_position: int = 10,
 ) -> dict[str, Any]:
-    """스즈카 카시오 시케인 무전 창(5090~5140m)의 22대 Lap Data."""
+    """스즈카 카시오 시케인 무전 창(게임 lap_distance 5220~5270m)의 22대 Lap Data.
+
+    실제 게임 세션은 코너 라벨(중심선 5,090~5,140m)에 `lap_distance_offset_m`
+    130m를 더한 게임 프레임을 쓴다(SCRUM-143).
+    """
     entries: list[dict[str, Any]] = []
     for _ in range(22):
         entries.append(
