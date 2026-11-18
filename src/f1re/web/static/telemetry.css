@@ -1,0 +1,659 @@
+/*
+  다시 보기 텔레메트리 분석 화면(SCRUM-136, 설계 5.2).
+
+  `style.css`의 다크 테마 토큰(--bg·--panel·--line·--text·--muted·--accent)을
+  그대로 쓰고, 이 화면에만 필요한 3단 배치·차트·메트릭 트리·지도 배지만 더한다.
+  외부 CDN·번들러 없이 순수 CSS/Canvas 2D로 동작한다.
+*/
+
+.telemetry-page {
+  min-height: 100vh;
+}
+
+/* ------------------------------------------------------------------ */
+/* 상단 컨트롤 바 */
+
+.telemetry-bar {
+  position: sticky;
+  top: 8px;
+  z-index: 30;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  align-items: center;
+  padding: 8px 12px;
+  background: rgba(20, 25, 34, 0.96);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.35);
+}
+
+.telemetry-back {
+  flex: none;
+  padding: 5px 12px;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text);
+  text-decoration: none;
+  white-space: nowrap;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+}
+
+.telemetry-back:hover {
+  border-color: var(--muted);
+}
+
+.telemetry-back:focus-visible,
+.play-button:focus-visible,
+.tool-button:focus-visible,
+.preset-button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.telemetry-field {
+  display: flex;
+  flex: 0 1 auto;
+  gap: 6px;
+  align-items: center;
+  min-width: 0;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+}
+
+.telemetry-field select {
+  min-width: 0;
+  max-width: min(280px, 46vw);
+  padding: 5px 10px;
+  overflow: hidden;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+  text-overflow: ellipsis;
+  cursor: pointer;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+.telemetry-field select:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.telemetry-playback {
+  display: flex;
+  flex: 1 1 460px;
+  flex-wrap: wrap;
+  gap: 6px 8px;
+  align-items: center;
+  min-width: 0;
+}
+
+.play-button,
+.tool-button {
+  flex: none;
+  padding: 5px 12px;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text);
+  cursor: pointer;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+}
+
+.play-button {
+  min-width: 40px;
+  font-size: 14px;
+}
+
+.play-button:hover,
+.tool-button:hover {
+  border-color: var(--muted);
+}
+
+/* 자동 따라가기처럼 켜진 도구 버튼은 강조 색으로 남긴다. */
+.tool-button[aria-pressed="true"] {
+  color: var(--accent);
+  background: rgba(225, 6, 0, 0.14);
+  border-color: var(--accent);
+}
+
+.telemetry-speeds {
+  display: flex;
+  gap: 4px;
+}
+
+.telemetry-seek {
+  flex: 1 1 180px;
+  min-width: 110px;
+  accent-color: var(--accent);
+}
+
+.telemetry-time {
+  flex: none;
+  font-size: 12px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.marker-toggle {
+  display: flex;
+  flex: none;
+  gap: 4px;
+  align-items: center;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+  cursor: pointer;
+  user-select: none;
+}
+
+.marker-toggle input {
+  margin: 0;
+  accent-color: var(--accent);
+}
+
+/* ------------------------------------------------------------------ */
+/* 3단 배치: 좌측 차트·메트릭 트리, 우측 지도·요약 */
+
+.telemetry-main {
+  display: grid;
+  grid-template-columns: minmax(0, 1.6fr) minmax(300px, 0.85fr);
+  gap: 12px;
+  align-items: stretch;
+  margin-top: 12px;
+}
+
+.telemetry-column {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+}
+
+.telemetry-panel {
+  min-width: 0;
+  padding: 14px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+
+.telemetry-panel h2 {
+  margin: 0 0 10px;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+}
+
+/* ------------------------------------------------------------------ */
+/* 좌측 상단: 프리셋 + Canvas 2D 그래프 */
+
+.chart-panel {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-height: clamp(320px, 48vh, 620px);
+}
+
+.preset-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+
+.preset-button {
+  padding: 4px 12px;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+  cursor: pointer;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+}
+
+.preset-button:hover {
+  border-color: var(--muted);
+}
+
+.preset-button.on {
+  color: var(--accent);
+  background: rgba(225, 6, 0, 0.14);
+  border-color: var(--accent);
+}
+
+.chart-wrap {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 240px;
+  overflow: hidden;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+}
+
+.chart-wrap canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+/* 그래프 호버 툴팁 자리. Task 6에서 마우스 위치에 맞춰 보여 준다. */
+.chart-tooltip {
+  position: absolute;
+  z-index: 5;
+  max-width: 280px;
+  padding: 6px 8px;
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--text);
+  white-space: pre-line;
+  pointer-events: none;
+  background: rgba(11, 14, 19, 0.92);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+.chart-tooltip[hidden] {
+  display: none;
+}
+
+/* 비공개 비교 차량 안내 배지(설계 5.1.C). */
+.private-badge {
+  position: absolute;
+  top: 8px;
+  right: 10px;
+  max-width: 62%;
+  padding: 3px 10px;
+  font-size: 11px;
+  line-height: 1.45;
+  color: #ffd166;
+  background: rgba(11, 14, 19, 0.84);
+  border: 1px solid #ffd166;
+  border-radius: 8px;
+}
+
+.private-badge[hidden],
+.chart-overlay[hidden],
+.overlay-progress[hidden] {
+  display: none;
+}
+
+/* 로딩·인덱싱 진행률 오버레이. */
+.chart-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 6;
+  display: grid;
+  gap: 10px;
+  align-content: center;
+  justify-items: center;
+  padding: 20px;
+  text-align: center;
+  background: rgba(11, 14, 19, 0.78);
+}
+
+.chart-overlay-text {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text);
+}
+
+.overlay-progress {
+  width: min(320px, 70vw);
+  height: 6px;
+  overflow: hidden;
+  background: var(--panel);
+  border-radius: 999px;
+}
+
+.overlay-progress-fill {
+  width: 0;
+  height: 100%;
+  background: var(--accent);
+  border-radius: inherit;
+  transition: width 160ms linear;
+}
+
+/* ------------------------------------------------------------------ */
+/* 좌측 하단: 카테고리 → 항목 2단계 체크박스 */
+
+.metric-panel {
+  display: flex;
+  flex: 0 1 auto;
+  flex-direction: column;
+  max-height: 40vh;
+  min-height: 180px;
+}
+
+.metric-head {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  justify-content: space-between;
+}
+
+.metric-head h2 {
+  margin: 0 0 8px;
+}
+
+.metric-count {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.metric-tree {
+  flex: 1 1 auto;
+  min-height: 0;
+  padding-right: 4px;
+  overflow-y: auto;
+}
+
+.metric-category {
+  padding: 6px 0;
+  border-top: 1px solid var(--line);
+}
+
+.metric-category:first-child {
+  border-top: 0;
+}
+
+.metric-category-head {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.tree-toggle {
+  flex: none;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  font: inherit;
+  font-size: 12px;
+  color: var(--muted);
+  cursor: pointer;
+  background: transparent;
+  border: 0;
+}
+
+.tree-toggle:hover {
+  color: var(--text);
+}
+
+.metric-category.collapsed .metric-list {
+  display: none;
+}
+
+.category-check,
+.wheel-check,
+.metric-check {
+  flex: none;
+  margin: 0;
+  accent-color: var(--accent);
+}
+
+.category-label {
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.category-count {
+  flex: none;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.metric-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 4px 0 0 26px;
+}
+
+.metric-row {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  padding: 2px 4px;
+  font-size: 12px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.metric-row:hover {
+  background: var(--panel-2);
+}
+
+.metric-swatch {
+  flex: none;
+  width: 9px;
+  height: 9px;
+  background: var(--metric-color, var(--muted));
+  border-radius: 2px;
+}
+
+.metric-label {
+  flex: 0 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.metric-unit {
+  flex: none;
+  font-size: 10.5px;
+  color: var(--muted);
+}
+
+/* 커서 시점 현재 값 자리. Task 6이 선택 시리즈에서 값을 채운다. */
+.metric-value {
+  flex: none;
+  margin-left: auto;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+/* 4륜 한 줄 그룹: [전좌][전우][후좌][후우] */
+.wheel-row {
+  flex-wrap: wrap;
+}
+
+.wheel-row .metric-label {
+  flex: 0 0 auto;
+}
+
+.wheel-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  justify-content: flex-end;
+  margin-left: auto;
+}
+
+.wheel-chip {
+  display: flex;
+  gap: 3px;
+  align-items: center;
+  padding: 1px 5px;
+  font-size: 10.5px;
+  color: var(--muted);
+  cursor: pointer;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+}
+
+.wheel-chip:hover {
+  border-color: var(--muted);
+}
+
+.wheel-chip.on {
+  color: var(--text);
+  border-color: var(--metric-color, var(--muted));
+}
+
+.wheel-chip input {
+  width: 11px;
+  height: 11px;
+  margin: 0;
+  accent-color: var(--accent);
+}
+
+.wheel-value {
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+/* ------------------------------------------------------------------ */
+/* 우측: 서킷 지도·코너/시점 요약 */
+
+.telemetry-side {
+  min-height: 0;
+}
+
+.telemetry-map-panel {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+}
+
+.telemetry-map-panel .map-head {
+  margin-bottom: 8px;
+}
+
+.telemetry-map-panel .map-wrap {
+  flex: 1 1 auto;
+  height: clamp(280px, 42vh, 560px);
+}
+
+.telemetry-map-panel .map-info {
+  flex: 0 1 auto;
+  max-height: 150px;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+/* 호버 미리보기 배지(SCRUM-136). 그래프 호버 중에만 지도 위에 뜬다. */
+.map-preview {
+  padding: 3px 10px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: #22d3ee;
+  background: rgba(11, 14, 19, 0.72);
+  border: 1px solid #22d3ee;
+  border-radius: 999px;
+}
+
+.map-preview[hidden] {
+  display: none;
+}
+
+.summary-panel {
+  flex: 0 0 auto;
+}
+
+.summary-static {
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--muted);
+}
+
+.summary-static p {
+  margin: 0;
+}
+
+.summary-current {
+  padding-top: 8px;
+  margin: 8px 0 0;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text);
+  border-top: 1px solid var(--line);
+}
+
+.summary-corners {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 8px;
+}
+
+.corner-chip {
+  padding: 1px 8px;
+  font-size: 11px;
+  color: var(--muted);
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+}
+
+/* ------------------------------------------------------------------ */
+/* 좁은 화면: 우측 지도·요약을 아래로 내리고 재생 바를 접는다. */
+
+@media (max-width: 1100px) {
+  .telemetry-main {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .chart-panel {
+    min-height: clamp(300px, 44vh, 520px);
+  }
+
+  .metric-panel {
+    max-height: none;
+  }
+
+  .telemetry-map-panel .map-wrap {
+    height: clamp(260px, 40vh, 480px);
+  }
+}
+
+@media (max-width: 720px) {
+  .telemetry-bar {
+    position: static;
+  }
+
+  .telemetry-field {
+    flex: 1 1 100%;
+  }
+
+  .telemetry-field select {
+    flex: 1 1 auto;
+    max-width: none;
+  }
+
+  .telemetry-seek {
+    flex-basis: 100%;
+  }
+
+  .telemetry-main {
+    gap: 8px;
+  }
+
+  .telemetry-panel {
+    padding: 10px;
+  }
+}

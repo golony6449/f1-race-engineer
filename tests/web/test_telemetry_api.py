@@ -32,6 +32,7 @@ from fastapi.testclient import TestClient
 from f1re import db
 from f1re.config import AppConfig, RecordingConfig
 from f1re.engine import ENGINE_OFF, Engine
+from f1re.state.store import StateStore
 from f1re.udp.backup import BackupWorker
 from f1re.udp.formats import f2025
 from f1re.udp.gcs_transfer import RecordingFetcher
@@ -802,6 +803,84 @@ def test_telemetry_page_and_backup_protection_when_engine_off(
         assert worker._extra_protected_ids() == {recording_id}
         # 분석 API를 다 쓴 뒤에도 전역 다시 보기 재생은 꺼져 있다.
         assert client.get("/api/replay/state").json()["replay"]["active"] is False
+
+
+# ---------------------------------------------------------------------------
+# 6. `/telemetry` 3단 레이아웃 HTML·정적 자산(SCRUM-136, 계획 Task 5)
+# ---------------------------------------------------------------------------
+
+
+def test_telemetry_html_has_three_pane_layout_and_assets() -> None:
+    """`/telemetry` HTML에 필수 DOM·스크립트·스타일 참조가 모두 있다.
+
+    계획 Task 5의 화면 골격(상단 컨트롤 바, 좌측 차트·메트릭 트리, 우측
+    지도)이 실제로 서빙되는지 확인한다. 브라우저 JS는 실행하지 않고 응답
+    본문과 정적 자산 200만 본다.
+    """
+    client = TestClient(web_app.create_app(StateStore()))
+    response = client.get("/telemetry")
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/html")
+    html = response.text
+
+    # 상단 컨트롤 바: 녹화/비교 선택과 독립 재생 컨트롤.
+    for element_id in (
+        "recording-select",
+        "compare-select",
+        "play-toggle",
+        "playback-seek",
+        "playback-time",
+        "zoom-reset",
+        "auto-follow",
+        "toggle-radio-markers",
+        "toggle-event-markers",
+    ):
+        assert f'id="{element_id}"' in html, element_id
+
+    # 좌측 차트·메트릭 트리, 우측 지도.
+    for element_id in (
+        "telemetry-chart",
+        "metric-tree",
+        "telemetry-map",
+        "preset-bar",
+        "chart-tooltip",
+        "private-badge",
+        "chart-overlay",
+        "index-progress",
+    ):
+        assert f'id="{element_id}"' in html, element_id
+
+    # 지도 배지 줄은 기존 순위(SCRUM-139)·깃발 배지 자리를 그대로 둔다.
+    assert 'class="map-position"' in html
+    assert 'class="map-flag"' in html
+    assert 'class="map-preview"' in html
+
+    # 외부 CDN 없이 telemetry.js·map.js·telemetry.css를 직접 참조한다.
+    assert "/static/telemetry.js" in html
+    assert "/static/map.js" in html
+    assert "/static/telemetry.css" in html
+    assert "http://" not in html and "https://" not in html
+
+    for asset in (
+        "/static/telemetry.js",
+        "/static/telemetry.css",
+        "/static/map.js",
+    ):
+        asset_response = client.get(asset)
+        assert asset_response.status_code == 200, asset
+
+    # 화면 스크립트는 서버 카탈로그·프리셋·map 프레임 API만 쓴다.
+    script = client.get("/static/telemetry.js").text
+    for token in (
+        "/api/replay/telemetry/open",
+        "/api/replay/telemetry/summary",
+        "/api/replay/telemetry/map_frames",
+        "skipLiftCoast",
+        "setCompareCar",
+        "(비공개)",
+        "localStorage",
+    ):
+        assert token in script, token
 
 
 async def test_backup_worker_prune_keeps_open_telemetry_recording(
