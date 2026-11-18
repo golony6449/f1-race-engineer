@@ -38,6 +38,11 @@
           >
             다시 보기
           </button>
+          <!--
+            텔레메트리 분석(SCRUM-136, 설계 5.2). 엔진 ON/OFF와 무관한
+            다시 보기 전용 분석 화면(/telemetry)으로 바로 들어간다.
+          -->
+          <a class="status-button" href="/telemetry">텔레메트리 분석</a>
           <!-- 게임 PC에서 여는 소리 전용 페이지(설계 6.10). 새 탭으로 연다. -->
           <a
             class="status-button"
@@ -62,15 +67,19 @@
         엔진 OFF에서도 지난 세션은 다시 볼 수 있다(설계 4.6). 목록·재생은
         서버의 `/api/recordings`·`/api/replay/*`가 엔진과 분리되어 처리한다.
       -->
-      <button
-        class="engine-off-button"
-        id="btn-recordings-off"
-        type="button"
-        data-open-recordings
-        aria-haspopup="dialog"
-      >
-        다시 보기
-      </button>
+      <div class="engine-off-actions">
+        <button
+          class="engine-off-button"
+          id="btn-recordings-off"
+          type="button"
+          data-open-recordings
+          aria-haspopup="dialog"
+        >
+          다시 보기
+        </button>
+        <!-- 엔진 OFF에서도 지난 세션을 그래프로 분석한다(SCRUM-136). -->
+        <a class="engine-off-button" href="/telemetry">텔레메트리 분석</a>
+      </div>
     </section>
 
     <!--
@@ -404,14 +413,18 @@
       >
         <header class="recordings-head">
           <h2 id="recordings-title">세션 다시 보기</h2>
-          <button
-            class="recordings-close"
-            id="recordings-close"
-            type="button"
-            data-recordings-close
-          >
-            닫기
-          </button>
+          <div class="recordings-head-actions">
+            <!-- 녹화를 고르지 않고 분석 화면으로 바로 갈 수 있는 진입점. -->
+            <a class="recordings-analyze" href="/telemetry">텔레메트리 분석</a>
+            <button
+              class="recordings-close"
+              id="recordings-close"
+              type="button"
+              data-recordings-close
+            >
+              닫기
+            </button>
+          </div>
         </header>
         <div
           class="recordings-filter"

@@ -1224,6 +1224,19 @@ body {
   border-color: var(--muted);
 }
 
+/* 엔진 OFF 안내의 두 진입점(다시 보기·텔레메트리 분석, SCRUM-136). */
+.engine-off-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: center;
+}
+
+a.engine-off-button {
+  display: inline-block;
+  text-decoration: none;
+}
+
 /*
   재생 컨트롤 바. 리플레이 모드에서만 보이고, 스크롤해도 위에 붙어 있는다.
   재생/일시정지 · 배속 · 시크 · 현재 시각/전체 길이 · 실시간 복귀를 한 줄에
@@ -1370,6 +1383,29 @@ body {
   margin: 0;
   font-size: 18px;
   letter-spacing: 0.02em;
+}
+
+/* 머리 줄 오른쪽의 분석 진입 링크·닫기 버튼 묶음(SCRUM-136). */
+.recordings-head-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.recordings-analyze {
+  padding: 5px 14px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+  text-decoration: none;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+}
+
+.recordings-analyze:hover {
+  border-color: var(--muted);
 }
 
 .recordings-close {
@@ -1548,6 +1584,28 @@ body {
 }
 
 .recording-download.disabled {
+  color: var(--muted);
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+/* 그래프 분석(SCRUM-136). 다운로드와 같은 모양의 작은 링크 버튼이다. */
+.recording-analyze {
+  padding: 3px 12px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+  text-decoration: none;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+}
+
+.recording-analyze:hover {
+  border-color: var(--muted);
+}
+
+.recording-analyze.disabled {
   color: var(--muted);
   cursor: not-allowed;
   opacity: 0.6;
