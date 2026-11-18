@@ -29,7 +29,7 @@ import sqlite3
 import threading
 import time
 from collections import deque
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
@@ -166,6 +166,7 @@ class BackupWorker:
         *,
         transport: UploadTransport | None = None,
         active_replay_id: Callable[[], int | None] | None = None,
+        extra_protected_ids: Callable[[], Iterable[int]] | None = None,
         retry_interval_s: float = DEFAULT_RETRY_INTERVAL_S,
     ) -> None:
         if not math.isfinite(retry_interval_s) or retry_interval_s <= 0:
@@ -175,6 +176,9 @@ class BackupWorker:
             transport if transport is not None else RcloneUploadTransport(config.gcs)
         )
         self._active_replay_id = active_replay_id
+        # 리플레이 외에 보호할 녹화 ID(예: `/telemetry`가 열어 둔 텔레메트리
+        # 인덱스의 recording_id). 정리 직전마다 다시 읽어 경합을 피한다.
+        self._extra_protected_ids = extra_protected_ids
         self._retry_interval_s = retry_interval_s
         # 전용 SQLite 연결(설계 4.2). 워커 태스크/수동 재시도만 이 연결을 쓴다.
         self._conn = db.open_db(db_path)
@@ -547,12 +551,12 @@ class BackupWorker:
     async def _prune_local(self) -> None:
         """업로드 확인된 녹화 중 최신 `keep_local_count`개만 로컬에 남긴다.
 
-        `exclude_ids`로 지금 웹 리플레이가 재생 중인 녹화를 순위 계산 전에
-        빼고, 삭제 직전에 한 번 더 확인해 재생 시작과의 경합도 피한다.
-        업로드되지 않은 행은 `find_local_prune_targets`가 후보로 주지 않는다.
+        보호 ID(지금 웹 리플레이가 재생 중인 녹화 + `extra_protected_ids`가
+        알린 `/telemetry` 인덱스 녹화)는 순위 계산 전에 빼고, 삭제 직전에 한
+        번 더 확인해 재생·분석 시작과의 경합도 피한다. 업로드되지 않은 행은
+        `find_local_prune_targets`가 후보로 주지 않는다.
         """
-        replay_id = self._current_replay_id()
-        exclude_ids = [] if replay_id is None else [replay_id]
+        exclude_ids = self._protected_ids()
         rows = await self._db_call(
             db.find_local_prune_targets,
             keep_count=self._config.keep_local_count,
@@ -563,8 +567,7 @@ class BackupWorker:
         root = self._recordings_root()
         for row in rows:
             recording_id = int(row["id"])
-            replay_id = self._current_replay_id()
-            if replay_id is not None and replay_id == recording_id:
+            if recording_id in self._protected_ids():
                 continue
             path_text = row["local_path"]
             if not path_text:
@@ -723,6 +726,19 @@ class BackupWorker:
             logger.exception("리플레이 사용 중 녹화를 확인하지 못했습니다")
             return None
         return None if value is None else int(value)
+
+    def _protected_ids(self) -> set[int]:
+        """로컬 정리에서 지우면 안 되는 녹화 ID(재생 중 + 텔레메트리 인덱스)."""
+        ids: set[int] = set()
+        replay_id = self._current_replay_id()
+        if replay_id is not None:
+            ids.add(replay_id)
+        if self._extra_protected_ids is not None:
+            try:
+                ids.update(int(value) for value in self._extra_protected_ids())
+            except Exception:  # 보호 목록 조회 버그가 정리를 막지 않게 한다.
+                logger.exception("추가 보호 녹화 ID를 확인하지 못했습니다")
+        return ids
 
 
 def _mark_uploaded(

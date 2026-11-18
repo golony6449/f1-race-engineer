@@ -18,6 +18,11 @@
 - ``GET /api/replay/track``·``/api/replay/report``·``/api/replay/radio/log``:
   리플레이 중인 세션의 지도·리포트·무전 기록. 기존 `map.js`·`report.js`가 그대로
   읽는 모양이라 화면 부품을 다시 만들지 않는다.
+- ``POST /api/replay/telemetry/open``·``GET .../summary|series|map_frames``:
+  다시 보기 텔레메트리 분석 화면(`/telemetry`)의 시계열 API(SCRUM-135). 전역
+  `ReplayManager`와 무관하게 `TelemetryIndexStore`가 녹화를 1회 스캔한 인덱스만
+  읽으므로 엔진 ON/OFF·다시 보기 재생 상태와 완전히 독립적으로 동작한다
+  (설계 5.1.E, 계획 Task 3).
 
 리플레이는 `ReplayManager`가 메모리 전용 `StateStore`·`RacePipeline(conn=None)`·
 `AlertRules`·`MemoryRadioSink`로 돌리므로, 이 라우터가 하는 DB 작업은 읽기뿐이고
@@ -46,11 +51,22 @@ from f1re.udp.gcs_transfer import (
     RecordingNotFoundError,
 )
 from f1re.udp.session_category import category_label, end_reason_label
+from f1re.udp.telemetry_index import (
+    DEFAULT_MAX_POINTS,
+    MAX_POINTS_LIMIT,
+    TelemetryIndexStore,
+    TelemetrySessionIndex,
+    get_metric_spec,
+)
 from f1re.udp.web_replay import DEFAULT_RADIO_LIMIT, ReplayManager
 
 # 목록 API 기본·최대 개수. 화면은 기본 50개를 요청한다(동결 API 계약).
 DEFAULT_RECORDINGS_LIMIT = 50
 MAX_RECORDINGS_LIMIT = 200
+
+# `/api/replay/telemetry/series`가 받아들이는 점 수의 하한(설계 5.1.D).
+# 클라이언트가 0이나 음수를 보내도 그래프가 비지 않게 10으로 올린다.
+MIN_MAX_POINTS = 10
 
 # `WS /ws/replay` 상태 푸시 주기(초). 실시간 `/ws/state`와 같은 10Hz다.
 REPLAY_PUSH_INTERVAL_S = 0.1
@@ -84,21 +100,37 @@ class ReplayControlRequest(BaseModel):
     position_ms: int | None = None
 
 
+class TelemetryOpenRequest(BaseModel):
+    """`POST /api/replay/telemetry/open` 요청(설계 5.1.E)."""
+
+    recording_id: int
+
+
 def create_replay_router(
     *,
     conn_factory: Callable[[], sqlite3.Connection],
     fetcher: RecordingFetcher,
     replay_manager: ReplayManager,
     backup_worker: RetryWorker | None = None,
+    telemetry_store: TelemetryIndexStore | None = None,
 ) -> APIRouter:
-    """녹화·리플레이 라우터를 만든다. `web/app.py`가 앱에 붙인다.
+    """녹화·리플레이·텔레메트리 라우터를 만든다. `web/app.py`가 앱에 붙인다.
 
     `conn_factory`는 호출마다 새 SQLite 연결을 여는 공장이다(이 라우터가 읽고
     닫는다). `fetcher`는 로컬 우선·GCS 온디맨드 복원·중복 다운로드 병합을
     맡고, `replay_manager`는 메모리 전용 리플레이를 돌린다. `backup_worker`는
     수동 백업 재시도 API에만 쓰며 없으면 그 API가 503으로 답한다.
+
+    `telemetry_store`는 `/telemetry` 분석 API의 1회 스캔 인덱스 캐시다. 앱이
+    수명 종료에서 `aclose()`하고 `BackupWorker` 보호 ID로도 쓰므로 `app.py`가
+    직접 만들어 넘긴다. 생략하면 이 라우터가 전용 스토어를 만든다(단독 테스트).
     """
     router = APIRouter()
+    telemetry = (
+        telemetry_store
+        if telemetry_store is not None
+        else TelemetryIndexStore(conn_factory=conn_factory)
+    )
 
     # ------------------------------------------------------------------
     # 녹화 목록·다운로드
@@ -264,6 +296,111 @@ def create_replay_router(
     ) -> dict[str, Any]:
         """리플레이 전용 메모리 무전 기록(DB의 실세션 기록과 무관)."""
         return replay_manager.radio_log_payload(limit=limit)
+
+    # ------------------------------------------------------------------
+    # 다시 보기 텔레메트리 분석(SCRUM-135)
+    #
+    # 아래 API는 전역 `replay_manager`를 전혀 쓰지 않는다. `TelemetryIndexStore`
+    # 가 녹화를 1회 스캔해 만든 인덱스만 읽으므로, 엔진 ON/OFF와 다시 보기
+    # 재생 상태(active_recording_id)를 바꾸지 않는다(계획 Review Focus 4).
+
+    @router.post("/api/replay/telemetry/open")
+    async def api_telemetry_open(body: TelemetryOpenRequest) -> dict[str, Any]:
+        """녹화를 확보(로컬/GCS)하고 텔레메트리 인덱스 빌드를 시작한다."""
+        recording_id = int(body.recording_id)
+        row = await asyncio.to_thread(
+            _load_recording, conn_factory, recording_id
+        )
+        if row is None:
+            raise _not_found(recording_id)
+        if _is_recording_in_progress(row):
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "message": "아직 녹화가 끝나지 않은 세션입니다",
+                    "recording_id": recording_id,
+                },
+            )
+        path = await _ensure_local_file(fetcher, recording_id)
+        status = await telemetry.open_recording(recording_id, row, path)
+        return {"status": status, "recording_id": recording_id}
+
+    @router.get("/api/replay/telemetry/summary")
+    async def api_telemetry_summary(
+        recording_id: int = Query(description="녹화 ID"),
+    ) -> dict[str, Any]:
+        """인덱스 준비 상태(`building`) 또는 요약(`ready`, 카탈로그·참가자·마커)."""
+        return _telemetry_status_or_error(telemetry, int(recording_id))
+
+    @router.get("/api/replay/telemetry/series")
+    async def api_telemetry_series(
+        recording_id: int = Query(description="녹화 ID"),
+        metrics: str = Query(
+            default="", description="쉼표로 구분한 메트릭 키(예: speed,brake)"
+        ),
+        from_ms: int = Query(default=0, description="구간 시작(ms)"),
+        to_ms: int | None = Query(default=None, description="구간 끝(ms)"),
+        max_points: int = Query(
+            default=DEFAULT_MAX_POINTS, description="최대 점 수(10..2000)"
+        ),
+        compare_car: int | None = Query(
+            default=None, description="비교 차량 인덱스(0..21, 내 차 제외)"
+        ),
+    ) -> dict[str, Any]:
+        """선택 메트릭의 구간 min/max 다운샘플 시계열과 비교 차량 시리즈."""
+        index = _ready_telemetry_index(telemetry, int(recording_id))
+        keys = _parse_metric_keys(metrics)
+        limit = max(MIN_MAX_POINTS, min(int(max_points), MAX_POINTS_LIMIT))
+        end_ms = index.duration_ms if to_ms is None else int(to_ms)
+        compare = _compare_car_target(compare_car, index.player_index)
+        if compare is not None:
+            # 비교 차량은 선택 시점에 파일을 한 번 더 스캔해 1대만 캐시한다.
+            await telemetry.ensure_compare_car(index, compare)
+        try:
+            return index.query_series(
+                keys,
+                int(from_ms),
+                end_ms,
+                max_points=limit,
+                compare_car=compare,
+            )
+        except ValueError as exc:  # 방어: 키 검증을 통과해도 인덱스가 거부할 수 있다.
+            raise HTTPException(
+                status_code=400, detail={"message": str(exc)}
+            ) from exc
+
+    @router.get("/api/replay/telemetry/map_frames")
+    async def api_telemetry_map_frames(
+        recording_id: int = Query(description="녹화 ID"),
+        t_ms: int | None = Query(
+            default=None, description="단일 시각(ms). 주면 1건만 돌려준다"
+        ),
+        from_ms: int | None = Query(default=None, description="구간 시작(ms)"),
+        to_ms: int | None = Query(default=None, description="구간 끝(ms)"),
+    ) -> dict[str, Any]:
+        """10Hz 지도 프레임. `t_ms` 단건 또는 `[from_ms, to_ms]` 구간 배열."""
+        index = _ready_telemetry_index(telemetry, int(recording_id))
+        duration = index.duration_ms
+        if t_ms is not None:
+            requested = _clamp_ms(int(t_ms), duration)
+            frame = index.map_frame_at(requested)
+            return {
+                "recording_id": int(recording_id),
+                "t_ms": requested,
+                "frame": frame,
+                "frames": [frame],
+            }
+        start = 0 if from_ms is None else _clamp_ms(int(from_ms), duration)
+        end = duration if to_ms is None else _clamp_ms(int(to_ms), duration)
+        if start > end:
+            start, end = end, start
+        return {
+            "recording_id": int(recording_id),
+            "from_ms": start,
+            "to_ms": end,
+            "frame": None,
+            "frames": index.map_frames_range(start, end),
+        }
 
     @router.websocket("/ws/replay")
     async def ws_replay(websocket: WebSocket) -> None:
@@ -454,6 +591,101 @@ def _is_recording_in_progress(row: dict[str, Any]) -> bool:
     )
 
 
+# ---------------------------------------------------------------------------
+# 텔레메트리 API 도우미
+
+
+def _telemetry_status_or_error(
+    store: TelemetryIndexStore, recording_id: int
+) -> dict[str, Any]:
+    """`summary` 응답. 준비 전·실패 상태를 HTTP 오류로 바꾼다.
+
+    `ready`·`building`은 그대로 200으로 내려 화면이 300ms 간격으로 폴링하며
+    진행률을 그린다. 인덱스가 없는 `idle`(open 전이거나 없는 녹화)은 404다.
+    """
+    payload = store.status_or_summary(recording_id)
+    status = payload.get("status")
+    if status in ("ready", "building"):
+        return payload
+    if status == "failed":
+        raise HTTPException(status_code=500, detail=payload)
+    raise _telemetry_missing(recording_id)
+
+
+def _ready_telemetry_index(
+    store: TelemetryIndexStore, recording_id: int
+) -> TelemetrySessionIndex:
+    """캐시된 인덱스를 꺼낸다. 준비 중이면 409, 없으면 404."""
+    index = store.get_ready(recording_id)
+    if index is not None:
+        return index
+    payload = store.status_or_summary(recording_id)
+    status = payload.get("status")
+    if status == "building":
+        raise HTTPException(
+            status_code=409,
+            detail={
+                **payload,
+                "message": "텔레메트리 인덱스를 준비 중입니다",
+            },
+        )
+    if status == "failed":
+        raise HTTPException(status_code=500, detail=payload)
+    raise _telemetry_missing(recording_id)
+
+
+def _telemetry_missing(recording_id: int) -> HTTPException:
+    """아직 열지 않은(또는 없는) 녹화의 인덱스 조회 오류(404)."""
+    return HTTPException(
+        status_code=404,
+        detail={
+            "message": "텔레메트리 인덱스가 없습니다. 먼저 open API로 녹화를 여세요",
+            "recording_id": recording_id,
+            "status": "idle",
+        },
+    )
+
+
+def _parse_metric_keys(raw: str) -> list[str]:
+    """쉼표 구분 메트릭 키를 검증해 중복 없이 돌려준다(모르면 400)."""
+    keys = [part.strip() for part in raw.split(",") if part.strip()]
+    if not keys:
+        raise HTTPException(
+            status_code=400,
+            detail={"message": "metrics에 메트릭 키를 쉼표로 구분해 주세요"},
+        )
+    unknown = [key for key in keys if get_metric_spec(key) is None]
+    if unknown:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "message": f"알 수 없는 메트릭입니다: {', '.join(unknown)}",
+                "metrics": unknown,
+            },
+        )
+    # 같은 키를 두 번 보내도 응답을 한 번만 만든다(순서 유지).
+    return list(dict.fromkeys(keys))
+
+
+def _compare_car_target(
+    compare_car: int | None, player_index: int | None
+) -> int | None:
+    """비교 차량을 0~21·내 차 아님으로 정규화한다(그 밖은 비교 없음)."""
+    if compare_car is None:
+        return None
+    value = int(compare_car)
+    if not 0 <= value < 22:
+        return None
+    if player_index is not None and value == player_index:
+        return None
+    return value
+
+
+def _clamp_ms(value: int, duration_ms: int) -> int:
+    """시각을 `[0, duration_ms]`로 자른다(음수·길이 초과 방어)."""
+    return max(0, min(int(value), max(0, int(duration_ms))))
+
+
 def _clean_category(category: str | None) -> str | None:
     """빈 문자열 범주는 "전체"로 본다(화면 필터의 기본값)."""
     if category is None:
@@ -497,10 +729,12 @@ __all__ = [
     "DEFAULT_RECORDINGS_LIMIT",
     "DOWNLOAD_MEDIA_TYPE",
     "MAX_RECORDINGS_LIMIT",
+    "MIN_MAX_POINTS",
     "ReplayControlRequest",
     "ReplayStartRequest",
     "REPLAY_PUSH_INTERVAL_S",
     "RetryWorker",
+    "TelemetryOpenRequest",
     "create_replay_router",
     "recording_payload",
 ]
