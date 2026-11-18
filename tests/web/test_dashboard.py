@@ -260,20 +260,30 @@ def test_map_fills_remaining_panel_height() -> None:
     assert "min-height: 220px;" in wrap_rule.group(1)
     assert "height: clamp(220px, 36vh, 440px);" in wrap_rule.group(1)
 
-    # 넓은 화면에서는 높이를 풀어 그리드 행 stretch로 타이어 패널과 같은
-    # 높이가 되고, 지도가 그 안의 남는 높이를 모두 쓴다.
+    # 넓은 화면에서는 타이어·브레이크 패널이 카드 높이에 맞춰 자라되
+    # 최소 높이를 유지하고, 지도 패널은 행 높이 계산을 밀어내지 않은 채
+    # 좌측 패널 높이를 100% 채워 남는 공간을 지도가 모두 쓴다(SCRUM-138).
     wide = _wide_screen_css()
-    tyres_rule = re.search(r"\.tyres-brakes \{(.*?)\}", wide, re.S)
+    tyres_rule = re.search(r"\n  \.tyres-brakes \{(.*?)\}", wide, re.S)
     assert tyres_rule, "타이어 패널 높이 규칙이 없습니다"
-    assert "height: clamp(400px, 46vh, 450px);" in tyres_rule.group(1)
+    assert "height: auto;" in tyres_rule.group(1)
+    assert "min-height: clamp(400px, 46vh, 450px);" in tyres_rule.group(1)
+
+    wide_map_rule = re.search(r"(?<!,)\n  \.map \{(.*?)\}", wide, re.S)
+    assert wide_map_rule, "지도 패널 높이 동기화 규칙이 없습니다"
+    assert "height: 0;" in wide_map_rule.group(1)
+    assert "min-height: 100%;" in wide_map_rule.group(1)
 
     wide_wrap = re.search(r"\.map \.map-wrap \{(.*?)\}", wide, re.S)
     assert wide_wrap
+    assert "flex: 1 1 0%;" in wide_wrap.group(1)
     assert "height: auto;" in wide_wrap.group(1)
+    assert "min-height: 220px;" in wide_wrap.group(1)
 
     # 지도 최소 높이를 지키려면 코너 지표 칸이 그 안에서 스크롤한다.
     wide_info = re.search(r"\.map \.map-info \{(.*?)\}", wide, re.S)
     assert wide_info
+    assert "flex: 0 1 auto;" in wide_info.group(1)
     assert "min-height: 0;" in wide_info.group(1)
     assert "overflow-y: auto;" in wide_info.group(1)
 
@@ -284,15 +294,16 @@ def test_map_fills_remaining_panel_height() -> None:
 
 
 def test_wide_screen_puts_tyres_and_map_side_by_side() -> None:
-    """SCRUM-79: 넓은 화면에서 타이어·브레이크와 지도를 좌우 반반으로 둔다."""
+    """SCRUM-79·SCRUM-138: 넓은 화면에서 타이어·브레이크와 지도를 좌우 반반으로 둔다."""
     block = _wide_screen_css()
 
     # 12칼럼 그리드에서 두 섹션이 6칼럼씩(50%) 차지해 한 줄에 선다.
     assert ".tyres-brakes," in block
     assert ".map {" in block
     assert "grid-column: span 6;" in block
-    # 두 섹션 높이를 같게 묶어 화면을 가득 채우지 않는다(약 400~450px).
-    assert "height: clamp(400px, 46vh, 450px);" in block
+    # 타이어 패널은 카드가 넘치지 않도록 고정 height 대신 최소 높이만 묶는다(약 400~450px).
+    assert "height: auto;" in block
+    assert "min-height: clamp(400px, 46vh, 450px);" in block
     # 반 폭에서도 차 그림과 값 여섯 개가 다 보이게 줄인다.
     assert ".tyres-brakes .car-svg" in block
     assert "height: clamp(260px, 32vh, 320px);" in block
