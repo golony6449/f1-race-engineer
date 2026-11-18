@@ -165,8 +165,11 @@ async def test_cache_miss_streams_intro_first_and_stores_rendered_voice(
 async def test_api_failure_falls_back_to_cache_only_and_flags_offline(
     tmp_path: Path,
 ) -> None:
+    timeout_message = "Qwen TTS 요청이 5초 안에 끝나지 않았습니다"
     tts = FakeTTS(
-        stream_error=TTSUnavailable("Qwen TTS 요청이 2초 안에 끝나지 않았습니다")
+        stream_error=TTSUnavailable(timeout_message),
+        # 스트리밍과 일반 합성이 모두 실패해야 오프라인으로 바뀐다(SCRUM-141).
+        synthesize_error=TTSUnavailable(timeout_message),
     )
     cache, _, _ = _make_cache(tmp_path, tts)
     cached_text = "박스, 박스. 들어와."
@@ -190,17 +193,92 @@ async def test_api_failure_falls_back_to_cache_only_and_flags_offline(
     assert received == []
     assert cache.offline is True
     assert cache.status is VoiceStatus.OFFLINE
-    assert cache.last_error is not None and "2초" in cache.last_error
+    assert cache.last_error is not None and "5초" in cache.last_error
     assert cache.is_cached("새 문장") is False
 
     # API가 돌아오면 다음 스트리밍은 성공하고 상태도 온라인으로 돌아온다.
     tts.stream_error = None
+    tts.synthesize_error = None
     tts.chunks = [_tone_pcm(frequency=700.0, seconds=0.1)]
     recovered = await cache.get_or_synthesize("새 문장")
     assert [chunk async for chunk in recovered.iter_pcm()]
     assert cache.offline is False
     assert cache.last_error is None
     assert cache.is_cached("새 문장") is True
+
+
+async def test_stream_failure_falls_back_to_synthesize_and_stores(
+    tmp_path: Path,
+) -> None:
+    """일시적인 스트리밍 실패는 일반 합성으로 이어 말하고 캐시에 넣는다."""
+    wav = _tone_wav(frequency=520.0, seconds=0.2)
+    tts = FakeTTS(
+        stream_error=TTSUnavailable("Qwen TTS 요청이 5초 안에 끝나지 않았습니다"),
+        wav=wav,
+    )
+    cache, config, intro = _make_cache(tmp_path, tts)
+    text = "5번 좋아졌어. 다음은 7번 보자."
+
+    source = await cache.get_or_synthesize(text)
+    assert source.cached is False
+    chunks = [chunk async for chunk in source.iter_pcm()]
+
+    # 폴백은 전체 합성 WAV를 렌더해 시작 효과음까지 포함한 PCM을 한 번에 낸다.
+    expected = render_radio_voice(wav, config, intro=intro)
+    expected_pcm, _ = wav_to_pcm(expected)
+    assert b"".join(chunks) == expected_pcm
+    assert chunks[0].startswith(_expected_intro_pcm(intro))
+
+    assert tts.synthesize_calls == [(text, config.voice)]
+    assert cache.status is VoiceStatus.ONLINE
+    assert cache.last_error is None
+
+    # 폴백으로 만든 음성도 캐시에 남아 다음에는 API를 부르지 않는다.
+    assert cache.is_cached(text) is True
+    again = await cache.get_or_synthesize(text)
+    assert again.cached is True
+    assert b"".join([chunk async for chunk in again.iter_pcm()]) == expected_pcm
+    assert len(tts.synthesize_calls) == 1
+
+
+async def test_invalid_request_is_not_retried_with_synthesize(tmp_path: Path) -> None:
+    """호출 쪽 잘못(빈 문장 등)은 폴백하지 않고 오프라인으로도 바꾸지 않는다."""
+    tts = FakeTTS(stream_error=TTSInvalidRequest("합성할 문장이 비어 있습니다"))
+    cache, _, _ = _make_cache(tmp_path, tts)
+
+    source = await cache.get_or_synthesize("문장")
+    with pytest.raises(TTSInvalidRequest):
+        async for _chunk in source.iter_pcm():
+            pass
+
+    assert tts.synthesize_calls == []
+    assert cache.status is VoiceStatus.ONLINE
+    assert cache.last_error is None
+    assert cache.is_cached("문장") is False
+
+
+async def test_fallback_failure_flags_offline_and_emits_nothing(
+    tmp_path: Path,
+) -> None:
+    """스트리밍과 폴백이 모두 실패할 때만 오프라인·무음으로 넘어간다."""
+    tts = FakeTTS(
+        stream_error=TTSUnavailable("Qwen TTS 스트림 타임아웃"),
+        synthesize_error=TTSUnavailable("Qwen TTS 합성 타임아웃"),
+    )
+    cache, config, _ = _make_cache(tmp_path, tts)
+    text = "새 문장"
+
+    source = await cache.get_or_synthesize(text)
+    received: list[bytes] = []
+    with pytest.raises(TTSUnavailable, match="합성 타임아웃"):
+        async for chunk in source.iter_pcm():
+            received.append(chunk)
+
+    assert received == []
+    assert tts.synthesize_calls == [(text, config.voice)]
+    assert cache.status is VoiceStatus.OFFLINE
+    assert cache.last_error == "Qwen TTS 합성 타임아웃"
+    assert cache.is_cached(text) is False
 
 
 async def test_prefetch_track_phrases(tmp_path: Path) -> None:

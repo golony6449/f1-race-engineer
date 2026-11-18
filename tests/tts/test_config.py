@@ -32,7 +32,8 @@ def test_default_config_matches_global_constraints() -> None:
     assert config.tts.realtime_model == "qwen3-tts-flash-realtime"
     assert config.tts.voice == "Katerina"
     assert config.tts.speed == pytest.approx(1.2)
-    assert config.tts.timeout_s == pytest.approx(2.0)
+    # SCRUM-141: 국제 리전 응답 지연을 감안한 기본값.
+    assert config.tts.timeout_s == pytest.approx(5.0)
     assert config.tts.secret_key == "qwen"
     assert config.tts.language_type == "Korean"
     assert config.tts.endpoint.startswith("https://dashscope-intl.aliyuncs.com/")

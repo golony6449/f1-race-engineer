@@ -1484,13 +1484,26 @@ ORDINAL_KEYS: dict[str, str] = {
     "improvement.fuel_lift_good": "improvement.fuel_lift_good_ordinal",
 }
 
-# 세션 시작 때 미리 만들어 둘 고정 문장(코너 번호와 무관한 경고·개선).
+# 세션 시작 때 미리 만들어 둘 고정 문장(코너 번호·수치와 무관한 문장).
+# 추월 리액션·칭찬처럼 슬롯이 없어 문장이 하나로 정해지는 반복 무전을 넣는다
+# (SCRUM-141). 슬롯이 있는 틀은 `PRELOAD_WITH_SLOTS`에 값과 함께 둔다.
 PRELOAD_KEYS: tuple[str, ...] = (
     "safety.safety_car",
     "safety.vsc",
     "safety.red_flag",
     "box.box_box",
     "improvement.fuel_lift_stop",
+    "overtake.reaction",
+    "praise.personal_best_short",
+    "praise.clean_lap",
+    "praise.clean_lap_short",
+)
+
+# 자주 나가는 슬롯 조합이 정해진 반복 문구. 추월 묶음은 10초 창 안에서 2대가
+# 가장 흔하고 3대도 종종 나온다(SCRUM-141).
+PRELOAD_WITH_SLOTS: tuple[tuple[str, dict[str, object]], ...] = (
+    ("overtake.reaction_bundle", {"count": 2}),
+    ("overtake.reaction_bundle", {"count": 3}),
 )
 
 
@@ -1682,9 +1695,13 @@ def corner_phrases(
 def prefetch_phrases(corners: Sequence[int], *, meters: int = 5) -> list[str]:
     """세션 시작 때 미리 만들 문장 전체: 코너 번호 문장 + 고정 경고·개선.
 
-    모든 감정 단계·표현을 포함한다(SCRUM-91).
+    모든 감정 단계·표현을 포함한다(SCRUM-91). 추월 리액션·칭찬처럼 슬롯 없는
+    반복 문구와 자주 쓰는 슬롯 조합(`PRELOAD_WITH_SLOTS`)도 함께 만든다
+    (SCRUM-141).
     """
     phrases = corner_phrases(corners, meters=meters)
     for key in PRELOAD_KEYS:
         phrases.extend(all_phrases(key))
+    for key, slots in PRELOAD_WITH_SLOTS:
+        phrases.extend(all_phrases(key, **slots))
     return list(dict.fromkeys(phrases))

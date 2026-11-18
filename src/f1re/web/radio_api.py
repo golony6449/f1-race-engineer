@@ -12,6 +12,10 @@
 - Qwen API 실패·타임아웃이면 `TTSUnavailable`이 올라오고 상태가 "음성 오프라인"이
   된다. 큐는 멈추지 않고, 캐시에 있는 문장은 계속 재생되며, 합성하지 못한 무전은
   `played=False`로 기록되고 건너뛴다.
+- 자막(`caption`)은 첫 음성 조각을 확보한 뒤 오디오와 함께 보낸다(SCRUM-141).
+  합성에 실패해 소리를 내지 못하는 무전은 자막도 내보내지 않아, 화면에 자막만
+  남고 무음으로 넘어가는 불일치가 없다. `done(played=False)`와 `last` 상태는
+  마지막으로 실제 재생한 무전을 그대로 가리킨다.
 - 무전 페이지가 연결되지 않았으면 음성을 만들지 않고 큐를 비우며
   `played=False`로 기록한다(상태 "무전 페이지 미연결"). 큐가 막히지 않는다.
 
@@ -394,8 +398,9 @@ class RadioService:
             "lap": message.lap,
             "corner": message.corner,
         }
-        self._last_caption = caption
-        self._broadcast(caption)
+        # 자막은 실제로 소리를 낼 수 있을 때만 내보낸다(SCRUM-141). 합성 실패로
+        # 소리를 내지 못하는 무전의 자막만 화면에 남는 불일치를 없앤다.
+        caption_sent = False
         try:
             if self._cache is None:
                 raise TTSUnavailable("음성 캐시가 설정되지 않았습니다")
@@ -423,6 +428,11 @@ class RadioService:
                         0,
                         int((self._clock() - message.created_ns) / 1_000_000),
                     )
+                if not caption_sent:
+                    # 첫 음성 조각을 확보한 뒤 자막과 오디오를 함께 보낸다.
+                    caption_sent = True
+                    self._last_caption = caption
+                    self._broadcast(caption)
                 played = True
                 self._broadcast(
                     {

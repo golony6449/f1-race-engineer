@@ -96,6 +96,7 @@ from f1re.udp.session_category import is_race_session
 from f1re.radio.templates import (
     ORDINAL_KEYS,
     PRELOAD_KEYS,
+    PRELOAD_WITH_SLOTS,
     Mood,
     VariantRotator,
     all_phrases,
@@ -663,12 +664,26 @@ class Coach:
     # --- 세션 시작 prefetch -----------------------------------------------
 
     def prefetch_phrases(self) -> list[str]:
-        """세션 시작 때 미리 만들 코칭·개선 문장(그 서킷 코너 전부 + 고정 경고).
+        """세션 시작 때 미리 만들 코칭·개선·추월 문장(그 서킷 코너 전부).
 
         감정 단계(calm·urgent·hyped·warm)와 표현을 모두 포함해, 어떤 단계로
         말해도 캐시에 있는 문장을 바로 쓸 수 있게 한다(SCRUM-91).
+
+        개선 알림은 "N번 좋아졌어. 다음은 M번 보자."처럼 코너 번호 두 개가
+        들어가 모든 조합을 미리 만들 수 없다. 그래서 코너 번호 순서에서 바로
+        다음 코너를 `next_corner`로 둔 조합을 함께 만든다(SCRUM-141). 실제
+        세션에서 다음 집중 코너는 이 순서와 자주 겹친다.
         """
         phrases: list[str] = []
+        ordered = sorted(self._track.corners, key=lambda corner: corner.number)
+        next_by_number = (
+            {
+                corner.number: ordered[(index + 1) % len(ordered)].number
+                for index, corner in enumerate(ordered)
+            }
+            if len(ordered) > 1
+            else {}
+        )
         for corner in self._track.corners:
             label = corner_label(corner.number, official=corner.official)
             for key, slots in (
@@ -683,8 +698,34 @@ class Coach:
                     slots = {"corner_label": label, **slots}
                     resolved = ORDINAL_KEYS[key]
                 phrases.extend(all_phrases(resolved, **slots))
+            next_number = next_by_number.get(corner.number)
+            if next_number is not None:
+                next_corner = self._by_number.get(next_number)
+                next_official = (
+                    next_corner.official if next_corner is not None else True
+                )
+                if corner.official:
+                    phrases.extend(
+                        all_phrases(
+                            "improvement.corner_improved",
+                            corner=corner.number,
+                            next_corner=next_number,
+                        )
+                    )
+                else:
+                    phrases.extend(
+                        all_phrases(
+                            ORDINAL_KEYS["improvement.corner_improved"],
+                            corner_label=label,
+                            next_label=corner_label(
+                                next_number, official=next_official
+                            ),
+                        )
+                    )
         for key in PRELOAD_KEYS:
             phrases.extend(all_phrases(key))
+        for key, slots in PRELOAD_WITH_SLOTS:
+            phrases.extend(all_phrases(key, **slots))
         return list(dict.fromkeys(phrases))
 
     async def prefetch(

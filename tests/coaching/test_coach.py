@@ -815,6 +815,12 @@ async def test_prefetch_covers_track_phrases() -> None:
     assert "9번 코너 속도가 기준보다 5킬로 느려. 더 빠르게 돌 수 있어." in texts
     assert "3번 좋아졌어." in texts
     assert render("safety.safety_car") in texts
+    # 개선 알림의 긴 문장(다음 코너 포함)과 추월 리액션·칭찬 고정 문구도
+    # 미리 만든다(SCRUM-141).
+    assert render("improvement.corner_improved", corner=3, next_corner=4) in texts
+    assert render("overtake.reaction") in texts
+    assert render("overtake.reaction_bundle", count=2) in texts
+    assert render("praise.clean_lap") in texts
     assert len(texts) == len(set(texts))
 
 
@@ -830,6 +836,10 @@ async def test_prefetch_uses_ordinal_phrases_for_unofficial_corners() -> None:
     texts, voice = cache.calls[0]
     assert voice is None
     assert "3번째 코너에서 브레이크가 늦었어. 5미터 더 일찍 밟아." in texts
+    # 비공식 코너도 다음 코너까지 "N번째 코너"로 말하는 긴 개선 문장을 만든다.
+    assert (
+        "3번째 코너 좋아졌어. 다음은 4번째 코너 보자." in texts
+    )
 
 
 # ---------------------------------------------------------------------------

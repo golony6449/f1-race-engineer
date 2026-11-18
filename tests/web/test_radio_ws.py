@@ -453,6 +453,65 @@ def test_tts_offline_keeps_queue_moving_and_flags_offline() -> None:
     assert log.records[1][1] is True
 
 
+def test_tts_failure_sends_no_caption_and_keeps_last_caption() -> None:
+    """합성 실패 무전은 자막을 보내지 않고, 마지막 자막은 실제 재생한 무전이다."""
+    store = StateStore()
+    cache = FakeCache(fail_texts={"합성 실패"})
+    log = FakeLog()
+    service = _service(store, cache=cache, log=log)
+    app = create_app(store, radio=service)
+
+    with TestClient(app) as client:
+        with client.websocket_connect("/ws/radio") as websocket:
+            assert websocket.receive_json()["type"] == "status"
+            service.queue.push(_message("합성 실패", kind=RadioKind.SAFETY))
+            received = _receive_until(websocket, "done")
+
+            # 소리를 내지 못한 무전의 자막만 화면에 남지 않는다.
+            assert all(payload["type"] != "caption" for payload in received)
+            done = received[-1]
+            assert done["text"] == "합성 실패"
+            assert done["played"] is False
+            assert done["latency_ms"] is None
+            assert service.last_caption is None
+
+            # 다음 무전은 자막과 첫 음성 조각을 함께(자막 먼저) 보낸다.
+            service.queue.push(_message("박스, 박스. 들어와."))
+            received = _receive_until(websocket, "done")
+            types = [payload["type"] for payload in received]
+            assert "caption" in types and "audio" in types
+            assert types.index("caption") < types.index("audio")
+            caption = next(
+                payload for payload in received if payload["type"] == "caption"
+            )
+            assert caption["text"] == "박스, 박스. 들어와."
+            assert service.last_caption == caption
+
+    assert [record[1] for record in log.records] == [False, True]
+
+
+def test_empty_audio_sends_no_caption() -> None:
+    """캐시가 오디오를 하나도 내지 못하면 자막 없이 played=False로 끝난다."""
+    store = StateStore()
+    cache = FakeCache(chunks=[])
+    log = FakeLog()
+    service = _service(store, cache=cache, log=log)
+    app = create_app(store, radio=service)
+
+    with TestClient(app) as client:
+        with client.websocket_connect("/ws/radio") as websocket:
+            assert websocket.receive_json()["type"] == "status"
+            service.queue.push(_message("빈 오디오"))
+            received = _receive_until(websocket, "done")
+
+            assert all(payload["type"] != "caption" for payload in received)
+            done = received[-1]
+            assert done["played"] is False
+            assert service.last_caption is None
+
+    assert log.records[0][1] is False
+
+
 async def test_higher_priority_interrupts_current_radio() -> None:
     """말하는 중에 더 높은 우선순위가 오면 끊고 바꾼다(설계 6.7)."""
     store = StateStore()

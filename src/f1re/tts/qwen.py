@@ -265,7 +265,7 @@ class QwenTTS:
 
         API가 준 URL의 스킴(`http://` 또는 `https://`)을 바꾸지 않고 그대로
         받는다. 같은 주소의 https를 먼저 시도하면 TLS 핸드셰이크가 멈출 때
-        전체 합성 마감(기본 2초)을 다 써 버릴 수 있어, 선시도하지 않는다.
+        전체 합성 마감(기본 5초)을 다 써 버릴 수 있어, 선시도하지 않는다.
         """
         response = await self._client.get(url)
         self._raise_http_error(response, "오디오 다운로드")

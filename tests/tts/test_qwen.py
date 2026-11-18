@@ -294,15 +294,16 @@ async def test_timeout_raises_tts_unavailable_quickly() -> None:
     assert tts.timeout_s == pytest.approx(0.05)
 
 
-def test_default_timeout_is_two_seconds() -> None:
+def test_default_timeout_is_five_seconds() -> None:
+    # SCRUM-141: 국제 리전 응답 지연을 감안해 2초에서 5초로 올렸다.
     config = load_config()
-    assert config.tts.timeout_s == pytest.approx(2.0)
+    assert config.tts.timeout_s == pytest.approx(5.0)
 
     tts = _tts(lambda request: httpx.Response(200), config=config.tts)
-    assert tts.timeout_s == pytest.approx(2.0)
+    assert tts.timeout_s == pytest.approx(5.0)
     # 전체 마감(asyncio.timeout)과 HTTP 클라이언트 타임아웃 모두 설정값을 쓴다.
-    assert tts._client.timeout.connect == pytest.approx(2.0)
-    assert tts._client.timeout.read == pytest.approx(2.0)
+    assert tts._client.timeout.connect == pytest.approx(5.0)
+    assert tts._client.timeout.read == pytest.approx(5.0)
 
 
 async def test_secret_error_becomes_tts_unavailable() -> None:
