@@ -22,6 +22,9 @@ API:
   무전 기록·종류별 끄기·세션 리포트(`web/report_api.py`)
 - ``GET /api/recordings*``·``POST /api/replay*``·``WS /ws/replay``
   녹화 목록·다운로드·웹 다시 보기(`web/replay_api.py`, 설계 4.5·4.6)
+- ``GET /telemetry``  다시 보기 텔레메트리 분석 화면(설계 5.2, SCRUM-135).
+  분석 API(`/api/replay/telemetry/*`)는 전역 `ReplayManager`와 분리된
+  `TelemetryIndexStore`만 쓰므로 엔진 OFF에서도 동작한다.
 
 웹 서버 `lifespan`은 엔진과 분리된 `BackupWorker`를 소유한다(설계 4.2).
 기동할 때 `.active/*.f1rec` 복구와 `pending`·`failed` 재시도를 등록하고,
@@ -75,6 +78,7 @@ from f1re.udp.session_category import (
     session_category,
     session_type_label,
 )
+from f1re.udp.telemetry_index import TelemetryIndexStore
 from f1re.udp.web_replay import ReplayManager
 from f1re.web.lift_coast_api import create_lift_coast_router
 from f1re.web.map_api import TrackMap, create_map_router
@@ -547,6 +551,7 @@ class EngineStateRequest(BaseModel):
 _ENGINE_OFF_ALLOWED_PATHS = {
     "/",
     "/radio",
+    "/telemetry",
     "/health",
     "/api/engine",
     "/api/voice/check",
@@ -625,6 +630,9 @@ def create_app(
         if replay_manager is not None
         else ReplayManager(config=app_config, conn_factory=conn_factory)
     )
+    # `/telemetry` 분석 API의 1회 스캔 인덱스 캐시(LRU=1). 앱 수명이 닫고,
+    # `BackupWorker`가 로컬 정리 보호 ID로 참조한다(설계 5.1.E, SCRUM-135).
+    telemetry_store = TelemetryIndexStore(conn_factory=conn_factory)
     fetcher = (
         recording_fetcher
         if recording_fetcher is not None
@@ -636,8 +644,10 @@ def create_app(
             worker = BackupWorker(
                 sessions_db,
                 app_config.recording,
-                # 로컬 5개 정리에서 지금 리플레이 중인 파일을 지우지 않는다.
+                # 로컬 5개 정리에서 지금 리플레이 중이거나 /telemetry가 열어 둔
+                # 녹화 파일을 지우지 않는다.
                 active_replay_id=lambda: manager.active_recording_id,
+                extra_protected_ids=telemetry_store.protected_recording_ids,
             )
         except Exception:  # 워커가 없어도 화면·실시간 API는 떠야 한다.
             logger.exception("백업 워커를 만들지 못했습니다")
@@ -648,13 +658,14 @@ def create_app(
 
     app = FastAPI(
         title="F1 레이스 엔지니어 대시보드",
-        lifespan=_lifespan(engine, worker, manager),
+        lifespan=_lifespan(engine, worker, manager, telemetry_store),
     )
     app.state.engine = engine
     app.state.radio = engine.radio
     app.state.backup_worker = worker
     app.state.recording_fetcher = fetcher
     app.state.replay_manager = manager
+    app.state.telemetry_store = telemetry_store
     app.state.sessions_conn_factory = conn_factory
 
     @app.middleware("http")
@@ -668,10 +679,12 @@ def create_app(
         else:
             response = await call_next(request)
         # 배포·업데이트 뒤 브라우저가 예전 JS/CSS를 캐시에서 써서 화면이 멈춘 일이
-        # 있었다(SCRUM-79). 화면(/, /radio)과 정적 파일은 매번 서버에 다시 확인하게
-        # 한다. `no-cache`는 저장 금지가 아니라 재검증 요구라, 안 바뀐 파일은
-        # StaticFiles가 304로 가볍게 답한다. API 응답 정책은 그대로 둔다.
-        if path in {"/", "/radio", "/static"} or path.startswith("/static/"):
+        # 있었다(SCRUM-79). 화면(/, /radio, /telemetry)과 정적 파일은 매번 서버에
+        # 다시 확인하게 한다. `no-cache`는 저장 금지가 아니라 재검증 요구라, 안
+        # 바뀐 파일은 StaticFiles가 304로 가볍게 답한다. API 응답 정책은 그대로 둔다.
+        if path in {"/", "/radio", "/telemetry", "/static"} or path.startswith(
+            "/static/"
+        ):
             response.headers["Cache-Control"] = "no-cache"
         return response
 
@@ -688,6 +701,7 @@ def create_app(
             fetcher=fetcher,
             replay_manager=manager,
             backup_worker=worker,
+            telemetry_store=telemetry_store,
         )
     )
 
@@ -703,6 +717,14 @@ def create_app(
     def dashboard() -> FileResponse:
         return FileResponse(
             STATIC_DIR / "dashboard.html",
+            media_type="text/html; charset=utf-8",
+        )
+
+    @app.get("/telemetry", include_in_schema=False)
+    def telemetry_page() -> FileResponse:
+        """다시 보기 텔레메트리 분석 화면(설계 5.2). 엔진 OFF에서도 뜬다."""
+        return FileResponse(
+            STATIC_DIR / "telemetry.html",
             media_type="text/html; charset=utf-8",
         )
 
@@ -801,13 +823,18 @@ def _lifespan(
     engine: Engine,
     backup_worker: BackupWorker | None,
     replay_manager: ReplayManager | None,
+    telemetry_store: TelemetryIndexStore | None = None,
 ):
-    """앱 수명에 무전 루프·백업 워커·리플레이를 묶는다.
+    """앱 수명에 무전 루프·백업 워커·리플레이·텔레메트리 인덱스를 묶는다.
 
     고정 엔진이면 무전 서비스만 정리하고, 소유 엔진이면 종료 때 런타임을
     정리한다. `BackupWorker.start()`는 `.active/` 복구·pending 재시도를 마친
     뒤에야 끝나므로, 웹 서버 ready를 기다렸다가 엔진을 켜는 `main` 흐름에서는
     기동 복구가 새 녹화를 건드리지 않는다.
+
+    종료 순서: 리플레이 → 텔레메트리 인덱스(진행 중 빌드 취소) → 무전/엔진 →
+    백업 워커. 인덱스 빌드가 백업 워커의 DB 연결을 쓰지 않지만, 파일을 읽는
+    스레드가 남은 채 프로세스가 끝나지 않도록 먼저 정리한다.
     """
 
     @asynccontextmanager
@@ -827,6 +854,10 @@ def _lifespan(
             if replay_manager is not None:
                 with contextlib.suppress(Exception):
                     await replay_manager.aclose()
+            # 진행 중인 텔레메트리 인덱스 빌드 태스크를 취소한다(SCRUM-135).
+            if telemetry_store is not None:
+                with contextlib.suppress(Exception):
+                    await telemetry_store.aclose()
             radio = None if engine.managed else engine.radio
             if radio is not None:
                 await radio.aclose()
