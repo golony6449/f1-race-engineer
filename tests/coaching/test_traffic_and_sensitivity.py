@@ -131,6 +131,24 @@ def _delay(trace: LapTrace, corner: Corner, ms: float) -> LapTrace:
     return dataclasses.replace(trace, samples=samples)
 
 
+def _slow_apex(trace: LapTrace, corner: Corner, kmh: float = 6.0) -> LapTrace:
+    """코너 구간 속도를 `kmh`만큼 낮춰 정점 최저속 저하를 만든다(SCRUM-144).
+
+    브레이크 지점만 늦은 랩은 레이트 브레이킹 전략으로 보고 코칭하지 않는다.
+    늦은 브레이킹이 실제로 코너를 망친 경우(정점 속도 저하)를 만들 때 쓴다.
+    시각은 건드리지 않으므로 코너 손실은 `_delay`가 따로 만든다.
+    """
+    return dataclasses.replace(
+        trace,
+        samples=[
+            dataclasses.replace(sample, speed=max(0.0, sample.speed - kmh))
+            if corner.entry_m <= sample.dist_m <= corner.exit_m
+            else sample
+            for sample in trace.samples
+        ],
+    )
+
+
 def _mark(
     trace: LapTrace,
     corner: Corner,
@@ -242,8 +260,14 @@ def test_brake_difference_of_three_to_six_meters_is_not_coached() -> None:
 
 
 def test_cause_below_eight_meters_still_speaks_when_loss_is_large() -> None:
-    """문턱(8m)을 넘는 12m 차이는 손실이 충분하면 지금처럼 코칭한다."""
-    lap = _delay(_late_brake(_trace(), CORNER9, 12.0), CORNER9, 150.0)
+    """문턱(8m)을 넘는 12m 차이는 손실이 충분하면 지금처럼 코칭한다.
+
+    SCRUM-144: 브레이크 지점만 늦은 경우는 레이트 브레이킹 전략으로 보아
+    코칭하지 않으므로, 정점 최저속 저하(동반 악화)를 함께 만든다.
+    """
+    lap = _slow_apex(
+        _delay(_late_brake(_trace(), CORNER9, 12.0), CORNER9, 150.0), CORNER9
+    )
 
     messages = _feed(_coach(), lap)
 
@@ -257,7 +281,10 @@ def test_cause_below_eight_meters_still_speaks_when_loss_is_large() -> None:
 def test_corner_loss_under_100_ms_is_not_coached() -> None:
     """원인 문턱을 넘어도 코너 손실이 100ms 미만이면 말하지 않는다."""
     reference = _trace(99, car_index=1)
-    lap = _delay(_late_brake(_trace(), CORNER9, 12.0), CORNER9, 60.0)
+    # SCRUM-144의 레이트 브레이킹 보호에 걸리지 않도록 정점 속도 저하를 준다.
+    lap = _slow_apex(
+        _delay(_late_brake(_trace(), CORNER9, 12.0), CORNER9, 60.0), CORNER9
+    )
     # 원인(브레이크 12m 늦음)은 문턱을 넘는다. 손실 하한만 막는다.
     cause = pick_cause(
         corner_metrics(lap, CORNER9, None),
@@ -270,7 +297,9 @@ def test_corner_loss_under_100_ms_is_not_coached() -> None:
 
 def test_corner_loss_at_100_ms_speaks() -> None:
     """손실이 정확히 100ms 이상이면 코칭한다."""
-    lap = _delay(_late_brake(_trace(), CORNER9, 12.0), CORNER9, 120.0)
+    lap = _slow_apex(
+        _delay(_late_brake(_trace(), CORNER9, 12.0), CORNER9, 120.0), CORNER9
+    )
 
     messages = _feed(_coach(), lap)
 
@@ -284,8 +313,15 @@ def test_corner_loss_at_100_ms_speaks() -> None:
 
 @pytest.mark.parametrize("flag", ["in_traffic", "position_changed"])
 def test_race_traffic_corner_is_not_coached(flag: str) -> None:
-    """레이스에서 1초 이내 접전이거나 순위가 바뀐 코너는 코칭하지 않는다."""
-    lap = _delay(_late_brake(_trace(lap=2), CORNER9, 12.0), CORNER9, 150.0)
+    """레이스에서 1초 이내 접전이거나 순위가 바뀐 코너는 코칭하지 않는다.
+
+    SCRUM-144: 레이트 브레이킹 보호가 아니라 접전 제외가 막는지 확인하려고
+    정점 속도 저하를 동반한(코칭 조건을 넘는) 랩을 쓴다.
+    """
+    lap = _slow_apex(
+        _delay(_late_brake(_trace(lap=2), CORNER9, 12.0), CORNER9, 150.0),
+        CORNER9,
+    )
     lap = _mark(lap, CORNER9, **{flag: True})
     assert corner_has_traffic(lap.samples, CORNER9)
 
@@ -295,7 +331,9 @@ def test_race_traffic_corner_is_not_coached(flag: str) -> None:
 @pytest.mark.parametrize("flag", ["in_traffic", "position_changed"])
 def test_traffic_corner_is_coached_outside_race(flag: str) -> None:
     """타임 트라이얼 등 비레이스 세션은 같은 표시가 있어도 제외하지 않는다."""
-    lap = _delay(_late_brake(_trace(), CORNER9, 12.0), CORNER9, 150.0)
+    lap = _slow_apex(
+        _delay(_late_brake(_trace(), CORNER9, 12.0), CORNER9, 150.0), CORNER9
+    )
     lap = _mark(lap, CORNER9, **{flag: True})
 
     messages = _feed(_coach(session_type=18), lap)
@@ -307,7 +345,10 @@ def test_traffic_corner_is_coached_outside_race(flag: str) -> None:
 def test_traffic_exclusion_resets_repeat_streak() -> None:
     """접전으로 건너뛴 랩은 반복 실수 연속 횟수를 끊는다."""
     coach = _coach(session_type=15)
-    normal = _delay(_late_brake(_trace(lap=2), CORNER9, 12.0), CORNER9, 150.0)
+    normal = _slow_apex(
+        _delay(_late_brake(_trace(lap=2), CORNER9, 12.0), CORNER9, 150.0),
+        CORNER9,
+    )
 
     first = _feed(coach, normal)
     second = _feed(coach, dataclasses.replace(normal, lap=3))
@@ -326,11 +367,17 @@ def test_traffic_exclusion_resets_repeat_streak() -> None:
 def test_loss_floor_resets_repeat_streak() -> None:
     """손실 하한에 걸려 코칭하지 않은 랩도 연속 실수 횟수를 끊는다."""
     coach = _coach(session_type=15)
-    normal = _delay(_late_brake(_trace(lap=2), CORNER9, 12.0), CORNER9, 150.0)
+    normal = _slow_apex(
+        _delay(_late_brake(_trace(lap=2), CORNER9, 12.0), CORNER9, 150.0),
+        CORNER9,
+    )
     _feed(coach, normal)
     _feed(coach, dataclasses.replace(normal, lap=3))
 
-    quiet = _delay(_late_brake(_trace(lap=4), CORNER9, 12.0), CORNER9, 40.0)
+    quiet = _slow_apex(
+        _delay(_late_brake(_trace(lap=4), CORNER9, 12.0), CORNER9, 40.0),
+        CORNER9,
+    )
     assert _feed(coach, quiet) == []
 
     fifth = _feed(coach, dataclasses.replace(normal, lap=5))

@@ -9,6 +9,13 @@
 - 원인은 하나만 고른다(`pick_cause`). 트랙 이탈 > 브레이크 > 턴인 > 조향 수정 >
   정점 속도 > 스로틀 > 라인 순으로, 문턱값을 넘는 첫 원인을 쓴다. 근거가 약하면
   아무 말도 하지 않는다("도움 안 되는 말" 금지, 설계 2장).
+- **레이트 브레이킹 전략 보호**(SCRUM-144): 트랙을 벗어나지 않았고 코너 손실이
+  0 이하인데 집중 코너라는 이유로 말하지 않는다. 설정 손실 하한
+  (`min_corner_loss_ms`)이 0 이하로 잡혀 있어도 이 규칙을 지킨다. 또 브레이크
+  지점만 늦고 정점 최저속·라인·스로틀 재개·조향 수정이 기준과 같거나 나으면
+  `brake_late`를 원인으로 고르지 않는다. 방어·추월을 위해 늦게 브레이킹했지만
+  코너를 깔끔히 돌아나간 경우의 오경고를 막는다. 정점 속도 저하·라인 이탈·
+  스로틀 지연·조향 수정·트랙 이탈이 동반되면 기존처럼 브레이크 늦음을 말한다.
 - **민감도와 손실 하한**(SCRUM-124): 브레이크·턴인 지점 차이 문턱은 8m라 3~6m
   차이로는 말하지 않는다. 원인 문턱을 넘어도 코너 손실이
   `min_corner_loss_ms`(100ms) 미만이면 말하지 않는다. 문턱 기본값은
@@ -205,6 +212,40 @@ class Cause:
         return _CAUSE_TEMPLATES[self.key]
 
 
+def _late_brake_costs_time(
+    metrics: CornerMetrics,
+    reference: CornerMetrics,
+    limits: CoachingSensitivityConfig,
+) -> bool:
+    """늦은 브레이킹이 실제로 코너를 망쳤는가(SCRUM-144).
+
+    방어·추월·레이트 브레이킹 전략으로 기준보다 늦게 브레이크를 밟아도, 정점
+    최저속·라인·스로틀 재개·조향이 기준과 같거나 나으면 시간을 잃지 않은 정상
+    주행이므로 "브레이크가 늦었어"라고 지적하지 않는다. 아래 신호 중 하나라도
+    문턱을 넘으면 에이펙스·탈출·트랙 리밋을 망친 것으로 보고 브레이크 늦음을
+    원인으로 쓴다.
+    """
+    if metrics.off_track:
+        return True
+    speed_drop = reference.min_speed - metrics.min_speed
+    if speed_drop > 0.0 and speed_drop >= limits.min_speed_diff_kmh:
+        return True
+    extra_line = metrics.max_line_dev_m - reference.max_line_dev_m
+    if extra_line > 0.0 and extra_line >= limits.line_dev_m:
+        return True
+    if reference.throttle_on_m is not None:
+        if metrics.throttle_on_m is None:
+            # 코너 안에서 스로틀을 다시 밟지 못했다(탈출 지연).
+            return True
+        throttle_delay = metrics.throttle_on_m - reference.throttle_on_m
+        if throttle_delay > 0.0 and throttle_delay >= limits.throttle_diff_m:
+            return True
+    extra_corrections = metrics.steer_corrections - reference.steer_corrections
+    if extra_corrections > 0 and extra_corrections >= limits.steer_corrections:
+        return True
+    return False
+
+
 def pick_cause(
     metrics: CornerMetrics,
     reference: CornerMetrics,
@@ -215,6 +256,11 @@ def pick_cause(
     설계 6.4의 예("브레이크가 늦고 정점 라인이 밖으로 밀렸으면 브레이크 늦음")처럼
     여러 원인이 겹치면 앞 순서의 원인을 쓴다. 문턱을 넘는 원인이 없으면 `None`.
     `sensitivity`를 주면 설정 파일의 문턱을 쓴다(SCRUM-124).
+
+    브레이크 지점만 늦고 정점 최저속·라인·스로틀 재개·조향 수정이 기준과
+    같거나 나으면 `CAUSE_BRAKE_LATE`를 고르지 않는다(SCRUM-144). 방어·추월·
+    레이트 브레이킹 전략으로 늦게 브레이킹했지만 코너를 깔끔히 통과한 경우의
+    오경고를 막기 위해서다.
     """
     limits = sensitivity or CoachingSensitivityConfig()
     # 트랙 이탈은 그 자체로 가장 큰 사고이므로 맨 앞에 둔다. 무전은 거리(미터)를
@@ -234,7 +280,9 @@ def pick_cause(
 
     if metrics.brake_start_m is not None and reference.brake_start_m is not None:
         diff = metrics.brake_start_m - reference.brake_start_m
-        if diff >= limits.brake_diff_m:
+        if diff >= limits.brake_diff_m and _late_brake_costs_time(
+            metrics, reference, limits
+        ):
             meters = max(1, int(round(diff)))
             return Cause(
                 key=CAUSE_BRAKE_LATE,
@@ -1013,6 +1061,14 @@ class Coach:
             lap_time_points(reference_trace),
             corner,
         )
+
+        # 트랙 이탈 없이 손실이 0 이하인 코너는 원인 코칭을 하지 않는다(SCRUM-144).
+        # 방어·추월·레이트 브레이킹 전략으로 기준과 같거나 더 빠르게 통과한
+        # 코너이므로 집중 코너여도 "브레이크가 늦었어" 같은 오경고를 내지 않는다.
+        # 설정 손실 하한(min_corner_loss_ms)이 0 이하로 잡혀 있어도 지킨다.
+        if loss_ms <= 0 and not metrics.off_track:
+            self._reset_streak(corner.number)
+            return []
 
         # 손실 0.1초 미만은 원인 문턱을 넘어도 말하지 않는다(SCRUM-124). 집중
         # 코너라도 예외가 아니다. 연속 실수 횟수는 여기서도 끊는다.
