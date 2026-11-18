@@ -493,9 +493,14 @@ def test_build_telemetry_index_extracts_series_map_frames_and_markers(
     # 마커: 세션 공통 구간 + 내 차 사건만. 다른 차 20대 lap_complete는 없어야 한다.
     markers = index.markers
     kinds = {event["kind"] for event in markers["events"]}
-    assert {"penalty", "overtake", "flashback"} <= kinds
+    assert {"penalty", "overtake", "flashback", "lap_complete"} <= kinds
+    # 다른 차 20대 lap_complete는 차량별 경량 맵에만 있고 기본 마커엔 없다.
     assert all(
         event["car_index"] in (0, None) for event in markers["events"]
+    )
+    assert any(
+        event["car_index"] == 3
+        for event in index.markers_for_car(3)["events"]
     )
     assert not any(
         event["kind"] == "overtake" and event["car_index"] not in (0, None)

@@ -1266,20 +1266,34 @@ class _IndexScanner:
                         "detail": detail,
                     }
                 )
-            elif (
-                kind is EventKind.LAP_COMPLETE
-                and self.player_index is not None
-                and car == self.player_index
-            ):
+            elif kind is EventKind.LAP_COMPLETE:
                 completed = _as_int(event.lap)
-                if completed is not None and completed >= 1:
+                if not (_valid_car(car) and completed is not None):
+                    continue
+                if completed < 1:
+                    continue
+                lap_time_ms = _as_int(event.data.get("lap_time_ms"))
+                # 랩 완료는 차량별 경량 맵에만 쌓는다. 화면 기본 마커는 내 차
+                # 것만 노출되어 22대 전체 스팸이 되지 않는다.
+                self._car_event(
+                    int(car),
+                    {
+                        "kind": "lap_complete",
+                        "t_ms": t_ms,
+                        "car_index": int(car),
+                        "lap": completed,
+                        "lap_time_ms": lap_time_ms,
+                    },
+                )
+                if (
+                    self.player_index is not None
+                    and car == self.player_index
+                ):
                     self.lap_boundaries.append(
                         {
                             "lap": completed + 1,
                             "start_ms": t_ms,
-                            "completed_lap_time_ms": _as_int(
-                                event.data.get("lap_time_ms")
-                            ),
+                            "completed_lap_time_ms": lap_time_ms,
                         }
                     )
 
